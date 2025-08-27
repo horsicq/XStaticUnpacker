@@ -5,11 +5,12 @@
 
 #include "xupx.h"
 
-XUPX::XUPX(QIODevice *pDevice) : XBinary(pDevice) {}
+XUPX::XUPX(QIODevice *pDevice) : XBinary(pDevice)
+{
+}
 
 XUPX::~XUPX()
 {
-
 }
 
 bool XUPX::isValid(PDSTRUCT *pPdStruct)
