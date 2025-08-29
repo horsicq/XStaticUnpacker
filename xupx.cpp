@@ -150,10 +150,13 @@ XUPX::UPX_INFO XUPX::getUPXInfo(PDSTRUCT *pPdStruct)
 
             char *pBuffer = new char [nBufferSize];
 
-            nBufferSize = getPhysSize(pBuffer, nBufferSize);
+            elf.read_array(this->getSize() - nBufferSize, pBuffer, nBufferSize, pPdStruct);
 
-            if (nBufferSize >= 32) {
-                result = _getUPXInfo(pBuffer, (qint32)nBufferSize, (getEndian() == ENDIAN_BIG));
+            nBufferSize = getPhysSize(pBuffer, nBufferSize);
+            nBufferSize = align_up(nBufferSize, 4);
+
+            if (nBufferSize >= 36) {
+                result = _getUPXInfo(pBuffer + nBufferSize - 36, 36, (getEndian() == ENDIAN_BIG));
             }
 
             delete [] pBuffer;
