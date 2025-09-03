@@ -77,7 +77,7 @@ bool XUPX::isValid(PDSTRUCT *pPdStruct)
     return getUPXInfo(pPdStruct).bIsValid;
 }
 
-XUPX::UPX_INFO XUPX::_getUPXInfo(char *pInfoData, qint32 nDataSize, bool bIsBigEndian)
+XUPX::UPX_INFO XUPX::_read_packheader(char *pInfoData, qint32 nDataSize, bool bIsBigEndian)
 {
     XUPX::UPX_INFO result = {};
 
@@ -130,6 +130,26 @@ XUPX::UPX_INFO XUPX::_getUPXInfo(char *pInfoData, qint32 nDataSize, bool bIsBigE
         }
     }
 
+    if (result.version <= 3) {
+        result.nPackHeaderSize = 24;
+    } else if (result.version <= 9) {
+        if ((result.format == UPX_F_DOS_COM) || (result.format == UPX_F_DOS_SYS)) {
+            result.nPackHeaderSize = 20;
+        } else if ((result.format == UPX_F_DOS_EXE) || (result.format == UPX_F_DOS_EXEH)) {
+            result.nPackHeaderSize = 25;
+        } else {
+            result.nPackHeaderSize = 28;
+        }
+    } else {
+        if ((result.format == UPX_F_DOS_COM) || (result.format == UPX_F_DOS_SYS)) {
+            result.nPackHeaderSize = 22;
+        } else if ((result.format == UPX_F_DOS_EXE) || (result.format == UPX_F_DOS_EXEH)) {
+            result.nPackHeaderSize = 27;
+        } else {
+            result.nPackHeaderSize = 32;
+        }
+    }
+
     return result;
 }
 
@@ -142,6 +162,7 @@ XUPX::UPX_INFO XUPX::getUPXInfo(PDSTRUCT *pPdStruct)
     if (!bFound) {
         XELF elf(this->getDevice(), this->isImage(), this->getModuleAddress());
         if (elf.isValid(pPdStruct)) {
+            bool bIsBE = (getEndian() == ENDIAN_BIG);
             result.fileType = elf.getFileType();
 
             qint64 nBufferSize = 0x3000;
@@ -156,7 +177,9 @@ XUPX::UPX_INFO XUPX::getUPXInfo(PDSTRUCT *pPdStruct)
             nBufferSize = align_up(nBufferSize, 4);
 
             if (nBufferSize >= 36) {
-                result = _getUPXInfo(pBuffer + nBufferSize - 36, 36, (getEndian() == ENDIAN_BIG));
+                result = _read_packheader(pBuffer + nBufferSize - 36, 36, bIsBE);
+                qint64 nDataOffset = XBinary::_read_uint32_safe(pBuffer, nBufferSize, nBufferSize - 36 + result.nPackHeaderSize, bIsBE);
+                // TODO
             }
 
             delete [] pBuffer;

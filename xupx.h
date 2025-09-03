@@ -29,6 +29,7 @@ public:
         quint32 u_file_size;
         quint8 n_mru;
         quint32 off_filter;
+        quint32 nPackHeaderSize;
     };
 
     // Executable formats (info: big endian types are >= 128); DO NOT CHANGE
@@ -101,7 +102,7 @@ public:
     UPX_INFO getUPXInfo(PDSTRUCT *pPdStruct = nullptr);
 
 private:
-    UPX_INFO _getUPXInfo(char *pInfoData, qint32 nDataSize, bool bIsBigEndian);
+    UPX_INFO _read_packheader(char *pInfoData, qint32 nDataSize, bool bIsBigEndian);
 };
 
 #endif  // XUPX_H
