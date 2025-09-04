@@ -65,7 +65,6 @@ static XBinary::XCONVERT _TABLE_XUPX_UPX_F[] = {
 
 XUPX::XUPX(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : XBinary(pDevice, bIsImage, nModuleAddress)
 {
-
 }
 
 XUPX::~XUPX()
@@ -169,7 +168,7 @@ XUPX::UPX_INFO XUPX::getUPXInfo(PDSTRUCT *pPdStruct)
 
             nBufferSize = qMin(nBufferSize, this->getSize());
 
-            char *pBuffer = new char [nBufferSize];
+            char *pBuffer = new char[nBufferSize];
 
             elf.read_array(this->getSize() - nBufferSize, pBuffer, nBufferSize, pPdStruct);
 
@@ -182,7 +181,7 @@ XUPX::UPX_INFO XUPX::getUPXInfo(PDSTRUCT *pPdStruct)
                 // TODO
             }
 
-            delete [] pBuffer;
+            delete[] pBuffer;
 
             // TODO
             bFound = true;
@@ -193,8 +192,6 @@ XUPX::UPX_INFO XUPX::getUPXInfo(PDSTRUCT *pPdStruct)
         XPE pe(this->getDevice(), this->isImage(), this->getModuleAddress());
         if (pe.isValid(pPdStruct)) {
             result.fileType = pe.getFileType();
-
-
 
             // TODO
             bFound = true;
