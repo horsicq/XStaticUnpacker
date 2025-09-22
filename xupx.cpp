@@ -73,12 +73,12 @@ XUPX::~XUPX()
 
 bool XUPX::isValid(PDSTRUCT *pPdStruct)
 {
-    return getUPXInfo(pPdStruct).bIsValid;
+    return getInternalInfo(pPdStruct).bIsValid;
 }
 
-XUPX::UPX_INFO XUPX::_read_packheader(char *pInfoData, qint32 nDataSize, bool bIsBigEndian)
+XUPX::INTERNAL_INFO XUPX::_read_packheader(char *pInfoData, qint32 nDataSize, bool bIsBigEndian)
 {
-    XUPX::UPX_INFO result = {};
+    XUPX::INTERNAL_INFO result = {};
 
     if (nDataSize >= 8) {
         memcpy(result.magic, pInfoData, 4);
@@ -152,9 +152,9 @@ XUPX::UPX_INFO XUPX::_read_packheader(char *pInfoData, qint32 nDataSize, bool bI
     return result;
 }
 
-XUPX::UPX_INFO XUPX::getUPXInfo(PDSTRUCT *pPdStruct)
+XUPX::INTERNAL_INFO XUPX::getInternalInfo(PDSTRUCT *pPdStruct)
 {
-    XUPX::UPX_INFO result = {};
+    XUPX::INTERNAL_INFO result = {};
 
     bool bFound = false;
 

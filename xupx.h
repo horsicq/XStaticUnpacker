@@ -13,7 +13,7 @@ class XUPX : public XBinary {
     Q_OBJECT
 
 public:
-    struct UPX_INFO {
+    struct INTERNAL_INFO {
         bool bIsValid;
         FT fileType;
         char magic[4];
@@ -99,10 +99,10 @@ public:
     ~XUPX() override;
 
     bool isValid(PDSTRUCT *pPdStruct = nullptr) override;
-    UPX_INFO getUPXInfo(PDSTRUCT *pPdStruct = nullptr);
+    INTERNAL_INFO getInternalInfo(PDSTRUCT *pPdStruct = nullptr);
 
 private:
-    UPX_INFO _read_packheader(char *pInfoData, qint32 nDataSize, bool bIsBigEndian);
+    INTERNAL_INFO _read_packheader(char *pInfoData, qint32 nDataSize, bool bIsBigEndian);
 };
 
 #endif  // XUPX_H
