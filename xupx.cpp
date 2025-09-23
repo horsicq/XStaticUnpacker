@@ -178,7 +178,17 @@ XUPX::INTERNAL_INFO XUPX::getInternalInfo(PDSTRUCT *pPdStruct)
             if (nBufferSize >= 36) {
                 result = _read_packheader(pBuffer + nBufferSize - 36, 36, bIsBE);
                 qint64 nDataOffset = XBinary::_read_uint32_safe(pBuffer, nBufferSize, nBufferSize - 36 + result.nPackHeaderSize, bIsBE);
+                l_info linfo = {};
+                read_array(nDataOffset - sizeof(l_info), (char *)(&linfo), sizeof(l_info), pPdStruct);
+                p_info pinfo = {};
+                read_array(nDataOffset, (char *)(&pinfo), sizeof(p_info), pPdStruct);
+                b_info binfo = {};
+                read_array(nDataOffset + sizeof(p_info), (char *)(&binfo), sizeof(b_info), pPdStruct);
+
+                result.u_len = qFromBigEndian(pinfo.p_filesize);
+                result.c_len = qFromBigEndian(binfo.sz_cpr);
                 // TODO
+                // void PackLinuxElf64::unpack(OutputFile *fo)
             }
 
             delete[] pBuffer;
