@@ -33,25 +33,25 @@ public:
     };
 #pragma pack(push)
 #pragma pack(1)
-    struct l_info { // 12-byte trailer in header for loader
-        quint32 l_checksum; // adler32 checksum of unpacked data LE
-        quint32 l_magic; // 'UPX!' LE
-        quint16 l_lsize; // length of this structure LE
+    struct l_info {          // 12-byte trailer in header for loader
+        quint32 l_checksum;  // adler32 checksum of unpacked data LE
+        quint32 l_magic;     // 'UPX!' LE
+        quint16 l_lsize;     // length of this structure LE
         quint8 l_version;
         quint8 l_format;
     };
-    struct p_info { // 12-byte packed program header
-        quint32 p_progid; // 'UPX!' BE
-        quint32 p_filesize; // original file size BE
-        quint32 p_blocksize; // block size BE
+    struct p_info {           // 12-byte packed program header
+        quint32 p_progid;     // 'UPX!' BE
+        quint32 p_filesize;   // original file size BE
+        quint32 p_blocksize;  // block size BE
     };
-    struct b_info { // 12-byte header before each compressed block
-        quint32 sz_unc;  // uncompressed_size BE
-        quint32 sz_cpr;  // compressed_size BE
+    struct b_info {              // 12-byte header before each compressed block
+        quint32 sz_unc;          // uncompressed_size BE
+        quint32 sz_cpr;          // compressed_size BE
         unsigned char b_method;  // compression algorithm
-        unsigned char b_ftid;  // filter id
-        unsigned char b_cto8;  // filter parameter
-        unsigned char b_extra; // reserved
+        unsigned char b_ftid;    // filter id
+        unsigned char b_cto8;    // filter parameter
+        unsigned char b_extra;   // reserved
     };
 #pragma pack(pop)
     // Executable formats (info: big endian types are >= 128); DO NOT CHANGE
