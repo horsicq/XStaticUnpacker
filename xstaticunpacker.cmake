@@ -11,6 +11,8 @@ endif()
 
 set(XSTATICUNPACKER_SOURCES
     ${XSTATICUNPACKER_SOURCES}
+    ${CMAKE_CURRENT_LIST_DIR}/xinnosetup.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xinnosetup.h
     ${CMAKE_CURRENT_LIST_DIR}/xupx.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xupx.h
 )
