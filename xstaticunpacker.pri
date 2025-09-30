@@ -13,8 +13,10 @@ DEPENDPATH += $$PWD
 
 HEADERS += \
     $$PWD/xinnosetup.h \
+    $$PWD/xnsis.h \
     $$PWD/xupx.h \
 
 SOURCES += \
     $$PWD/xinnosetup.cpp \
+    $$PWD/xnsis.cpp \
     $$PWD/xupx.cpp \
