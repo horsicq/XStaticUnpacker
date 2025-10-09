@@ -63,6 +63,11 @@ static XBinary::XCONVERT _TABLE_XUPX_UPX_F[] = {
 };
 // clang-format on
 
+XBinary::XCONVERT _TABLE_XUPX_STRUCTID[] = {
+    {XUPX::STRUCTID_UNKNOWN, "Unknown", QObject::tr("Unknown")},
+    {XUPX::STRUCTID_HEADER, "HEADER", QString("Header")},
+};
+
 XUPX::XUPX(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : XBinary(pDevice, bIsImage, nModuleAddress)
 {
 }
@@ -71,9 +76,21 @@ XUPX::~XUPX()
 {
 }
 
+QString XUPX::structIDToString(quint32 nID)
+{
+    return XBinary::XCONVERT_idToTransString(nID, _TABLE_XUPX_STRUCTID, sizeof(_TABLE_XUPX_STRUCTID) / sizeof(XBinary::XCONVERT));
+}
+
 bool XUPX::isValid(PDSTRUCT *pPdStruct)
 {
     return getInternalInfo(pPdStruct).bIsValid;
+}
+
+bool XUPX::isValid(QIODevice *pDevice)
+{
+    XUPX upx(pDevice);
+
+    return upx.isValid();
 }
 
 XUPX::INTERNAL_INFO XUPX::_read_packheader(char *pInfoData, qint32 nDataSize, bool bIsBigEndian)
@@ -177,24 +194,27 @@ XUPX::INTERNAL_INFO XUPX::getInternalInfo(PDSTRUCT *pPdStruct)
 
             if (nBufferSize >= 36) {
                 result = _read_packheader(pBuffer + nBufferSize - 36, 36, bIsBE);
-                qint64 nDataOffset = XBinary::_read_uint32_safe(pBuffer, nBufferSize, nBufferSize - 36 + result.nPackHeaderSize, bIsBE);
-                l_info linfo = {};
-                read_array(nDataOffset - sizeof(l_info), (char *)(&linfo), sizeof(l_info), pPdStruct);
-                p_info pinfo = {};
-                read_array(nDataOffset, (char *)(&pinfo), sizeof(p_info), pPdStruct);
-                b_info binfo = {};
-                read_array(nDataOffset + sizeof(p_info), (char *)(&binfo), sizeof(b_info), pPdStruct);
+                
+                if ((result.magic[0] == 'U') && (result.magic[1] == 'P') && (result.magic[2] == 'X') && (result.magic[3] == '!')) {
+                    result.bIsValid = true;
+                    result.fileType = elf.getFileType();
+                    
+                    qint64 nDataOffset = XBinary::_read_uint32_safe(pBuffer, nBufferSize, nBufferSize - 36 + result.nPackHeaderSize, bIsBE);
+                    l_info linfo = {};
+                    read_array(nDataOffset - sizeof(l_info), (char *)(&linfo), sizeof(l_info), pPdStruct);
+                    p_info pinfo = {};
+                    read_array(nDataOffset, (char *)(&pinfo), sizeof(p_info), pPdStruct);
+                    b_info binfo = {};
+                    read_array(nDataOffset + sizeof(p_info), (char *)(&binfo), sizeof(b_info), pPdStruct);
 
-                result.u_len = qFromBigEndian(pinfo.p_filesize);
-                result.c_len = qFromBigEndian(binfo.sz_cpr);
-                // TODO
-                // void PackLinuxElf64::unpack(OutputFile *fo)
+                    result.u_len = qFromBigEndian(pinfo.p_filesize);
+                    result.c_len = qFromBigEndian(binfo.sz_cpr);
+
+                    bFound = true;
+                }
             }
 
             delete[] pBuffer;
-
-            // TODO
-            bFound = true;
         }
     }
 
@@ -203,12 +223,196 @@ XUPX::INTERNAL_INFO XUPX::getInternalInfo(PDSTRUCT *pPdStruct)
         if (pe.isValid(pPdStruct)) {
             result.fileType = pe.getFileType();
 
-            // TODO
-            bFound = true;
+            // TODO: Implement PE UPX detection
+            // For now, just check for UPX sections or patterns
+            
+            bFound = false;  // TODO: Set to true when implemented
         }
     }
 
-    // TODO
+    return result;
+}
+
+XBinary::FT XUPX::getFileType()
+{
+    return XBinary::FT_UPX;
+}
+
+QString XUPX::getMIMEString()
+{
+    return "application/x-upx";
+}
+
+QString XUPX::getArch()
+{
+    QString sResult;
+
+    INTERNAL_INFO info = getInternalInfo();
+
+    if (info.bIsValid) {
+        // Map UPX format to architecture
+        if ((info.format == UPX_F_W32PE_I386) || (info.format == UPX_F_LINUX_i386) || (info.format == UPX_F_LINUX_ELF_i386) || (info.format == UPX_F_LINUX_SH_i386) ||
+            (info.format == UPX_F_VMLINUZ_i386) || (info.format == UPX_F_BVMLINUZ_i386) || (info.format == UPX_F_VMLINUX_i386) || (info.format == UPX_F_LINUX_ELFI_i386) ||
+            (info.format == UPX_F_BSD_i386) || (info.format == UPX_F_BSD_ELF_i386) || (info.format == UPX_F_BSD_SH_i386) || (info.format == UPX_F_MACH_i386) ||
+            (info.format == UPX_F_DYLIB_i386)) {
+            sResult = "i386";
+        } else if ((info.format == UPX_F_LINUX_ELF64_AMD64) || (info.format == UPX_F_VMLINUX_AMD64) || (info.format == UPX_F_MACH_AMD64) ||
+                   (info.format == UPX_F_DYLIB_AMD64) || (info.format == UPX_F_W64PE_AMD64)) {
+            sResult = "AMD64";
+        } else if ((info.format == UPX_F_WINCE_ARM) || (info.format == UPX_F_LINUX_ELF32_ARM) || (info.format == UPX_F_VMLINUX_ARM) || (info.format == UPX_F_VMLINUZ_ARM) ||
+                   (info.format == UPX_F_MACH_ARM) || (info.format == UPX_F_LINUX_ELF32_ARMEB) || (info.format == UPX_F_VMLINUX_ARMEB)) {
+            sResult = "ARM";
+        } else if ((info.format == UPX_F_MACH_ARM64) || (info.format == UPX_F_LINUX_ELF64_ARM64) || (info.format == UPX_F_W64PE_ARM64) ||
+                   (info.format == UPX_F_W64PE_ARM64EC)) {
+            sResult = "ARM64";
+        } else if ((info.format == UPX_F_LINUX_ELF32_MIPSEL) || (info.format == UPX_F_LINUX_ELF32_MIPS)) {
+            sResult = "MIPS";
+        } else if ((info.format == UPX_F_MACH_PPC32) || (info.format == UPX_F_LINUX_ELF32_PPC32) || (info.format == UPX_F_VMLINUX_PPC32) ||
+                   (info.format == UPX_F_DYLIB_PPC32)) {
+            sResult = "PPC32";
+        } else if ((info.format == UPX_F_LINUX_ELF64_PPC64LE) || (info.format == UPX_F_VMLINUX_PPC64LE) || (info.format == UPX_F_MACH_PPC64) ||
+                   (info.format == UPX_F_LINUX_ELF64_PPC64) || (info.format == UPX_F_VMLINUX_PPC64) || (info.format == UPX_F_DYLIB_PPC64)) {
+            sResult = "PPC64";
+        } else if ((info.format == UPX_F_DOS_COM) || (info.format == UPX_F_DOS_SYS) || (info.format == UPX_F_DOS_EXE) || (info.format == UPX_F_DOS_EXEH) ||
+                   (info.format == UPX_F_ELKS_8086)) {
+            sResult = "8086";
+        }
+    }
+
+    return sResult;
+}
+
+XBinary::MODE XUPX::getMode()
+{
+    return XBinary::MODE_DATA;
+}
+
+XBinary::ENDIAN XUPX::getEndian()
+{
+    return XBinary::ENDIAN_LITTLE;
+}
+
+QString XUPX::getFileFormatExt()
+{
+    return "";  // UPX can be applied to various formats
+}
+
+QString XUPX::getFileFormatExtsString()
+{
+    return "*";  // UPX can be applied to various formats
+}
+
+qint64 XUPX::getFileFormatSize(PDSTRUCT *pPdStruct)
+{
+    return getSize();
+}
+
+QString XUPX::getVersion()
+{
+    INTERNAL_INFO info = getInternalInfo();
+    return QString::number(info.version);
+}
+
+QList<XBinary::MAPMODE> XUPX::getMapModesList()
+{
+    QList<MAPMODE> listResult;
+
+    listResult.append(MAPMODE_REGIONS);
+    listResult.append(MAPMODE_DATA);
+
+    return listResult;
+}
+
+XBinary::_MEMORY_MAP XUPX::getMemoryMap(MAPMODE mapMode, PDSTRUCT *pPdStruct)
+{
+    XBinary::_MEMORY_MAP result = {};
+
+    if (mapMode == MAPMODE_UNKNOWN) {
+        mapMode = MAPMODE_DATA;
+    }
+
+    if (mapMode == MAPMODE_REGIONS) {
+        result = _getMemoryMap(FILEPART_HEADER | FILEPART_DATA | FILEPART_OVERLAY, pPdStruct);
+    } else if (mapMode == MAPMODE_DATA) {
+        result = _getMemoryMap(FILEPART_DATA | FILEPART_OVERLAY, pPdStruct);
+    }
 
     return result;
+}
+
+QList<XBinary::DATA_HEADER> XUPX::getDataHeaders(const DATA_HEADERS_OPTIONS &dataHeadersOptions, PDSTRUCT *pPdStruct)
+{
+    QList<DATA_HEADER> listResult;
+
+    if (dataHeadersOptions.nID == STRUCTID_UNKNOWN) {
+        DATA_HEADERS_OPTIONS _dataHeadersOptions = dataHeadersOptions;
+        _dataHeadersOptions.bChildren = true;
+        _dataHeadersOptions.dsID_parent = _addDefaultHeaders(&listResult, pPdStruct);
+        _dataHeadersOptions.dhMode = XBinary::DHMODE_HEADER;
+        _dataHeadersOptions.fileType = dataHeadersOptions.pMemoryMap->fileType;
+
+        _dataHeadersOptions.nID = STRUCTID_HEADER;
+        _dataHeadersOptions.nLocation = 0;
+        _dataHeadersOptions.locType = XBinary::LT_OFFSET;
+
+        listResult.append(getDataHeaders(_dataHeadersOptions, pPdStruct));
+    } else if (dataHeadersOptions.nID == STRUCTID_HEADER) {
+        DATA_HEADER dataHeader = _initDataHeader(dataHeadersOptions, XUPX::structIDToString(dataHeadersOptions.nID));
+        dataHeader.nSize = 0;  // TODO
+
+        // TODO: Add records
+
+        listResult.append(dataHeader);
+    }
+
+    return listResult;
+}
+
+QList<XBinary::FPART> XUPX::getFileParts(quint32 nFileParts, qint32 nLimit, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(nLimit)
+
+    QList<FPART> listResult;
+
+    if (nFileParts & FILEPART_HEADER) {
+        FPART record = {};
+
+        record.filePart = FILEPART_HEADER;
+        record.nFileOffset = 0;
+        record.nFileSize = 0;  // TODO
+        record.nVirtualAddress = -1;
+        record.sName = tr("Header");
+
+        listResult.append(record);
+    }
+
+    if (nFileParts & FILEPART_DATA) {
+        FPART record = {};
+
+        record.filePart = FILEPART_DATA;
+        record.nFileOffset = 0;  // TODO
+        record.nFileSize = getSize();  // TODO
+        record.nVirtualAddress = -1;
+        record.sName = tr("Data");
+
+        listResult.append(record);
+    }
+
+    if (nFileParts & FILEPART_OVERLAY) {
+        qint64 nOverlayOffset = getOverlayOffset();
+
+        if (nOverlayOffset != -1) {
+            FPART record = {};
+
+            record.filePart = FILEPART_OVERLAY;
+            record.nFileOffset = nOverlayOffset;
+            record.nFileSize = getSize() - nOverlayOffset;
+            record.nVirtualAddress = -1;
+            record.sName = tr("Overlay");
+
+            listResult.append(record);
+        }
+    }
+
+    return listResult;
 }

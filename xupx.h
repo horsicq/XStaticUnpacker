@@ -13,6 +13,11 @@ class XUPX : public XBinary {
     Q_OBJECT
 
 public:
+    enum STRUCTID {
+        STRUCTID_UNKNOWN = 0,
+        STRUCTID_HEADER,
+    };
+
     struct INTERNAL_INFO {
         bool bIsValid;
         FT fileType;
@@ -120,7 +125,23 @@ public:
     explicit XUPX(QIODevice *pDevice, bool bIsImage = false, XADDR nModuleAddress = -1);
     ~XUPX() override;
 
-    bool isValid(PDSTRUCT *pPdStruct = nullptr) override;
+    virtual bool isValid(PDSTRUCT *pPdStruct = nullptr) override;
+    static bool isValid(QIODevice *pDevice);
+    virtual FT getFileType() override;
+    virtual QString getMIMEString() override;
+    virtual QString getArch() override;
+    virtual MODE getMode() override;
+    virtual ENDIAN getEndian() override;
+    virtual QString getFileFormatExt() override;
+    virtual QString getFileFormatExtsString() override;
+    virtual qint64 getFileFormatSize(PDSTRUCT *pPdStruct = nullptr) override;
+    virtual QString getVersion() override;
+    virtual QList<MAPMODE> getMapModesList() override;
+    virtual _MEMORY_MAP getMemoryMap(MAPMODE mapMode = MAPMODE_UNKNOWN, PDSTRUCT *pPdStruct = nullptr) override;
+    virtual QString structIDToString(quint32 nID) override;
+    virtual QList<DATA_HEADER> getDataHeaders(const DATA_HEADERS_OPTIONS &dataHeadersOptions, PDSTRUCT *pPdStruct) override;
+    virtual QList<FPART> getFileParts(quint32 nFileParts, qint32 nLimit = -1, PDSTRUCT *pPdStruct = nullptr) override;
+
     INTERNAL_INFO getInternalInfo(PDSTRUCT *pPdStruct = nullptr);
 
 private:

@@ -5,6 +5,10 @@
 
 #include "xinnosetup.h"
 
+XBinary::XCONVERT _TABLE_XINNOSETUP_STRUCTID[] = {
+    {XInnoSetup::STRUCTID_UNKNOWN, "Unknown", QObject::tr("Unknown")},
+    {XInnoSetup::STRUCTID_HEADER, "HEADER", QString("Header")},
+};
 
 XInnoSetup::XInnoSetup(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : XBinary(pDevice, bIsImage, nModuleAddress)
 {
@@ -12,6 +16,11 @@ XInnoSetup::XInnoSetup(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) 
 
 XInnoSetup::~XInnoSetup()
 {
+}
+
+QString XInnoSetup::structIDToString(quint32 nID)
+{
+    return XBinary::XCONVERT_idToTransString(nID, _TABLE_XINNOSETUP_STRUCTID, sizeof(_TABLE_XINNOSETUP_STRUCTID) / sizeof(XBinary::XCONVERT));
 }
 
 bool XInnoSetup::isValid(PDSTRUCT *pPdStruct)

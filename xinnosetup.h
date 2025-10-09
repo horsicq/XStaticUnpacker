@@ -13,6 +13,10 @@ class XInnoSetup : public XBinary {
     Q_OBJECT
 
 public:
+    enum STRUCTID {
+        STRUCTID_UNKNOWN = 0,
+        STRUCTID_HEADER,
+    };
     struct INTERNAL_INFO {
         bool bIsValid;
         qint64 nSignatureOffset;
@@ -24,6 +28,8 @@ public:
 
     bool isValid(PDSTRUCT *pPdStruct = nullptr) override;
     INTERNAL_INFO getInternalInfo(PDSTRUCT *pPdStruct = nullptr);
+
+    virtual QString structIDToString(quint32 nID) override;
 
 private:
     INTERNAL_INFO _analyse(PDSTRUCT *pPdStruct);

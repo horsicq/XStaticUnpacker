@@ -7,12 +7,22 @@
 
 #include <QByteArray>
 
+XBinary::XCONVERT _TABLE_XNSIS_STRUCTID[] = {
+    {XNSIS::STRUCTID_UNKNOWN, "Unknown", QObject::tr("Unknown")},
+    {XNSIS::STRUCTID_HEADER, "HEADER", QString("Header")},
+};
+
 XNSIS::XNSIS(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : XBinary(pDevice, bIsImage, nModuleAddress)
 {
 }
 
 XNSIS::~XNSIS()
 {
+}
+
+QString XNSIS::structIDToString(quint32 nID)
+{
+    return XBinary::XCONVERT_idToTransString(nID, _TABLE_XNSIS_STRUCTID, sizeof(_TABLE_XNSIS_STRUCTID) / sizeof(XBinary::XCONVERT));
 }
 
 bool XNSIS::isValid(PDSTRUCT *pPdStruct)
