@@ -45,13 +45,7 @@ XNSIS::INTERNAL_INFO XNSIS::_analyse(PDSTRUCT *pPdStruct)
         nFileSize = 0;
     }
 
-    const char *apszSignatures[] = {
-        "Nullsoft.NSIS",
-        "NullsoftInst",
-        ";!@Install@!UTF-8!",
-        ";!@Install@!UTF-16LE",
-        ";!@Install@!"
-    };
+    const char *apszSignatures[] = {"Nullsoft.NSIS", "NullsoftInst", ";!@Install@!UTF-8!", ";!@Install@!UTF-16LE", ";!@Install@!"};
     const qint32 nSignatureCount = sizeof(apszSignatures) / sizeof(const char *);
 
     for (qint32 i = 0; (i < nSignatureCount) && (!result.bIsValid); i++) {
@@ -90,8 +84,7 @@ XNSIS::INTERNAL_INFO XNSIS::_analyse(PDSTRUCT *pPdStruct)
                                 nPos++;
                             }
                             qint32 nVersionStart = nPos;
-                            while ((nPos < nWindowLength) &&
-                                   (sWindow.at(nPos).isDigit() || (sWindow.at(nPos) == QChar('.')) || (sWindow.at(nPos) == QChar('_')))) {
+                            while ((nPos < nWindowLength) && (sWindow.at(nPos).isDigit() || (sWindow.at(nPos) == QChar('.')) || (sWindow.at(nPos) == QChar('_')))) {
                                 nPos++;
                             }
                             if (nPos > nVersionStart) {
@@ -107,8 +100,7 @@ XNSIS::INTERNAL_INFO XNSIS::_analyse(PDSTRUCT *pPdStruct)
                             if (cSymbol.isDigit()) {
                                 qint32 nStartIndex = nWindowIndex;
                                 qint32 nEndIndex = nWindowIndex;
-                                while ((nEndIndex < nWindowLength) &&
-                                       (sWindow.at(nEndIndex).isDigit() || (sWindow.at(nEndIndex) == QChar('.')))) {
+                                while ((nEndIndex < nWindowLength) && (sWindow.at(nEndIndex).isDigit() || (sWindow.at(nEndIndex) == QChar('.')))) {
                                     nEndIndex++;
                                 }
                                 if (nEndIndex > nStartIndex) {
@@ -141,8 +133,8 @@ XNSIS::INTERNAL_INFO XNSIS::_analyse(PDSTRUCT *pPdStruct)
                 if (baOverlay.size() >= 16) {
                     const char *pOverlayData = baOverlay.constData();
 
-                    if (((quint8)pOverlayData[8] == 0xDE) && ((quint8)pOverlayData[9] == 0xAD) &&
-                        ((quint8)pOverlayData[10] == 0xBE) && ((quint8)pOverlayData[11] == 0xEF)) {
+                    if (((quint8)pOverlayData[8] == 0xDE) && ((quint8)pOverlayData[9] == 0xAD) && ((quint8)pOverlayData[10] == 0xBE) &&
+                        ((quint8)pOverlayData[11] == 0xEF)) {
                         QByteArray baSignature = baOverlay.mid(12);
                         qint32 nLocalOffset = baSignature.indexOf("NullsoftInst");
 

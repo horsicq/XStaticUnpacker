@@ -194,11 +194,11 @@ XUPX::INTERNAL_INFO XUPX::getInternalInfo(PDSTRUCT *pPdStruct)
 
             if (nBufferSize >= 36) {
                 result = _read_packheader(pBuffer + nBufferSize - 36, 36, bIsBE);
-                
+
                 if ((result.magic[0] == 'U') && (result.magic[1] == 'P') && (result.magic[2] == 'X') && (result.magic[3] == '!')) {
                     result.bIsValid = true;
                     result.fileType = elf.getFileType();
-                    
+
                     qint64 nDataOffset = XBinary::_read_uint32_safe(pBuffer, nBufferSize, nBufferSize - 36 + result.nPackHeaderSize, bIsBE);
                     l_info linfo = {};
                     read_array(nDataOffset - sizeof(l_info), (char *)(&linfo), sizeof(l_info), pPdStruct);
@@ -225,7 +225,7 @@ XUPX::INTERNAL_INFO XUPX::getInternalInfo(PDSTRUCT *pPdStruct)
 
             // TODO: Implement PE UPX detection
             // For now, just check for UPX sections or patterns
-            
+
             bFound = false;  // TODO: Set to true when implemented
         }
     }
@@ -252,15 +252,16 @@ QString XUPX::getArch()
     if (info.bIsValid) {
         // Map UPX format to architecture
         if ((info.format == UPX_F_W32PE_I386) || (info.format == UPX_F_LINUX_i386) || (info.format == UPX_F_LINUX_ELF_i386) || (info.format == UPX_F_LINUX_SH_i386) ||
-            (info.format == UPX_F_VMLINUZ_i386) || (info.format == UPX_F_BVMLINUZ_i386) || (info.format == UPX_F_VMLINUX_i386) || (info.format == UPX_F_LINUX_ELFI_i386) ||
-            (info.format == UPX_F_BSD_i386) || (info.format == UPX_F_BSD_ELF_i386) || (info.format == UPX_F_BSD_SH_i386) || (info.format == UPX_F_MACH_i386) ||
-            (info.format == UPX_F_DYLIB_i386)) {
+            (info.format == UPX_F_VMLINUZ_i386) || (info.format == UPX_F_BVMLINUZ_i386) || (info.format == UPX_F_VMLINUX_i386) ||
+            (info.format == UPX_F_LINUX_ELFI_i386) || (info.format == UPX_F_BSD_i386) || (info.format == UPX_F_BSD_ELF_i386) || (info.format == UPX_F_BSD_SH_i386) ||
+            (info.format == UPX_F_MACH_i386) || (info.format == UPX_F_DYLIB_i386)) {
             sResult = "i386";
         } else if ((info.format == UPX_F_LINUX_ELF64_AMD64) || (info.format == UPX_F_VMLINUX_AMD64) || (info.format == UPX_F_MACH_AMD64) ||
                    (info.format == UPX_F_DYLIB_AMD64) || (info.format == UPX_F_W64PE_AMD64)) {
             sResult = "AMD64";
-        } else if ((info.format == UPX_F_WINCE_ARM) || (info.format == UPX_F_LINUX_ELF32_ARM) || (info.format == UPX_F_VMLINUX_ARM) || (info.format == UPX_F_VMLINUZ_ARM) ||
-                   (info.format == UPX_F_MACH_ARM) || (info.format == UPX_F_LINUX_ELF32_ARMEB) || (info.format == UPX_F_VMLINUX_ARMEB)) {
+        } else if ((info.format == UPX_F_WINCE_ARM) || (info.format == UPX_F_LINUX_ELF32_ARM) || (info.format == UPX_F_VMLINUX_ARM) ||
+                   (info.format == UPX_F_VMLINUZ_ARM) || (info.format == UPX_F_MACH_ARM) || (info.format == UPX_F_LINUX_ELF32_ARMEB) ||
+                   (info.format == UPX_F_VMLINUX_ARMEB)) {
             sResult = "ARM";
         } else if ((info.format == UPX_F_MACH_ARM64) || (info.format == UPX_F_LINUX_ELF64_ARM64) || (info.format == UPX_F_W64PE_ARM64) ||
                    (info.format == UPX_F_W64PE_ARM64EC)) {
@@ -390,7 +391,7 @@ QList<XBinary::FPART> XUPX::getFileParts(quint32 nFileParts, qint32 nLimit, PDST
         FPART record = {};
 
         record.filePart = FILEPART_DATA;
-        record.nFileOffset = 0;  // TODO
+        record.nFileOffset = 0;        // TODO
         record.nFileSize = getSize();  // TODO
         record.nVirtualAddress = -1;
         record.sName = tr("Data");
