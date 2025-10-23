@@ -246,48 +246,48 @@ XUPX::INTERNAL_INFO XUPX::getInternalInfo(PDSTRUCT *pPdStruct)
             
             // Alternative detection: Check for UPX sections
             if (!bFound) {
-                QList<XPE::SECTION_RECORD> listSections = pe.getSectionRecords();
-                bool bHasUPX0 = false;
-                bool bHasUPX1 = false;
+                // QList<XPE::SECTION_RECORD> listSections = pe.getSectionRecords();
+                // bool bHasUPX0 = false;
+                // bool bHasUPX1 = false;
                 
-                for (int i = 0; i < listSections.count(); i++) {
-                    QString sSectionName = listSections.at(i).sName;
-                    if (sSectionName.contains("UPX0")) {
-                        bHasUPX0 = true;
-                    } else if (sSectionName.contains("UPX1")) {
-                        bHasUPX1 = true;
-                    }
-                }
+                // for (int i = 0; i < listSections.count(); i++) {
+                //     QString sSectionName = listSections.at(i).sName;
+                //     if (sSectionName.contains("UPX0")) {
+                //         bHasUPX0 = true;
+                //     } else if (sSectionName.contains("UPX1")) {
+                //         bHasUPX1 = true;
+                //     }
+                // }
                 
-                if (bHasUPX0 && bHasUPX1) {
-                    // This looks like a UPX packed PE file
-                    result.bIsValid = true;
-                    result.fileType = pe.getFileType();
+                // if (bHasUPX0 && bHasUPX1) {
+                //     // This looks like a UPX packed PE file
+                //     result.bIsValid = true;
+                //     result.fileType = pe.getFileType();
                     
-                    // Try to find UPX signature in the last section
-                    if (listSections.count() > 0) {
-                        XPE::SECTION_RECORD lastSection = listSections.last();
-                        qint64 nSectionOffset = lastSection.nOffset;
-                        qint64 nSectionSize = lastSection.nSize;
+                //     // Try to find UPX signature in the last section
+                //     if (listSections.count() > 0) {
+                //         XPE::SECTION_RECORD lastSection = listSections.last();
+                //         qint64 nSectionOffset = lastSection.nOffset;
+                //         qint64 nSectionSize = lastSection.nSize;
                         
-                        if (nSectionSize > 36) {
-                            char *pSectionData = new char[nSectionSize];
-                            if (read_array(nSectionOffset, pSectionData, nSectionSize, pPdStruct)) {
-                                // Look for UPX signature near the end of the section
-                                for (qint64 i = nSectionSize - 36; i >= 0; i--) {
-                                    if ((pSectionData[i] == 'U') && (pSectionData[i+1] == 'P') &&
-                                        (pSectionData[i+2] == 'X') && (pSectionData[i+3] == '!')) {
-                                        result = _read_packheader(pSectionData + i, 36, false);
-                                        break;
-                                    }
-                                }
-                            }
-                            delete[] pSectionData;
-                        }
-                    }
+                //         if (nSectionSize > 36) {
+                //             char *pSectionData = new char[nSectionSize];
+                //             if (read_array(nSectionOffset, pSectionData, nSectionSize, pPdStruct)) {
+                //                 // Look for UPX signature near the end of the section
+                //                 for (qint64 i = nSectionSize - 36; i >= 0; i--) {
+                //                     if ((pSectionData[i] == 'U') && (pSectionData[i+1] == 'P') &&
+                //                         (pSectionData[i+2] == 'X') && (pSectionData[i+3] == '!')) {
+                //                         result = _read_packheader(pSectionData + i, 36, false);
+                //                         break;
+                //                     }
+                //                 }
+                //             }
+                //             delete[] pSectionData;
+                //         }
+                //     }
                     
-                    bFound = true;
-                }
+                //     bFound = true;
+                // }
             }
         }
     }
