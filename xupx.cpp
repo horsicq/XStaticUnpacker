@@ -223,10 +223,72 @@ XUPX::INTERNAL_INFO XUPX::getInternalInfo(PDSTRUCT *pPdStruct)
         if (pe.isValid(pPdStruct)) {
             result.fileType = pe.getFileType();
 
-            // TODO: Implement PE UPX detection
-            // For now, just check for UPX sections or patterns
-
-            bFound = false;  // TODO: Set to true when implemented
+            // Check for UPX signature in the file
+            qint64 nFileSize = this->getSize();
+            if (nFileSize >= 0x1000) {
+                qint64 nOffset = find_ansiString(0, 0x1000, "UPX!");
+                
+                if (nOffset != -1) {
+                    // Read UPX header
+                    char headerData[36];
+                    if (read_array(nOffset, headerData, 36, pPdStruct)) {
+                        result = _read_packheader(headerData, 36, false);
+                        
+                        if ((result.magic[0] == 'U') && (result.magic[1] == 'P') &&
+                            (result.magic[2] == 'X') && (result.magic[3] == '!')) {
+                            result.bIsValid = true;
+                            result.fileType = pe.getFileType();
+                            bFound = true;
+                        }
+                    }
+                }
+            }
+            
+            // Alternative detection: Check for UPX sections
+            if (!bFound) {
+                QList<XPE::SECTION_RECORD> listSections = pe.getSectionRecords();
+                bool bHasUPX0 = false;
+                bool bHasUPX1 = false;
+                
+                for (int i = 0; i < listSections.count(); i++) {
+                    QString sSectionName = listSections.at(i).sName;
+                    if (sSectionName.contains("UPX0")) {
+                        bHasUPX0 = true;
+                    } else if (sSectionName.contains("UPX1")) {
+                        bHasUPX1 = true;
+                    }
+                }
+                
+                if (bHasUPX0 && bHasUPX1) {
+                    // This looks like a UPX packed PE file
+                    result.bIsValid = true;
+                    result.fileType = pe.getFileType();
+                    
+                    // Try to find UPX signature in the last section
+                    if (listSections.count() > 0) {
+                        XPE::SECTION_RECORD lastSection = listSections.last();
+                        qint64 nSectionOffset = lastSection.nOffset;
+                        qint64 nSectionSize = lastSection.nSize;
+                        
+                        if (nSectionSize > 36) {
+                            char *pSectionData = new char[nSectionSize];
+                            if (read_array(nSectionOffset, pSectionData, nSectionSize, pPdStruct)) {
+                                // Look for UPX signature near the end of the section
+                                for (qint64 i = nSectionSize - 36; i >= 0; i--) {
+                                    if ((pSectionData[i] == 'U') && (pSectionData[i+1] == 'P') &&
+                                        (pSectionData[i+2] == 'X') && (pSectionData[i+3] == '!')) {
+                                        result = _read_packheader(pSectionData + i, 36, false);
+                                        break;
+                                    }
+                                }
+                            }
+                            delete[] pSectionData;
+                        }
+                    }
+                    
+                    bFound = true;
+                }
+            }
         }
     }
 
@@ -367,6 +429,92 @@ QList<XBinary::DATA_HEADER> XUPX::getDataHeaders(const DATA_HEADERS_OPTIONS &dat
     }
 
     return listResult;
+}
+
+bool XUPX::unpack(const QString &sOutputFileName, PDSTRUCT *pPdStruct)
+{
+    bool bResult = false;
+    
+    INTERNAL_INFO info = getInternalInfo(pPdStruct);
+    
+    if (info.bIsValid) {
+        if ((info.fileType == FT_PE32) || (info.fileType == FT_PE64)) {
+            bResult = _unpackPE(sOutputFileName, info, pPdStruct);
+        } else if ((info.fileType == FT_ELF32) || (info.fileType == FT_ELF64)) {
+            bResult = _unpackELF(sOutputFileName, info, pPdStruct);
+        }
+    }
+    
+    return bResult;
+}
+
+bool XUPX::isPackedFile(PDSTRUCT *pPdStruct)
+{
+    return getInternalInfo(pPdStruct).bIsValid;
+}
+
+QString XUPX::getPackerVersion(PDSTRUCT *pPdStruct)
+{
+    INTERNAL_INFO info = getInternalInfo(pPdStruct);
+    if (info.bIsValid) {
+        return QString::number(info.version);
+    }
+    return QString();
+}
+
+QString XUPX::getCompressionMethod(PDSTRUCT *pPdStruct)
+{
+    INTERNAL_INFO info = getInternalInfo(pPdStruct);
+    if (info.bIsValid) {
+        switch (info.method) {
+            case 2: return "NRV2B_LE32";
+            case 3: return "NRV2B_8";
+            case 4: return "NRV2B_LE16";
+            case 5: return "NRV2D_LE32";
+            case 6: return "NRV2D_8";
+            case 7: return "NRV2D_LE16";
+            case 8: return "NRV2E_LE32";
+            case 9: return "NRV2E_8";
+            case 10: return "NRV2E_LE16";
+            case 14: return "LZMA";
+            case 15: return "DEFLATE";
+            default: return QString("Unknown (%1)").arg(info.method);
+        }
+    }
+    return QString();
+}
+
+bool XUPX::_unpackPE(const QString &sOutputFileName, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(sOutputFileName)
+    Q_UNUSED(info)
+    Q_UNUSED(pPdStruct)
+    
+    // TODO: Implement PE unpacking
+    // This would require:
+    // 1. Reading compressed data
+    // 2. Decompressing using the appropriate algorithm
+    // 3. Reconstructing the PE file structure
+    // 4. Handling import table reconstruction
+    // 5. Handling relocations
+    // 6. Applying filters
+    
+    return false;
+}
+
+bool XUPX::_unpackELF(const QString &sOutputFileName, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(sOutputFileName)
+    Q_UNUSED(info)
+    Q_UNUSED(pPdStruct)
+    
+    // TODO: Implement ELF unpacking
+    // This would require:
+    // 1. Reading compressed data
+    // 2. Decompressing using the appropriate algorithm
+    // 3. Reconstructing the ELF file structure
+    
+    return false;
 }
 
 QList<XBinary::FPART> XUPX::getFileParts(quint32 nFileParts, qint32 nLimit, PDSTRUCT *pPdStruct)

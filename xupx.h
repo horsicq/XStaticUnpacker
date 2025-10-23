@@ -143,9 +143,17 @@ public:
     virtual QList<FPART> getFileParts(quint32 nFileParts, qint32 nLimit = -1, PDSTRUCT *pPdStruct = nullptr) override;
 
     INTERNAL_INFO getInternalInfo(PDSTRUCT *pPdStruct = nullptr);
+    
+    // Unpacking functionality
+    bool unpack(const QString &sOutputFileName, PDSTRUCT *pPdStruct = nullptr);
+    bool isPackedFile(PDSTRUCT *pPdStruct = nullptr);
+    QString getPackerVersion(PDSTRUCT *pPdStruct = nullptr);
+    QString getCompressionMethod(PDSTRUCT *pPdStruct = nullptr);
 
 private:
     INTERNAL_INFO _read_packheader(char *pInfoData, qint32 nDataSize, bool bIsBigEndian);
+    bool _unpackPE(const QString &sOutputFileName, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct);
+    bool _unpackELF(const QString &sOutputFileName, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct);
 };
 
 #endif  // XUPX_H
