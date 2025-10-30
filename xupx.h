@@ -143,7 +143,7 @@ public:
     virtual QList<FPART> getFileParts(quint32 nFileParts, qint32 nLimit = -1, PDSTRUCT *pPdStruct = nullptr) override;
 
     INTERNAL_INFO getInternalInfo(PDSTRUCT *pPdStruct = nullptr);
-    
+
     // Unpacking functionality
     bool unpack(const QString &sOutputFileName, PDSTRUCT *pPdStruct = nullptr);
     bool isPackedFile(PDSTRUCT *pPdStruct = nullptr);
