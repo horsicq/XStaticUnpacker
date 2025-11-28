@@ -151,3 +151,160 @@ XNSIS::INTERNAL_INFO XNSIS::_analyse(PDSTRUCT *pPdStruct)
 
     return result;
 }
+
+bool XNSIS::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(mapProperties)
+
+    if (!pState) {
+        return false;
+    }
+
+    // Initialize state
+    pState->nCurrentOffset = 0;
+    pState->nTotalSize = getSize();
+    pState->nCurrentIndex = 0;
+    pState->nNumberOfRecords = 0;
+    pState->pContext = nullptr;
+
+    // Validate archive
+    if (!isValid(pPdStruct)) {
+        return false;
+    }
+
+    // Create context
+    UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT;
+    pContext->nDataOffset = 0;
+    pContext->nDataSize = 0;
+    pContext->bIsSolid = false;
+
+    // Get internal info to determine archive structure
+    INTERNAL_INFO info = getInternalInfo(pPdStruct);
+    if (info.nSignatureOffset != -1) {
+        // NSIS installers are typically solid compressed archives
+        // The data starts after the signature
+        pContext->nDataOffset = info.nSignatureOffset;
+        pContext->nDataSize = pState->nTotalSize - info.nSignatureOffset;
+        pContext->bIsSolid = true;
+    }
+
+    pState->pContext = pContext;
+
+    // Note: NSIS archive format is complex and typically requires
+    // parsing the installer script to determine the actual number of files
+    // For now, we set this to 0 as full NSIS parsing would require
+    // significant additional implementation
+    pState->nNumberOfRecords = 0;
+
+    return true;
+}
+
+XBinary::ARCHIVERECORD XNSIS::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    ARCHIVERECORD result = {};
+
+    if (!pState || !pState->pContext) {
+        return result;
+    }
+
+    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
+
+    // Check if we're within valid range
+    if (pState->nCurrentIndex >= pState->nNumberOfRecords) {
+        return result;
+    }
+
+    // Note: Full NSIS file enumeration requires parsing the installer script
+    // This is a placeholder implementation
+    result.nStreamOffset = pContext->nDataOffset;
+    result.nStreamSize = pContext->nDataSize;
+
+    // Set file properties
+    result.mapProperties[FPART_PROP_ORIGINALNAME] = QString("nsis_data_%1").arg(pState->nCurrentIndex);
+    result.mapProperties[FPART_PROP_COMPRESSEDSIZE] = pContext->nDataSize;
+    result.mapProperties[FPART_PROP_UNCOMPRESSEDSIZE] = 0;  // Unknown without decompression
+    result.mapProperties[FPART_PROP_COMPRESSMETHOD] = COMPRESS_METHOD_UNKNOWN;
+
+    return result;
+}
+
+bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    if (!pState || !pState->pContext || !pDevice) {
+        return false;
+    }
+
+    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
+
+    // Check if we're within valid range
+    if (pState->nCurrentIndex >= pState->nNumberOfRecords) {
+        return false;
+    }
+
+    // Note: Full NSIS decompression requires:
+    // 1. Parsing the installer script and data structures
+    // 2. Implementing LZMA/Deflate/BZip2 decompression
+    // 3. Handling solid compression properly
+    // This is a placeholder that would need significant additional implementation
+
+    // For now, just copy the raw compressed data
+    qint64 nOffset = pContext->nDataOffset;
+    qint64 nSize = pContext->nDataSize;
+
+    if (nSize > 0) {
+        QByteArray baData = read_array(nOffset, nSize, pPdStruct);
+        if (!baData.isEmpty()) {
+            qint64 nWritten = pDevice->write(baData);
+            return (nWritten == baData.size());
+        }
+    }
+
+    return false;
+}
+
+bool XNSIS::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    if (!pState || !pState->pContext) {
+        return false;
+    }
+
+    // Move to next record
+    pState->nCurrentIndex++;
+
+    // Check if we've reached the end
+    if (pState->nCurrentIndex >= pState->nNumberOfRecords) {
+        return false;
+    }
+
+    return true;
+}
+
+bool XNSIS::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    if (!pState) {
+        return false;
+    }
+
+    // Clean up context
+    if (pState->pContext) {
+        UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
+        delete pContext;
+        pState->pContext = nullptr;
+    }
+
+    // Reset state
+    pState->nCurrentOffset = 0;
+    pState->nCurrentIndex = 0;
+    pState->nNumberOfRecords = 0;
+
+    return true;
+}
+
