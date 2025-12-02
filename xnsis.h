@@ -40,6 +40,8 @@ public:
         bool bIsCompressed;       // Whether this entry is compressed
         XBinary::COMPRESS_METHOD compressMethod; // Compression method for this entry
         qint32 nFileIndex;        // Sequential file index
+        QString sFileName;        // File name (if available)
+        qint64 nDataOffset;       // Offset in decompressed stream (for solid)
     };
 
     struct UNPACK_CONTEXT {
@@ -83,6 +85,10 @@ private:
     XBinary::COMPRESS_METHOD _determineCompressionMethod(UNPACK_CONTEXT *pContext);
     bool _decompressSolidBlock(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
     bool _decompressNSISLZMA(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
+    bool _decompressNSISBZIP2(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
+    bool _decompressNSISZLIB(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
+    QByteArray _decompressBlock(const QByteArray &baCompressed, COMPRESS_METHOD method, PDSTRUCT *pPdStruct);
+    bool _parseSolidFiles(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
     qint32 _readFileSizeFromSolid(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
 };
 

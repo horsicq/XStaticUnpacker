@@ -300,6 +300,12 @@ bool XNSIS::_parseArchive(UNPACK_CONTEXT *pContext, qint64 nArchiveOffset, qint6
         } else {
             pContext->compressMethod = COMPRESS_METHOD_DEFLATE; // Default fallback
         }
+        
+        // Parse files from solid archive
+        if (!_parseSolidFiles(pContext, pPdStruct)) {
+            // If parsing fails, treat as single file
+            pContext->nTotalFiles = 1;
+        }
     } else {
         // For non-solid, determine from file entries
         pContext->compressMethod = _determineCompressionMethod(pContext);
@@ -428,13 +434,22 @@ XBinary::ARCHIVERECORD XNSIS::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStr
     qint32 nCurrentIndex = (qint32)pState->nCurrentIndex;
 
     if (pContext->bIsSolid) {
-        // Solid compression - all files are in one compressed block
-        // We need to decompress the block to get individual file info
-        result.nStreamOffset = pContext->nDataOffset;
-        result.nStreamSize = pContext->nDataSize;
-        
-        // Store additional info in mapProperties
-        result.mapProperties[FPART_PROP_UNCOMPRESSEDSIZE] = 0; // Unknown until decompression
+        // Solid compression - use parsed file entries if available
+        if (!pContext->listEntries.isEmpty() && nCurrentIndex >= 0 && nCurrentIndex < pContext->listEntries.size()) {
+            const FILE_ENTRY &entry = pContext->listEntries.at(nCurrentIndex);
+            
+            result.nStreamOffset = pContext->nDataOffset;
+            result.nStreamSize = pContext->nDataSize;
+            
+            result.mapProperties[FPART_PROP_UNCOMPRESSEDSIZE] = entry.nUncompressedSize;
+            result.mapProperties[FPART_PROP_ORIGINALNAME] = entry.sFileName;
+        } else {
+            // Fallback for unparsed solid archives
+            result.nStreamOffset = pContext->nDataOffset;
+            result.nStreamSize = pContext->nDataSize;
+            
+            result.mapProperties[FPART_PROP_UNCOMPRESSEDSIZE] = 0; // Unknown until decompression
+        }
     } else {
         // Non-solid - use file entry list
         if (nCurrentIndex >= 0 && nCurrentIndex < pContext->listEntries.size()) {
@@ -453,7 +468,17 @@ XBinary::ARCHIVERECORD XNSIS::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStr
     }
 
     // Set file properties
-    QString sFileName = QString("content.%1").arg(pState->nCurrentIndex, 3, 10, QChar('0'));
+    QString sFileName;
+    if (pContext->bIsSolid && !pContext->listEntries.isEmpty() && 
+        nCurrentIndex >= 0 && nCurrentIndex < pContext->listEntries.size()) {
+        sFileName = pContext->listEntries.at(nCurrentIndex).sFileName;
+    } else if (!pContext->bIsSolid && nCurrentIndex >= 0 && nCurrentIndex < pContext->listEntries.size() &&
+               !pContext->listEntries.at(nCurrentIndex).sFileName.isEmpty()) {
+        sFileName = pContext->listEntries.at(nCurrentIndex).sFileName;
+    } else {
+        sFileName = QString("content.%1").arg(pState->nCurrentIndex, 3, 10, QChar('0'));
+    }
+    
     result.mapProperties[FPART_PROP_ORIGINALNAME] = sFileName;
     result.mapProperties[FPART_PROP_COMPRESSEDSIZE] = result.nStreamSize;
     
@@ -485,9 +510,9 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
     qint32 nCurrentIndex = (qint32)pState->nCurrentIndex;
 
     if (pContext->bIsSolid) {
-        // Solid compression - decompress the entire block once, then extract individual files
+        // Solid compression - extract file from parsed entries
         
-        // Decompress solid block if not already done
+        // Ensure decompressed data is available
         if (pContext->baDecompressedData.isEmpty()) {
             if (!_decompressSolidBlock(pContext, pPdStruct)) {
                 return false;
@@ -497,42 +522,59 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
         if (pContext->baDecompressedData.isEmpty()) {
             return false;
         }
-
-        // Read file size from decompressed stream
-        qint32 nFileSize = _readFileSizeFromSolid(pContext, pPdStruct);
         
-        if (nFileSize == 0) {
-            return true; // Empty file
-        }
-
-        if (nFileSize < 0 || nFileSize > 1024 * 1024 * 1024) {
-            // Invalid size
+        // Use parsed file entries if available
+        if (!pContext->listEntries.isEmpty() && nCurrentIndex >= 0 && nCurrentIndex < pContext->listEntries.size()) {
+            const FILE_ENTRY &entry = pContext->listEntries.at(nCurrentIndex);
+            
+            // Extract file from decompressed data using entry info
+            if (entry.nDataOffset + entry.nUncompressedSize <= pContext->baDecompressedData.size()) {
+                QByteArray baFileData = pContext->baDecompressedData.mid(entry.nDataOffset, entry.nUncompressedSize);
+                
+                if (!baFileData.isEmpty()) {
+                    qint64 nWritten = pDevice->write(baFileData);
+                    return (nWritten == baFileData.size());
+                }
+            }
+            
             return false;
-        }
+        } else {
+            // Fallback: sequential extraction using size fields
+            qint32 nFileSize = _readFileSizeFromSolid(pContext, pPdStruct);
+            
+            if (nFileSize == 0) {
+                return true; // Empty file
+            }
 
-        // Check if we have enough data
-        if (pContext->nDecompressedOffset + nFileSize > pContext->nDecompressedSize) {
-            // Not enough data in decompressed buffer
-            qint64 nAvailable = pContext->nDecompressedSize - pContext->nDecompressedOffset;
-            if (nAvailable <= 0) {
+            if (nFileSize < 0 || nFileSize > 1024 * 1024 * 1024) {
+                // Invalid size
                 return false;
             }
-            nFileSize = (qint32)nAvailable;
-        }
 
-        // Extract file data from decompressed buffer
-        QByteArray baFileData = pContext->baDecompressedData.mid(pContext->nDecompressedOffset, nFileSize);
-        
-        if (!baFileData.isEmpty()) {
-            qint64 nWritten = pDevice->write(baFileData);
+            // Check if we have enough data
+            if (pContext->nDecompressedOffset + nFileSize > pContext->nDecompressedSize) {
+                // Not enough data in decompressed buffer
+                qint64 nAvailable = pContext->nDecompressedSize - pContext->nDecompressedOffset;
+                if (nAvailable <= 0) {
+                    return false;
+                }
+                nFileSize = (qint32)nAvailable;
+            }
+
+            // Extract file data from decompressed buffer
+            QByteArray baFileData = pContext->baDecompressedData.mid(pContext->nDecompressedOffset, nFileSize);
             
-            // Update offset for next file
-            pContext->nDecompressedOffset += nFileSize;
+            if (!baFileData.isEmpty()) {
+                qint64 nWritten = pDevice->write(baFileData);
+                
+                // Update offset for next file
+                pContext->nDecompressedOffset += nFileSize;
+                
+                return (nWritten == baFileData.size());
+            }
             
-            return (nWritten == baFileData.size());
+            return false;
         }
-        
-        return false;
     } else {
         // Non-solid compression - each file is independently compressed
         
@@ -556,20 +598,8 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
                 return false;
             }
             
-            // Decompress
-            QBuffer inputBuffer(&baCompressed);
-            inputBuffer.open(QIODevice::ReadOnly);
-            
-            XDecompress decompressor;
-            QByteArray baDecompressed = decompressor.decomressToByteArray(
-                &inputBuffer, 
-                0, 
-                baCompressed.size(), 
-                entry.compressMethod, 
-                pPdStruct
-            );
-            
-            inputBuffer.close();
+            // Decompress using NSIS-aware decompression
+            QByteArray baDecompressed = _decompressBlock(baCompressed, entry.compressMethod, pPdStruct);
             
             if (baDecompressed.isEmpty() && baCompressed.size() > 0) {
                 // Decompression failed, try writing raw data
@@ -794,11 +824,15 @@ bool XNSIS::_decompressSolidBlock(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
     
     bool bSuccess = false;
     
+    // Use NSIS-specific decompression methods based on detected compression
     if (pContext->compressMethod == COMPRESS_METHOD_LZMA) {
-        // NSIS uses raw LZMA streams - try custom decompression
         bSuccess = _decompressNSISLZMA(pContext, pPdStruct);
+    } else if (pContext->compressMethod == COMPRESS_METHOD_BZIP2) {
+        bSuccess = _decompressNSISBZIP2(pContext, pPdStruct);
+    } else if (pContext->compressMethod == COMPRESS_METHOD_DEFLATE) {
+        bSuccess = _decompressNSISZLIB(pContext, pPdStruct);
     } else {
-        // Use standard decompression for other methods
+        // Fallback to standard decompression
         QBuffer inputBuffer(&pContext->baCompressedData);
         inputBuffer.open(QIODevice::ReadOnly);
 
@@ -832,8 +866,28 @@ bool XNSIS::_decompressNSISLZMA(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
         return false;
     }
 
-    // NSIS LZMA format: first 5 bytes are LZMA properties, then 8 bytes uncompressed size, then data
-    // But sometimes NSIS uses a variant without the size header
+    // NSIS LZMA format: uses raw LZMA stream
+    // Try standard LZMA decompression first
+    QBuffer inputBuffer(&pContext->baCompressedData);
+    inputBuffer.open(QIODevice::ReadOnly);
+
+    XDecompress decompressor;
+    pContext->baDecompressedData = decompressor.decomressToByteArray(
+        &inputBuffer, 
+        0, 
+        pContext->baCompressedData.size(), 
+        COMPRESS_METHOD_LZMA, 
+        pPdStruct
+    );
+
+    inputBuffer.close();
+
+    if (!pContext->baDecompressedData.isEmpty()) {
+        return true;
+    }
+
+    // If standard LZMA failed, try custom NSIS LZMA format
+    // NSIS sometimes uses raw LZMA with 5-byte properties header
     const quint8 *pCompData = (const quint8 *)pContext->baCompressedData.constData();
     qint64 nCompSize = pContext->baCompressedData.size();
     
@@ -845,7 +899,7 @@ bool XNSIS::_decompressNSISLZMA(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
     QByteArray baProperties = pContext->baCompressedData.left(5);
     
     // Try decompression using XArchive's LZMA decoder with properties
-    QBuffer inputBuffer(&pContext->baCompressedData);
+    inputBuffer.setData(pContext->baCompressedData);
     inputBuffer.open(QIODevice::ReadOnly);
     inputBuffer.seek(5); // Skip properties
     
@@ -872,6 +926,148 @@ bool XNSIS::_decompressNSISLZMA(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
     }
     
     return false;
+}
+
+bool XNSIS::_decompressNSISBZIP2(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
+{
+    if (!pContext || pContext->baCompressedData.isEmpty()) {
+        return false;
+    }
+
+    // NSIS BZIP2 format: uses raw bzip2 stream without BZ header
+    // Try standard BZIP2 decompression
+    QBuffer inputBuffer(&pContext->baCompressedData);
+    inputBuffer.open(QIODevice::ReadOnly);
+
+    XDecompress decompressor;
+    pContext->baDecompressedData = decompressor.decomressToByteArray(
+        &inputBuffer, 
+        0, 
+        pContext->baCompressedData.size(), 
+        COMPRESS_METHOD_BZIP2, 
+        pPdStruct
+    );
+
+    inputBuffer.close();
+
+    return !pContext->baDecompressedData.isEmpty();
+}
+
+bool XNSIS::_decompressNSISZLIB(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
+{
+    if (!pContext || pContext->baCompressedData.isEmpty()) {
+        return false;
+    }
+
+    // NSIS ZLIB format: uses deflate/zlib compression
+    // Try standard DEFLATE decompression
+    QBuffer inputBuffer(&pContext->baCompressedData);
+    inputBuffer.open(QIODevice::ReadOnly);
+
+    XDecompress decompressor;
+    pContext->baDecompressedData = decompressor.decomressToByteArray(
+        &inputBuffer, 
+        0, 
+        pContext->baCompressedData.size(), 
+        COMPRESS_METHOD_DEFLATE, 
+        pPdStruct
+    );
+
+    inputBuffer.close();
+
+    return !pContext->baDecompressedData.isEmpty();
+}
+
+QByteArray XNSIS::_decompressBlock(const QByteArray &baCompressed, COMPRESS_METHOD method, PDSTRUCT *pPdStruct)
+{
+    if (baCompressed.isEmpty()) {
+        return QByteArray();
+    }
+
+    QBuffer inputBuffer;
+    inputBuffer.setData(baCompressed);
+    inputBuffer.open(QIODevice::ReadOnly);
+
+    XDecompress decompressor;
+    QByteArray baDecompressed = decompressor.decomressToByteArray(
+        &inputBuffer, 
+        0, 
+        baCompressed.size(), 
+        method, 
+        pPdStruct
+    );
+
+    inputBuffer.close();
+
+    return baDecompressed;
+}
+
+bool XNSIS::_parseSolidFiles(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
+{
+    if (!pContext) {
+        return false;
+    }
+    
+    // Decompress the solid block first
+    if (!_decompressSolidBlock(pContext, pPdStruct)) {
+        return false;
+    }
+    
+    if (pContext->baDecompressedData.isEmpty()) {
+        return false;
+    }
+    
+    pContext->listEntries.clear();
+    
+    const quint8 *pData = (const quint8 *)pContext->baDecompressedData.constData();
+    qint64 nDecompSize = pContext->baDecompressedData.size();
+    qint64 nPos = 0;
+    qint32 nFileIndex = 0;
+    
+    // Parse files from decompressed stream
+    // Each file is prefaced with a 4-byte size (little-endian)
+    while (nPos + 4 <= nDecompSize && isPdStructNotCanceled(pPdStruct)) {
+        // Read file size
+        quint32 nFileSize = pData[nPos] | (pData[nPos + 1] << 8) | 
+                           (pData[nPos + 2] << 16) | (pData[nPos + 3] << 24);
+        
+        nPos += 4;
+        
+        // Check for end marker or invalid size
+        if (nFileSize == 0 || nFileSize > (quint32)(nDecompSize - nPos)) {
+            break;
+        }
+        
+        // Check if this looks like the end of files (CRC or other marker)
+        if (nFileSize == 0xffffffff || nFileSize > 100 * 1024 * 1024) {
+            break;
+        }
+        
+        // Create file entry
+        FILE_ENTRY entry;
+        entry.nOffset = 0; // Not used for solid
+        entry.nCompressedSize = 0; // Already decompressed
+        entry.nUncompressedSize = nFileSize;
+        entry.bIsCompressed = false; // Already decompressed
+        entry.compressMethod = COMPRESS_METHOD_UNKNOWN;
+        entry.nFileIndex = nFileIndex;
+        entry.sFileName = QString("file_%1.bin").arg(nFileIndex, 3, 10, QChar('0'));
+        entry.nDataOffset = nPos;
+        
+        pContext->listEntries.append(entry);
+        
+        nPos += nFileSize;
+        nFileIndex++;
+        
+        // Safety limit
+        if (nFileIndex > 10000) {
+            break;
+        }
+    }
+    
+    pContext->nTotalFiles = pContext->listEntries.size();
+    
+    return pContext->nTotalFiles > 0;
 }
 
 qint32 XNSIS::_readFileSizeFromSolid(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
