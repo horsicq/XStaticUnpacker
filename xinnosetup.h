@@ -24,23 +24,23 @@ public:
     };
 
     struct FILE_ENTRY {
-        QString sDestination;          // Destination path
-        QString sSource;               // Source filename
-        qint64 nFileOffset;            // Offset in data area
-        qint64 nCompressedSize;        // Compressed size
-        qint64 nUncompressedSize;      // Uncompressed size
-        quint32 nCRC32;                // CRC32 checksum
-        quint32 nFlags;                // File flags
-        quint32 nLocation;             // Location index
-        qint32 nCompressionMethod;     // Compression method (0=stored, 1=zlib, 2=bz2, 3=lzma)
+        QString sDestination;       // Destination path
+        QString sSource;            // Source filename
+        qint64 nFileOffset;         // Offset in data area
+        qint64 nCompressedSize;     // Compressed size
+        qint64 nUncompressedSize;   // Uncompressed size
+        quint32 nCRC32;             // CRC32 checksum
+        quint32 nFlags;             // File flags
+        quint32 nLocation;          // Location index
+        qint32 nCompressionMethod;  // Compression method (0=stored, 1=zlib, 2=bz2, 3=lzma)
     };
 
     struct UNPACK_CONTEXT {
-        QList<FILE_ENTRY> listFiles;   // List of file entries
-        qint64 nDataOffset;            // Offset to compressed data area
-        qint64 nHeaderOffset;          // Offset to setup header
-        qint32 nCurrentIndex;          // Current file index
-        bool bParsed;                  // Whether structure has been parsed
+        QList<FILE_ENTRY> listFiles;  // List of file entries
+        qint64 nDataOffset;           // Offset to compressed data area
+        qint64 nHeaderOffset;         // Offset to setup header
+        qint32 nCurrentIndex;         // Current file index
+        bool bParsed;                 // Whether structure has been parsed
     };
 
     explicit XInnoSetup(QIODevice *pDevice, bool bIsImage = false, XADDR nModuleAddress = -1);

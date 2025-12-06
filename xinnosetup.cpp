@@ -212,7 +212,7 @@ bool XInnoSetup::moveToNext(XBinary::UNPACK_STATE *pState, XBinary::PDSTRUCT *pP
     UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
 
     if (pState->nCurrentIndex >= pContext->listFiles.size() - 1) {
-        return false; // No more records
+        return false;  // No more records
     }
 
     pState->nCurrentIndex++;
@@ -244,77 +244,77 @@ bool XInnoSetup::_parseInnoSetupStructure(UNPACK_CONTEXT *pContext, XBinary::PDS
 {
     // Simplified InnoSetup 6.x parser
     // This handles the basic structure of InnoSetup 6.0-6.2 installers
-    
+
     // Find setup data block
     qint64 nSetupOffset = 0;
     qint64 nSetupSize = 0;
-    
+
     if (!_findSetupData(&nSetupOffset, &nSetupSize, pPdStruct)) {
         return false;
     }
-    
+
     pContext->nHeaderOffset = nSetupOffset;
-    
+
     // Skip signature and version string
     qint64 nOffset = nSetupOffset;
-    
+
     // Find the end of signature line (null terminated)
     while (nOffset < getSize() && read_uint8(nOffset) != 0) {
         nOffset++;
     }
-    nOffset++; // Skip null terminator
-    
+    nOffset++;  // Skip null terminator
+
     // Align to 4-byte boundary
     if (nOffset % 4 != 0) {
         nOffset += (4 - (nOffset % 4));
     }
-    
+
     // Read version (InnoSetup 6.x format: 4 bytes version number)
     if (nOffset + 4 > getSize()) {
         return false;
     }
-    quint32 nVersionRaw = read_uint32(nOffset, true); // Big endian
+    quint32 nVersionRaw = read_uint32(nOffset, true);  // Big endian
     nOffset += 4;
-    
+
     quint8 nMajor = (nVersionRaw >> 24) & 0xFF;
     quint8 nMinor = (nVersionRaw >> 16) & 0xFF;
-    
+
     // Only support version 6.x
     if (nMajor != 6 && nMajor != 5) {
         return false;
     }
-    
+
     // Read compression flag (1 byte)
     quint8 nCompressFlag = read_uint8(nOffset++);
     bool bIsCompressed = (nCompressFlag != 0);
-    
+
     // Read CRC32 (4 bytes)
     quint32 nHeaderCRC = read_uint32(nOffset);
     nOffset += 4;
-    
+
     // Read compressed size (4 bytes)
     quint32 nCompressedSize = read_uint32(nOffset);
     nOffset += 4;
-    
-    // Read uncompressed size (4 bytes)  
+
+    // Read uncompressed size (4 bytes)
     quint32 nUncompressedSize = read_uint32(nOffset);
     nOffset += 4;
-    
+
     // Read compressed header data
     if (nOffset + nCompressedSize > getSize()) {
         return false;
     }
-    
+
     QByteArray baHeaderData;
-    
+
     if (bIsCompressed) {
         // Read compressed data
         QByteArray baCompressed = read_array(nOffset, nCompressedSize, pPdStruct);
         nOffset += nCompressedSize;
-        
+
         // Decompress using ZLIB (most common for InnoSetup 6.x)
         baHeaderData = _decompressData(baCompressed, 1, nUncompressedSize);
-        
+
         if (baHeaderData.isEmpty() || baHeaderData.size() != (qint64)nUncompressedSize) {
             return false;
         }
@@ -323,11 +323,11 @@ bool XInnoSetup::_parseInnoSetupStructure(UNPACK_CONTEXT *pContext, XBinary::PDS
         baHeaderData = read_array(nOffset, nCompressedSize, pPdStruct);
         nOffset += nCompressedSize;
     }
-    
+
     // NOTE: The decompressed header data contains multiple sections in a complex binary format
     // Each section has: magic, version, count, and entries
     // Full parsing requires implementing the complete innoextract logic (~4000+ lines)
-    
+
     // For demonstration, we show that decompression works and the structure can be accessed
     // A production implementation would need to:
     // 1. Parse multiple header sections (setup, files, dirs, components, tasks, etc.)
@@ -335,41 +335,41 @@ bool XInnoSetup::_parseInnoSetupStructure(UNPACK_CONTEXT *pContext, XBinary::PDS
     // 3. Parse compressed and uncompressed data location entries
     // 4. Map files to data slices (handling solid compression)
     // 5. Parse all file attributes, flags, and metadata
-    
+
     // Since this is a simplified implementation for InnoSetup 6.x only,
     // and the actual format is extremely complex with many variations,
     // we return false to indicate that full parsing is not implemented.
     //
     // Users should use the external innoextract tool for production extraction,
     // or implement the complete parsing logic following the innoextract reference.
-    
+
     Q_UNUSED(baHeaderData)
     Q_UNUSED(nOffset)
-    
+
     pContext->nDataOffset = nOffset;
     pContext->bParsed = false;
-    
+
     // Uncomment this for debugging to see header data size:
     // qDebug() << "Header decompressed successfully:" << baHeaderData.size() << "bytes";
-    
-    return false; // Parsing not fully implemented - use innoextract tool
+
+    return false;  // Parsing not fully implemented - use innoextract tool
 }
 
 bool XInnoSetup::_findSetupData(qint64 *pnOffset, qint64 *pnSize, XBinary::PDSTRUCT *pPdStruct)
 {
     // Find the "Inno Setup Setup Data" or "Inno Setup: Setup Data" signature
     INTERNAL_INFO info = _analyse(pPdStruct);
-    
+
     if (!info.bIsValid) {
         return false;
     }
-    
+
     *pnOffset = info.nSignatureOffset;
-    
+
     // The actual structured data follows the signature
     // Size calculation requires parsing the header blocks
     *pnSize = getSize() - info.nSignatureOffset;
-    
+
     return true;
 }
 
@@ -381,15 +381,15 @@ QByteArray XInnoSetup::_decompressData(const QByteArray &baCompressed, qint32 nM
     // 2 = BZ2
     // 3 = LZMA
     // 4 = LZMA2
-    
+
     if (nMethod == 0) {
         // Stored - no decompression needed
         return baCompressed;
     }
-    
+
     // Map InnoSetup compression method to XBinary compression method
     XBinary::COMPRESS_METHOD xMethod = XBinary::COMPRESS_METHOD_UNKNOWN;
-    
+
     switch (nMethod) {
         case 1: xMethod = XBinary::COMPRESS_METHOD_ZLIB; break;
         case 2: xMethod = XBinary::COMPRESS_METHOD_BZIP2; break;
@@ -397,25 +397,25 @@ QByteArray XInnoSetup::_decompressData(const QByteArray &baCompressed, qint32 nM
         case 4: xMethod = XBinary::COMPRESS_METHOD_LZMA2; break;
         default: return QByteArray();
     }
-    
+
     // Create temporary buffer for compressed data
     QBuffer bufferInput;
     bufferInput.setData(baCompressed);
     if (!bufferInput.open(QIODevice::ReadOnly)) {
         return QByteArray();
     }
-    
+
     // Decompress using XDecompress
     XDecompress decompress;
     QByteArray baResult = decompress.decomressToByteArray(&bufferInput, 0, baCompressed.size(), xMethod, nullptr);
-    
+
     bufferInput.close();
-    
+
     // Verify size if specified
     if (nUncompressedSize > 0 && baResult.size() != nUncompressedSize) {
         // Size mismatch - may indicate error, but some formats may not match exactly
         // For now, return what we got
     }
-    
+
     return baResult;
 }
