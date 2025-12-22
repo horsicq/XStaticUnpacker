@@ -71,7 +71,7 @@ XNSIS::INTERNAL_INFO XNSIS::_analyse(PDSTRUCT *pPdStruct)
             qint64 nBytesToRead = qMin(nWindowSize, nRemainingSize);
 
             if (nBytesToRead > 0) {
-                QByteArray baWindow = read_array(nOffset, nBytesToRead, pPdStruct);
+                QByteArray baWindow = read_array_process(nOffset, nBytesToRead, pPdStruct);
 
                 if (!baWindow.isEmpty()) {
                     QString sWindow = QString::fromLatin1(baWindow.constData(), baWindow.size());
@@ -133,7 +133,7 @@ XNSIS::INTERNAL_INFO XNSIS::_analyse(PDSTRUCT *pPdStruct)
             qint64 nBytesToRead = qMin((qint64)0x40, nOverlaySize);
 
             if (nBytesToRead > 0) {
-                QByteArray baOverlay = read_array(nOverlayOffset, nBytesToRead, pPdStruct);
+                QByteArray baOverlay = read_array_process(nOverlayOffset, nBytesToRead, pPdStruct);
 
                 if (baOverlay.size() >= 16) {
                     const char *pOverlayData = baOverlay.constData();
@@ -291,7 +291,7 @@ bool XNSIS::_parseArchive(UNPACK_CONTEXT *pContext, qint64 nArchiveOffset, qint6
     if (pContext->bIsSolid) {
         // Solid compression - read all compressed data at once
         if (nArchiveSize > 0 && nArchiveSize < 1024 * 1024 * 1024) {  // Limit to 1GB
-            pContext->baCompressedData = read_array(nArchiveOffset, nArchiveSize, pPdStruct);
+            pContext->baCompressedData = read_array_process(nArchiveOffset, nArchiveSize, pPdStruct);
         }
 
         // Detect compression method from actual data for solid archives
@@ -592,7 +592,7 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
             nDataOffset += 4;
 
             // Read compressed data
-            QByteArray baCompressed = read_array(nDataOffset, nSize, pPdStruct);
+            QByteArray baCompressed = read_array_process(nDataOffset, nSize, pPdStruct);
             if (baCompressed.isEmpty() && nSize > 0) {
                 return false;
             }
@@ -615,7 +615,7 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
                 return true;  // Empty file
             }
 
-            QByteArray baData = read_array(nDataOffset, nSize, pPdStruct);
+            QByteArray baData = read_array_process(nDataOffset, nSize, pPdStruct);
             if (!baData.isEmpty()) {
                 qint64 nWritten = pDevice->write(baData);
                 return (nWritten == baData.size());

@@ -187,7 +187,7 @@ XUPX::INTERNAL_INFO XUPX::getInternalInfo(PDSTRUCT *pPdStruct)
 
             char *pBuffer = new char[nBufferSize];
 
-            elf.read_array(this->getSize() - nBufferSize, pBuffer, nBufferSize, pPdStruct);
+            elf.read_array_process(this->getSize() - nBufferSize, pBuffer, nBufferSize, pPdStruct);
 
             nBufferSize = getPhysSize(pBuffer, nBufferSize);
             nBufferSize = align_up(nBufferSize, 4);
@@ -201,11 +201,11 @@ XUPX::INTERNAL_INFO XUPX::getInternalInfo(PDSTRUCT *pPdStruct)
 
                     qint64 nDataOffset = XBinary::_read_uint32_safe(pBuffer, nBufferSize, nBufferSize - 36 + result.nPackHeaderSize, bIsBE);
                     l_info linfo = {};
-                    read_array(nDataOffset - sizeof(l_info), (char *)(&linfo), sizeof(l_info), pPdStruct);
+                    read_array_process(nDataOffset - sizeof(l_info), (char *)(&linfo), sizeof(l_info), pPdStruct);
                     p_info pinfo = {};
-                    read_array(nDataOffset, (char *)(&pinfo), sizeof(p_info), pPdStruct);
+                    read_array_process(nDataOffset, (char *)(&pinfo), sizeof(p_info), pPdStruct);
                     b_info binfo = {};
-                    read_array(nDataOffset + sizeof(p_info), (char *)(&binfo), sizeof(b_info), pPdStruct);
+                    read_array_process(nDataOffset + sizeof(p_info), (char *)(&binfo), sizeof(b_info), pPdStruct);
 
                     result.u_len = qFromBigEndian(pinfo.p_filesize);
                     result.c_len = qFromBigEndian(binfo.sz_cpr);
@@ -231,7 +231,7 @@ XUPX::INTERNAL_INFO XUPX::getInternalInfo(PDSTRUCT *pPdStruct)
                 if (nOffset != -1) {
                     // Read UPX header
                     char headerData[36];
-                    if (read_array(nOffset, headerData, 36, pPdStruct)) {
+                    if (read_array_process(nOffset, headerData, 36, pPdStruct)) {
                         result = _read_packheader(headerData, 36, false);
 
                         if ((result.magic[0] == 'U') && (result.magic[1] == 'P') && (result.magic[2] == 'X') && (result.magic[3] == '!')) {
@@ -271,7 +271,7 @@ XUPX::INTERNAL_INFO XUPX::getInternalInfo(PDSTRUCT *pPdStruct)
 
                 //         if (nSectionSize > 36) {
                 //             char *pSectionData = new char[nSectionSize];
-                //             if (read_array(nSectionOffset, pSectionData, nSectionSize, pPdStruct)) {
+                //             if (read_array_process(nSectionOffset, pSectionData, nSectionSize, pPdStruct)) {
                 //                 // Look for UPX signature near the end of the section
                 //                 for (qint64 i = nSectionSize - 36; i >= 0; i--) {
                 //                     if ((pSectionData[i] == 'U') && (pSectionData[i+1] == 'P') &&

@@ -60,7 +60,7 @@ XInnoSetup::INTERNAL_INFO XInnoSetup::_analyse(PDSTRUCT *pPdStruct)
             qint64 nBytesToRead = qMin((qint64)nWindowSize, nRemaining);
 
             if (nBytesToRead > 0) {
-                QByteArray baData = read_array(nOffset, nBytesToRead, pPdStruct);
+                QByteArray baData = read_array_process(nOffset, nBytesToRead, pPdStruct);
                 QString sWindow = QString::fromLatin1(baData.constData(), baData.size());
 
                 qint32 nLeftBracket = sWindow.indexOf('(');
@@ -185,7 +185,7 @@ bool XInnoSetup::unpackCurrent(XBinary::UNPACK_STATE *pState, QIODevice *pDevice
     const FILE_ENTRY &entry = pContext->listFiles.at(pState->nCurrentIndex);
 
     // Read compressed data from file
-    QByteArray baCompressed = read_array(entry.nFileOffset, entry.nCompressedSize, pPdStruct);
+    QByteArray baCompressed = read_array_process(entry.nFileOffset, entry.nCompressedSize, pPdStruct);
     if (baCompressed.size() != entry.nCompressedSize) {
         return false;
     }
@@ -309,7 +309,7 @@ bool XInnoSetup::_parseInnoSetupStructure(UNPACK_CONTEXT *pContext, XBinary::PDS
 
     if (bIsCompressed) {
         // Read compressed data
-        QByteArray baCompressed = read_array(nOffset, nCompressedSize, pPdStruct);
+        QByteArray baCompressed = read_array_process(nOffset, nCompressedSize, pPdStruct);
         nOffset += nCompressedSize;
 
         // Decompress using ZLIB (most common for InnoSetup 6.x)
@@ -320,7 +320,7 @@ bool XInnoSetup::_parseInnoSetupStructure(UNPACK_CONTEXT *pContext, XBinary::PDS
         }
     } else {
         // Read uncompressed data
-        baHeaderData = read_array(nOffset, nCompressedSize, pPdStruct);
+        baHeaderData = read_array_process(nOffset, nCompressedSize, pPdStruct);
         nOffset += nCompressedSize;
     }
 
