@@ -170,26 +170,26 @@ XNSIS::NSIS_HEADER XNSIS::_readHeader(qint64 nOffset, PDSTRUCT *pPdStruct)
     return result;
 }
 
-XBinary::COMPRESS_METHOD XNSIS::_detectCompression(const char *pData)
+XBinary::HANDLE_METHOD XNSIS::_detectCompression(const char *pData)
 {
     if (!pData) {
-        return COMPRESS_METHOD_UNKNOWN;
+        return HANDLE_METHOD_UNKNOWN;
     }
 
     // Check for BZip2 (starts with '1')
     if (pData[0] == '1') {
-        return COMPRESS_METHOD_BZIP2;
+        return HANDLE_METHOD_BZIP2;
     }
 
     // Check for LZMA (has specific size field)
     quint32 nValue = *((const quint32 *)pData);
     quint32 nMasked = nValue & ~0x80000000;
     if (nMasked == 0x5d) {
-        return COMPRESS_METHOD_LZMA;
+        return HANDLE_METHOD_LZMA;
     }
 
     // Default to Deflate/zlib
-    return COMPRESS_METHOD_DEFLATE;
+    return HANDLE_METHOD_DEFLATE;
 }
 
 qint32 XNSIS::_countFiles(qint64 nArchiveOffset, qint64 nArchiveSize, bool *pbIsSolid, PDSTRUCT *pPdStruct)
@@ -226,10 +226,10 @@ qint32 XNSIS::_countFiles(qint64 nArchiveOffset, qint64 nArchiveSize, bool *pbIs
             if (nPos + 4 <= nArchiveSize) {
                 QByteArray baCompMethod = read_array(nArchiveOffset + nPos, 4);
                 if (!baCompMethod.isEmpty()) {
-                    COMPRESS_METHOD cm = _detectCompression(baCompMethod.constData());
-                    if (cm == COMPRESS_METHOD_BZIP2) nCompressionCounts[1]++;
-                    else if (cm == COMPRESS_METHOD_LZMA) nCompressionCounts[2]++;
-                    else if (cm == COMPRESS_METHOD_DEFLATE) nCompressionCounts[3]++;
+                    HANDLE_METHOD cm = _detectCompression(baCompMethod.constData());
+                    if (cm == HANDLE_METHOD_BZIP2) nCompressionCounts[1]++;
+                    else if (cm == HANDLE_METHOD_LZMA) nCompressionCounts[2]++;
+                    else if (cm == HANDLE_METHOD_DEFLATE) nCompressionCounts[3]++;
                 }
                 nPos += 4;
                 nNextSize -= 4;
@@ -298,7 +298,7 @@ bool XNSIS::_parseArchive(UNPACK_CONTEXT *pContext, qint64 nArchiveOffset, qint6
         if (!pContext->baCompressedData.isEmpty()) {
             pContext->compressMethod = _detectCompression(pContext->baCompressedData.constData());
         } else {
-            pContext->compressMethod = COMPRESS_METHOD_DEFLATE;  // Default fallback
+            pContext->compressMethod = HANDLE_METHOD_DEFLATE;  // Default fallback
         }
 
         // Parse files from solid archive
@@ -348,7 +348,7 @@ bool XNSIS::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
     pContext->nCurrentFileIndex = 0;
     pContext->nTotalFiles = 0;
     pContext->nCurrentOffset = 0;
-    pContext->compressMethod = COMPRESS_METHOD_UNKNOWN;
+    pContext->compressMethod = HANDLE_METHOD_UNKNOWN;
     pContext->nDecompressedOffset = 0;
     pContext->nDecompressedSize = 0;
 
@@ -463,7 +463,7 @@ XBinary::ARCHIVERECORD XNSIS::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStr
             }
 
             result.mapProperties[FPART_PROP_UNCOMPRESSEDSIZE] = entry.nUncompressedSize;
-            result.mapProperties[FPART_PROP_COMPRESSMETHOD] = entry.compressMethod;
+            result.mapProperties[FPART_PROP_HANDLEMETHOD1] = entry.compressMethod;
         }
     }
 
@@ -484,10 +484,10 @@ XBinary::ARCHIVERECORD XNSIS::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStr
     if (!pContext->bIsSolid) {
         qint32 nCurrentIndex = (qint32)pState->nCurrentIndex;
         if (nCurrentIndex >= 0 && nCurrentIndex < pContext->listEntries.size()) {
-            result.mapProperties[FPART_PROP_COMPRESSMETHOD] = pContext->listEntries.at(nCurrentIndex).compressMethod;
+            result.mapProperties[FPART_PROP_HANDLEMETHOD1] = pContext->listEntries.at(nCurrentIndex).compressMethod;
         }
     } else {
-        result.mapProperties[FPART_PROP_COMPRESSMETHOD] = pContext->compressMethod;
+        result.mapProperties[FPART_PROP_HANDLEMETHOD1] = pContext->compressMethod;
     }
 
     return result;
@@ -712,7 +712,7 @@ bool XNSIS::_parseFileEntries(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
         if (nRawSize == 0) {
             // Empty file
             entry.bIsCompressed = false;
-            entry.compressMethod = COMPRESS_METHOD_STORE;
+            entry.compressMethod = HANDLE_METHOD_STORE;
             entry.nCompressedSize = 0;
             entry.nUncompressedSize = 0;
             pContext->listEntries.append(entry);
@@ -732,11 +732,11 @@ bool XNSIS::_parseFileEntries(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
                     entry.compressMethod = _detectCompression(baCompMethod.constData());
 
                     // Track compression counts
-                    if (entry.compressMethod == COMPRESS_METHOD_BZIP2) pContext->nCompressionCounts[1]++;
-                    else if (entry.compressMethod == COMPRESS_METHOD_LZMA) pContext->nCompressionCounts[2]++;
-                    else if (entry.compressMethod == COMPRESS_METHOD_DEFLATE) pContext->nCompressionCounts[3]++;
+                    if (entry.compressMethod == HANDLE_METHOD_BZIP2) pContext->nCompressionCounts[1]++;
+                    else if (entry.compressMethod == HANDLE_METHOD_LZMA) pContext->nCompressionCounts[2]++;
+                    else if (entry.compressMethod == HANDLE_METHOD_DEFLATE) pContext->nCompressionCounts[3]++;
                 } else {
-                    entry.compressMethod = COMPRESS_METHOD_DEFLATE;
+                    entry.compressMethod = HANDLE_METHOD_DEFLATE;
                 }
                 nPos += 4;
                 if (nSize >= 4) {
@@ -748,7 +748,7 @@ bool XNSIS::_parseFileEntries(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
                 break;
             }
         } else {
-            entry.compressMethod = COMPRESS_METHOD_STORE;
+            entry.compressMethod = HANDLE_METHOD_STORE;
         }
 
         entry.nCompressedSize = nSize;
@@ -773,10 +773,10 @@ bool XNSIS::_parseFileEntries(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
     return true;
 }
 
-XBinary::COMPRESS_METHOD XNSIS::_determineCompressionMethod(UNPACK_CONTEXT *pContext)
+XBinary::HANDLE_METHOD XNSIS::_determineCompressionMethod(UNPACK_CONTEXT *pContext)
 {
     if (!pContext) {
-        return COMPRESS_METHOD_UNKNOWN;
+        return HANDLE_METHOD_UNKNOWN;
     }
 
     // For solid archives, detect from first data block
@@ -787,24 +787,24 @@ XBinary::COMPRESS_METHOD XNSIS::_determineCompressionMethod(UNPACK_CONTEXT *pCon
                 return _detectCompression(baHeader.constData());
             }
         }
-        return COMPRESS_METHOD_DEFLATE;  // Default
+        return HANDLE_METHOD_DEFLATE;  // Default
     }
 
     // For non-solid archives, use most common compression method
     qint32 nMaxCount = 0;
-    COMPRESS_METHOD result = COMPRESS_METHOD_DEFLATE;
+    HANDLE_METHOD result = HANDLE_METHOD_DEFLATE;
 
     if (pContext->nCompressionCounts[1] > nMaxCount) {
         nMaxCount = pContext->nCompressionCounts[1];
-        result = COMPRESS_METHOD_BZIP2;
+        result = HANDLE_METHOD_BZIP2;
     }
     if (pContext->nCompressionCounts[2] > nMaxCount) {
         nMaxCount = pContext->nCompressionCounts[2];
-        result = COMPRESS_METHOD_LZMA;
+        result = HANDLE_METHOD_LZMA;
     }
     if (pContext->nCompressionCounts[3] > nMaxCount) {
         nMaxCount = pContext->nCompressionCounts[3];
-        result = COMPRESS_METHOD_DEFLATE;
+        result = HANDLE_METHOD_DEFLATE;
     }
 
     return result;
@@ -824,11 +824,11 @@ bool XNSIS::_decompressSolidBlock(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
     bool bSuccess = false;
 
     // Use NSIS-specific decompression methods based on detected compression
-    if (pContext->compressMethod == COMPRESS_METHOD_LZMA) {
+    if (pContext->compressMethod == HANDLE_METHOD_LZMA) {
         bSuccess = _decompressNSISLZMA(pContext, pPdStruct);
-    } else if (pContext->compressMethod == COMPRESS_METHOD_BZIP2) {
+    } else if (pContext->compressMethod == HANDLE_METHOD_BZIP2) {
         bSuccess = _decompressNSISBZIP2(pContext, pPdStruct);
-    } else if (pContext->compressMethod == COMPRESS_METHOD_DEFLATE) {
+    } else if (pContext->compressMethod == HANDLE_METHOD_DEFLATE) {
         bSuccess = _decompressNSISZLIB(pContext, pPdStruct);
     } else {
         // Fallback to standard decompression
@@ -865,7 +865,7 @@ bool XNSIS::_decompressNSISLZMA(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
     inputBuffer.open(QIODevice::ReadOnly);
 
     XDecompress decompressor;
-    pContext->baDecompressedData = decompressor.decomressToByteArray(&inputBuffer, 0, pContext->baCompressedData.size(), COMPRESS_METHOD_LZMA, pPdStruct);
+    pContext->baDecompressedData = decompressor.decomressToByteArray(&inputBuffer, 0, pContext->baCompressedData.size(), HANDLE_METHOD_LZMA, pPdStruct);
 
     inputBuffer.close();
 
@@ -927,7 +927,7 @@ bool XNSIS::_decompressNSISBZIP2(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
     inputBuffer.open(QIODevice::ReadOnly);
 
     XDecompress decompressor;
-    pContext->baDecompressedData = decompressor.decomressToByteArray(&inputBuffer, 0, pContext->baCompressedData.size(), COMPRESS_METHOD_BZIP2, pPdStruct);
+    pContext->baDecompressedData = decompressor.decomressToByteArray(&inputBuffer, 0, pContext->baCompressedData.size(), HANDLE_METHOD_BZIP2, pPdStruct);
 
     inputBuffer.close();
 
@@ -946,14 +946,14 @@ bool XNSIS::_decompressNSISZLIB(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
     inputBuffer.open(QIODevice::ReadOnly);
 
     XDecompress decompressor;
-    pContext->baDecompressedData = decompressor.decomressToByteArray(&inputBuffer, 0, pContext->baCompressedData.size(), COMPRESS_METHOD_DEFLATE, pPdStruct);
+    pContext->baDecompressedData = decompressor.decomressToByteArray(&inputBuffer, 0, pContext->baCompressedData.size(), HANDLE_METHOD_DEFLATE, pPdStruct);
 
     inputBuffer.close();
 
     return !pContext->baDecompressedData.isEmpty();
 }
 
-QByteArray XNSIS::_decompressBlock(const QByteArray &baCompressed, COMPRESS_METHOD method, PDSTRUCT *pPdStruct)
+QByteArray XNSIS::_decompressBlock(const QByteArray &baCompressed, HANDLE_METHOD method, PDSTRUCT *pPdStruct)
 {
     if (baCompressed.isEmpty()) {
         return QByteArray();
@@ -1017,7 +1017,7 @@ bool XNSIS::_parseSolidFiles(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
         entry.nCompressedSize = 0;  // Already decompressed
         entry.nUncompressedSize = nFileSize;
         entry.bIsCompressed = false;  // Already decompressed
-        entry.compressMethod = COMPRESS_METHOD_UNKNOWN;
+        entry.compressMethod = HANDLE_METHOD_UNKNOWN;
         entry.nFileIndex = nFileIndex;
         entry.sFileName = QString("file_%1.bin").arg(nFileIndex, 3, 10, QChar('0'));
         entry.nDataOffset = nPos;

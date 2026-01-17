@@ -388,13 +388,13 @@ QByteArray XInnoSetup::_decompressData(const QByteArray &baCompressed, qint32 nM
     }
 
     // Map InnoSetup compression method to XBinary compression method
-    XBinary::COMPRESS_METHOD xMethod = XBinary::COMPRESS_METHOD_UNKNOWN;
+    XBinary::HANDLE_METHOD xMethod = XBinary::HANDLE_METHOD_UNKNOWN;
 
     switch (nMethod) {
-        case 1: xMethod = XBinary::COMPRESS_METHOD_ZLIB; break;
-        case 2: xMethod = XBinary::COMPRESS_METHOD_BZIP2; break;
-        case 3: xMethod = XBinary::COMPRESS_METHOD_LZMA; break;
-        case 4: xMethod = XBinary::COMPRESS_METHOD_LZMA2; break;
+        case 1: xMethod = XBinary::HANDLE_METHOD_ZLIB; break;
+        case 2: xMethod = XBinary::HANDLE_METHOD_BZIP2; break;
+        case 3: xMethod = XBinary::HANDLE_METHOD_LZMA; break;
+        case 4: xMethod = XBinary::HANDLE_METHOD_LZMA2; break;
         default: return QByteArray();
     }
 

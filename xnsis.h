@@ -38,7 +38,7 @@ public:
         qint32 nCompressedSize;                   // Size of compressed data (or uncompressed if not compressed)
         qint32 nUncompressedSize;                 // Size after decompression (if known)
         bool bIsCompressed;                       // Whether this entry is compressed
-        XBinary::COMPRESS_METHOD compressMethod;  // Compression method for this entry
+        XBinary::HANDLE_METHOD compressMethod;  // Compression method for this entry
         qint32 nFileIndex;                        // Sequential file index
         QString sFileName;                        // File name (if available)
         qint64 nDataOffset;                       // Offset in decompressed stream (for solid)
@@ -52,7 +52,7 @@ public:
         qint32 nCurrentFileIndex;                 // Current file being processed
         qint32 nTotalFiles;                       // Total number of files in archive
         qint64 nCurrentOffset;                    // Current read position
-        XBinary::COMPRESS_METHOD compressMethod;  // Primary compression method
+        XBinary::HANDLE_METHOD compressMethod;  // Primary compression method
         QByteArray baCompressedData;              // Cached compressed data (for solid archives)
         QByteArray baDecompressedData;            // Cached decompressed data (for solid archives)
         qint64 nDecompressedOffset;               // Current offset in decompressed data
@@ -78,16 +78,16 @@ public:
 private:
     INTERNAL_INFO _analyse(PDSTRUCT *pPdStruct);
     NSIS_HEADER _readHeader(qint64 nOffset, PDSTRUCT *pPdStruct);
-    XBinary::COMPRESS_METHOD _detectCompression(const char *pData);
+    XBinary::HANDLE_METHOD _detectCompression(const char *pData);
     bool _parseArchive(UNPACK_CONTEXT *pContext, qint64 nArchiveOffset, qint64 nArchiveSize, PDSTRUCT *pPdStruct);
     qint32 _countFiles(qint64 nArchiveOffset, qint64 nArchiveSize, bool *pbIsSolid, PDSTRUCT *pPdStruct);
     bool _parseFileEntries(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
-    XBinary::COMPRESS_METHOD _determineCompressionMethod(UNPACK_CONTEXT *pContext);
+    XBinary::HANDLE_METHOD _determineCompressionMethod(UNPACK_CONTEXT *pContext);
     bool _decompressSolidBlock(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
     bool _decompressNSISLZMA(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
     bool _decompressNSISBZIP2(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
     bool _decompressNSISZLIB(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
-    QByteArray _decompressBlock(const QByteArray &baCompressed, COMPRESS_METHOD method, PDSTRUCT *pPdStruct);
+    QByteArray _decompressBlock(const QByteArray &baCompressed, HANDLE_METHOD method, PDSTRUCT *pPdStruct);
     bool _parseSolidFiles(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
     qint32 _readFileSizeFromSolid(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
 };
