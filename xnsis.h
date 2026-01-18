@@ -34,31 +34,31 @@ public:
     };
 
     struct FILE_ENTRY {
-        qint64 nOffset;                           // Offset in archive
-        qint32 nCompressedSize;                   // Size of compressed data (or uncompressed if not compressed)
-        qint32 nUncompressedSize;                 // Size after decompression (if known)
-        bool bIsCompressed;                       // Whether this entry is compressed
+        qint64 nOffset;                         // Offset in archive
+        qint32 nCompressedSize;                 // Size of compressed data (or uncompressed if not compressed)
+        qint32 nUncompressedSize;               // Size after decompression (if known)
+        bool bIsCompressed;                     // Whether this entry is compressed
         XBinary::HANDLE_METHOD compressMethod;  // Compression method for this entry
-        qint32 nFileIndex;                        // Sequential file index
-        QString sFileName;                        // File name (if available)
-        qint64 nDataOffset;                       // Offset in decompressed stream (for solid)
+        qint32 nFileIndex;                      // Sequential file index
+        QString sFileName;                      // File name (if available)
+        qint64 nDataOffset;                     // Offset in decompressed stream (for solid)
     };
 
     struct UNPACK_CONTEXT {
-        qint64 nHeaderOffset;                     // Offset to NSIS header
-        qint64 nDataOffset;                       // Offset to archive data (after header)
-        qint64 nDataSize;                         // Size of archive data
-        bool bIsSolid;                            // True if solid compression
-        qint32 nCurrentFileIndex;                 // Current file being processed
-        qint32 nTotalFiles;                       // Total number of files in archive
-        qint64 nCurrentOffset;                    // Current read position
+        qint64 nHeaderOffset;                   // Offset to NSIS header
+        qint64 nDataOffset;                     // Offset to archive data (after header)
+        qint64 nDataSize;                       // Size of archive data
+        bool bIsSolid;                          // True if solid compression
+        qint32 nCurrentFileIndex;               // Current file being processed
+        qint32 nTotalFiles;                     // Total number of files in archive
+        qint64 nCurrentOffset;                  // Current read position
         XBinary::HANDLE_METHOD compressMethod;  // Primary compression method
-        QByteArray baCompressedData;              // Cached compressed data (for solid archives)
-        QByteArray baDecompressedData;            // Cached decompressed data (for solid archives)
-        qint64 nDecompressedOffset;               // Current offset in decompressed data
-        qint64 nDecompressedSize;                 // Size of decompressed data
-        QList<FILE_ENTRY> listEntries;            // List of file entries (non-solid)
-        qint32 nCompressionCounts[4];             // Count of each compression type detected
+        QByteArray baCompressedData;            // Cached compressed data (for solid archives)
+        QByteArray baDecompressedData;          // Cached decompressed data (for solid archives)
+        qint64 nDecompressedOffset;             // Current offset in decompressed data
+        qint64 nDecompressedSize;               // Size of decompressed data
+        QList<FILE_ENTRY> listEntries;          // List of file entries (non-solid)
+        qint32 nCompressionCounts[4];           // Count of each compression type detected
     };
 
     explicit XNSIS(QIODevice *pDevice, bool bIsImage = false, XADDR nModuleAddress = -1);
