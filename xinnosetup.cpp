@@ -162,7 +162,7 @@ XBinary::ARCHIVERECORD XInnoSetup::infoCurrent(XBinary::UNPACK_STATE *pState, XB
     result.mapProperties.insert(XBinary::FPART_PROP_ORIGINALNAME, entry.sDestination);
     result.mapProperties.insert(XBinary::FPART_PROP_COMPRESSEDSIZE, entry.nCompressedSize);
     result.mapProperties.insert(XBinary::FPART_PROP_UNCOMPRESSEDSIZE, entry.nUncompressedSize);
-    result.mapProperties.insert(XBinary::FPART_PROP_CRC_VALUE, entry.nCRC32);
+    result.mapProperties.insert(XBinary::FPART_PROP_RESULTCRC, entry.nCRC32);
     result.mapProperties.insert(XBinary::FPART_PROP_ISFOLDER, false);
 
     return result;
