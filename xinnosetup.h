@@ -6,6 +6,7 @@
 #define XINNOSETUP_H
 
 #include <QString>
+#include <QBuffer>
 
 #include "xbinary.h"
 
@@ -23,24 +24,52 @@ public:
         QString sVersion;
     };
 
+    // Real InnoSetup offset table parsed from rDlPtS magic
+    struct OFFSET_TABLE {
+        bool bIsValid;
+        qint64 nTableOffset;        // Absolute offset of the rDlPtS magic
+        quint32 nRevision;
+        quint32 nExeOffset;
+        quint32 nExeCompressedSize;
+        quint32 nExeUncompressedSize;
+        quint32 nExeChecksum;
+        quint32 nMessageOffset;
+        quint32 nHeaderOffset;       // Relative to signature
+        quint32 nDataOffset;         // Relative to signature
+    };
+
+    // Data entry from Block Stream 2 (data locations)
+    struct DATA_ENTRY {
+        qint64 nChunkSubOffset;        // Offset within decompressed chunk (stored at entry+12)
+        qint64 nOriginalSize;
+        qint64 nChunkCompressedSize;   // Identifies which solid chunk this belongs to
+        QByteArray baSHA256;           // 32-byte SHA-256 hash
+        quint64 nFileTime;             // NTFS FileTime
+        quint32 nFileVersionMS;
+        quint32 nFileVersionLS;
+        quint8 nFlags;                 // Bit flags (0x80 = normal, 0x90 = BCJ x86)
+    };
+
+    // File entry from Block Stream 1 (file metadata)
     struct FILE_ENTRY {
-        QString sDestination;       // Destination path
-        QString sSource;            // Source filename
-        qint64 nFileOffset;         // Offset in data area
-        qint64 nCompressedSize;     // Compressed size
-        qint64 nUncompressedSize;   // Uncompressed size
-        quint32 nCRC32;             // CRC32 checksum
-        quint32 nFlags;             // File flags
-        quint32 nLocation;          // Location index
-        qint32 nCompressionMethod;  // Compression method (0=stored, 1=zlib, 2=bz2, 3=lzma)
+        QString sDestName;             // Destination path (e.g., {app}\file.txt)
+        qint32 nLocationEntry;         // Index into DATA_ENTRY array (-1 if none)
+    };
+
+    // Decompressed chunk cache for solid compression
+    struct CHUNK_CACHE {
+        qint64 nChunkCompressedSize;   // Key identifying which chunk
+        QByteArray baDecompressedData;  // Full decompressed chunk content
     };
 
     struct UNPACK_CONTEXT {
-        QList<FILE_ENTRY> listFiles;  // List of file entries
-        qint64 nDataOffset;           // Offset to compressed data area
-        qint64 nHeaderOffset;         // Offset to setup header
-        qint32 nCurrentIndex;         // Current file index
-        bool bParsed;                 // Whether structure has been parsed
+        QList<ARCHIVERECORD> listAllRecords;
+        bool bIsRealFormat;            // true = real InnoSetup, false = synthetic ISDF
+        qint64 nSignatureOffset;
+        qint64 nDataStreamOffset;      // Absolute offset of data overlay (zlb chunks)
+        QList<DATA_ENTRY> listDataEntries;
+        QList<FILE_ENTRY> listFileEntries;
+        CHUNK_CACHE chunkCache;        // Cached decompressed chunk
     };
 
     explicit XInnoSetup(QIODevice *pDevice, bool bIsImage = false, XADDR nModuleAddress = -1);
@@ -60,9 +89,18 @@ public:
 
 private:
     INTERNAL_INFO _analyse(PDSTRUCT *pPdStruct);
-    bool _parseInnoSetupStructure(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
-    bool _findSetupData(qint64 *pnOffset, qint64 *pnSize, PDSTRUCT *pPdStruct);
-    QByteArray _decompressData(const QByteArray &baCompressed, qint32 nMethod, qint64 nUncompressedSize);
+    QList<ARCHIVERECORD> _parseSyntheticFileEntries(qint64 nSignatureOffset, PDSTRUCT *pPdStruct);
+
+    // Real InnoSetup format parsing
+    OFFSET_TABLE _findOffsetTable(PDSTRUCT *pPdStruct);
+    QByteArray _readBlockStream(qint64 nOffset, qint64 *pnConsumed, PDSTRUCT *pPdStruct);
+    QByteArray _stripCRCChunks(const QByteArray &baData);
+    QByteArray _decompressLZMA1(const QByteArray &baData);
+    QList<DATA_ENTRY> _parseDataEntries(const QByteArray &baBlock2);
+    QList<FILE_ENTRY> _parseFileEntries(const QByteArray &baBlock1, qint32 nNumFiles);
+    bool _parseRealInnoSetup(UNPACK_CONTEXT *pContext, qint64 nSignatureOffset, PDSTRUCT *pPdStruct);
+    QByteArray _decompressDataChunk(qint64 nChunkOffset, qint64 nChunkCompressedSize, PDSTRUCT *pPdStruct);
+    static QString _readWideString(const QByteArray &baData, qint32 nOffset, qint32 *pnNewOffset);
 };
 
 #endif  // XINNOSETUP_H
