@@ -320,8 +320,6 @@ bool XNSIS::_parseArchive(UNPACK_CONTEXT *pContext, qint64 nArchiveOffset, qint6
 
 bool XNSIS::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(mapProperties)
-
     if (!pState) {
         return false;
     }
@@ -332,6 +330,7 @@ bool XNSIS::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
     pState->pContext = nullptr;
+    pState->mapUnpackProperties = mapProperties;
 
     // Validate archive
     INTERNAL_INFO info = getInternalInfo(pPdStruct);
@@ -339,7 +338,7 @@ bool XNSIS::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
         return false;
     }
 
-    // Create context
+    // Create and zero-initialize context
     UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT;
     pContext->nHeaderOffset = 0;
     pContext->nDataOffset = 0;
@@ -356,52 +355,56 @@ bool XNSIS::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
         pContext->nCompressionCounts[i] = 0;
     }
 
-    // Find the NSIS header by looking for the marker 0xefbeadde
-    // The header structure is: [4 bytes flags] [ef be ad de] [signature string] ...
+    // Search for the 0xDEADBEEF marker backwards from the signature.
+    // Header layout: [4 bytes flags] [0xDEADBEEF] [NullsoftInst...]
     qint64 nSignatureOffset = info.nSignatureOffset;
 
-    // The marker (0xdeadbeef in LE) should be 4 bytes before the signature
-    qint64 nSearchStart = qMax((qint64)0, nSignatureOffset - 16);
+    // Widen the search range to 32 bytes before the signature
+    qint64 nSearchStart = qMax((qint64)0, nSignatureOffset - 32);
     qint64 nSearchEnd = nSignatureOffset;
 
     qint64 nActualHeaderOffset = -1;
-    for (qint64 i = nSearchStart; i < nSearchEnd; i++) {
-        // Look for the magic marker 0xdeadbeef (little-endian: ef be ad de)
-        quint32 nMarker = read_uint32(i, false);  // Read as little-endian
-        if (nMarker == 0xdeadbeef) {
-            // Found the marker at offset i
-            // Header starts 4 bytes before the marker
+
+    for (qint64 i = nSearchStart; (i < nSearchEnd) && isPdStructNotCanceled(pPdStruct); i++) {
+        quint32 nMarker = read_uint32(i, false);  // Little-endian
+
+        if (nMarker == 0xDEADBEEF) {
+            // Header starts 4 bytes before the marker (flags field)
             nActualHeaderOffset = i - 4;
+
+            if (nActualHeaderOffset < 0) {
+                nActualHeaderOffset = -1;
+                break;
+            }
 
             NSIS_HEADER header = _readHeader(nActualHeaderOffset, pPdStruct);
 
-            // Validate header - archive size should be reasonable
-            if (header.nArchiveSize > 0x1c && header.nArchiveSize < (quint32)pState->nTotalSize) {
-                qint64 nArchiveOffset = nActualHeaderOffset + 0x1c;
-
-                // Check if archive data is within file bounds
-                // Allow for slightly truncated files (common with NSIS installers)
+            // archiveSize must include the 0x1C-byte header and fit within the file
+            if ((header.nArchiveSize > 0x1C) && (header.nArchiveSize <= (quint32)pState->nTotalSize)) {
+                qint64 nArchiveOffset = nActualHeaderOffset + 0x1C;
                 qint64 nAvailableSize = pState->nTotalSize - nArchiveOffset;
-                if (nAvailableSize > 0 && nArchiveOffset < pState->nTotalSize) {
-                    qint64 nArchiveDataOffset = nArchiveOffset;
-                    // Use available size if file is truncated
-                    qint64 nArchiveDataSize = qMin((qint64)(header.nArchiveSize - 0x1c), nAvailableSize);
 
+                if (nAvailableSize > 0) {
+                    qint64 nArchiveDataSize = qMin((qint64)(header.nArchiveSize - 0x1C), nAvailableSize);
                     pContext->nHeaderOffset = nActualHeaderOffset;
 
-                    if (_parseArchive(pContext, nArchiveDataOffset, nArchiveDataSize, pPdStruct)) {
+                    if (_parseArchive(pContext, nArchiveOffset, nArchiveDataSize, pPdStruct)) {
+                        // Resync nTotalFiles from the actual parsed entry list
+                        if (!pContext->listEntries.isEmpty()) {
+                            pContext->nTotalFiles = pContext->listEntries.size();
+                        }
                         pState->nNumberOfRecords = pContext->nTotalFiles;
                         break;
                     }
                 }
             }
 
-            break;  // Found the marker, stop searching even if validation fails
+            break;  // Stop searching after first marker hit
         }
     }
 
     if (nActualHeaderOffset == -1) {
-        // Header not found, fall back to simple extraction
+        // No header found – fall back to treating everything past the signature as solid
         pContext->nDataOffset = info.nSignatureOffset;
         pContext->nDataSize = pState->nTotalSize - info.nSignatureOffset;
         pContext->bIsSolid = true;
@@ -426,68 +429,49 @@ XBinary::ARCHIVERECORD XNSIS::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStr
 
     UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
 
-    // Check if we're within valid range
-    if (pState->nCurrentIndex >= pState->nNumberOfRecords) {
+    qint32 nIndex = pState->nCurrentIndex;
+
+    if ((nIndex < 0) || (nIndex >= pState->nNumberOfRecords)) {
         return result;
     }
 
-    qint32 nCurrentIndex = (qint32)pState->nCurrentIndex;
+    // Populate from the parsed entry list when available
+    if (nIndex < pContext->listEntries.size()) {
+        const FILE_ENTRY &entry = pContext->listEntries.at(nIndex);
 
-    if (pContext->bIsSolid) {
-        // Solid compression - use parsed file entries if available
-        if (!pContext->listEntries.isEmpty() && nCurrentIndex >= 0 && nCurrentIndex < pContext->listEntries.size()) {
-            const FILE_ENTRY &entry = pContext->listEntries.at(nCurrentIndex);
-
+        if (pContext->bIsSolid) {
             result.nStreamOffset = pContext->nDataOffset;
             result.nStreamSize = pContext->nDataSize;
-
-            result.mapProperties[FPART_PROP_UNCOMPRESSEDSIZE] = entry.nUncompressedSize;
-            result.mapProperties[FPART_PROP_ORIGINALNAME] = entry.sFileName;
         } else {
-            // Fallback for unparsed solid archives
-            result.nStreamOffset = pContext->nDataOffset;
-            result.nStreamSize = pContext->nDataSize;
-
-            result.mapProperties[FPART_PROP_UNCOMPRESSEDSIZE] = 0;  // Unknown until decompression
-        }
-    } else {
-        // Non-solid - use file entry list
-        if (nCurrentIndex >= 0 && nCurrentIndex < pContext->listEntries.size()) {
-            const FILE_ENTRY &entry = pContext->listEntries.at(nCurrentIndex);
-
             result.nStreamOffset = entry.nOffset;
-            result.nStreamSize = entry.nCompressedSize + 4;  // Include size field
+            result.nStreamSize = entry.nCompressedSize + 4;  // Include the 4-byte size field
 
             if (entry.bIsCompressed) {
-                result.nStreamSize += 4;  // Include compression method field
+                result.nStreamSize += 4;  // Include compression-method field
             }
-
-            result.mapProperties[FPART_PROP_UNCOMPRESSEDSIZE] = entry.nUncompressedSize;
-            result.mapProperties[FPART_PROP_HANDLEMETHOD] = entry.compressMethod;
         }
-    }
 
-    // Set file properties
-    QString sFileName;
-    if (pContext->bIsSolid && !pContext->listEntries.isEmpty() && nCurrentIndex >= 0 && nCurrentIndex < pContext->listEntries.size()) {
-        sFileName = pContext->listEntries.at(nCurrentIndex).sFileName;
-    } else if (!pContext->bIsSolid && nCurrentIndex >= 0 && nCurrentIndex < pContext->listEntries.size() &&
-               !pContext->listEntries.at(nCurrentIndex).sFileName.isEmpty()) {
-        sFileName = pContext->listEntries.at(nCurrentIndex).sFileName;
+        result.mapProperties[FPART_PROP_ORIGINALNAME] = entry.sFileName.isEmpty()
+            ? QString("content.%1").arg(nIndex, 3, 10, QChar('0'))
+            : entry.sFileName;
+        result.mapProperties[FPART_PROP_COMPRESSEDSIZE] = (qint64)entry.nCompressedSize;
+        result.mapProperties[FPART_PROP_UNCOMPRESSEDSIZE] = (qint64)entry.nUncompressedSize;
+        result.mapProperties[FPART_PROP_HANDLEMETHOD] = pContext->bIsSolid
+            ? pContext->compressMethod
+            : entry.compressMethod;
+        result.mapProperties[FPART_PROP_ISFOLDER] = false;
+        result.mapProperties[FPART_PROP_ISSOLID] = pContext->bIsSolid;
     } else {
-        sFileName = QString("content.%1").arg(pState->nCurrentIndex, 3, 10, QChar('0'));
-    }
+        // Fallback for entries beyond the list
+        result.nStreamOffset = pContext->nDataOffset;
+        result.nStreamSize = pContext->nDataSize;
 
-    result.mapProperties[FPART_PROP_ORIGINALNAME] = sFileName;
-    result.mapProperties[FPART_PROP_COMPRESSEDSIZE] = result.nStreamSize;
-
-    if (!pContext->bIsSolid) {
-        qint32 nCurrentIndex = (qint32)pState->nCurrentIndex;
-        if (nCurrentIndex >= 0 && nCurrentIndex < pContext->listEntries.size()) {
-            result.mapProperties[FPART_PROP_HANDLEMETHOD] = pContext->listEntries.at(nCurrentIndex).compressMethod;
-        }
-    } else {
+        result.mapProperties[FPART_PROP_ORIGINALNAME] = QString("content.%1").arg(nIndex, 3, 10, QChar('0'));
+        result.mapProperties[FPART_PROP_COMPRESSEDSIZE] = (qint64)0;
+        result.mapProperties[FPART_PROP_UNCOMPRESSEDSIZE] = (qint64)0;
         result.mapProperties[FPART_PROP_HANDLEMETHOD] = pContext->compressMethod;
+        result.mapProperties[FPART_PROP_ISFOLDER] = false;
+        result.mapProperties[FPART_PROP_ISSOLID] = pContext->bIsSolid;
     }
 
     return result;
@@ -501,17 +485,14 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
 
     UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
 
-    // Check if we're within valid range
-    if (pState->nCurrentIndex >= pState->nNumberOfRecords) {
+    qint32 nIndex = pState->nCurrentIndex;
+
+    if ((nIndex < 0) || (nIndex >= pState->nNumberOfRecords)) {
         return false;
     }
 
-    qint32 nCurrentIndex = (qint32)pState->nCurrentIndex;
-
     if (pContext->bIsSolid) {
-        // Solid compression - extract file from parsed entries
-
-        // Ensure decompressed data is available
+        // -------- Solid path: whole archive is one compressed stream --------
         if (pContext->baDecompressedData.isEmpty()) {
             if (!_decompressSolidBlock(pContext, pPdStruct)) {
                 return false;
@@ -522,37 +503,36 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
             return false;
         }
 
-        // Use parsed file entries if available
-        if (!pContext->listEntries.isEmpty() && nCurrentIndex >= 0 && nCurrentIndex < pContext->listEntries.size()) {
-            const FILE_ENTRY &entry = pContext->listEntries.at(nCurrentIndex);
+        if (nIndex < pContext->listEntries.size()) {
+            const FILE_ENTRY &entry = pContext->listEntries.at(nIndex);
 
-            // Extract file from decompressed data using entry info
-            if (entry.nDataOffset + entry.nUncompressedSize <= pContext->baDecompressedData.size()) {
-                QByteArray baFileData = pContext->baDecompressedData.mid(entry.nDataOffset, entry.nUncompressedSize);
+            qint64 nDataOffset = entry.nDataOffset;
+            qint64 nDataSize = entry.nUncompressedSize;
 
-                if (!baFileData.isEmpty()) {
-                    qint64 nWritten = pDevice->write(baFileData);
-                    return (nWritten == baFileData.size());
-                }
+            if (nDataSize == 0) {
+                return true;  // Empty file
             }
 
-            return false;
+            if ((nDataOffset < 0) || (nDataOffset + nDataSize > pContext->baDecompressedData.size())) {
+                return false;  // Out of bounds
+            }
+
+            QByteArray baFileData = pContext->baDecompressedData.mid(nDataOffset, nDataSize);
+            qint64 nWritten = pDevice->write(baFileData);
+            return (nWritten == baFileData.size());
         } else {
-            // Fallback: sequential extraction using size fields
+            // Fallback: sequential extraction via size fields
             qint32 nFileSize = _readFileSizeFromSolid(pContext, pPdStruct);
 
             if (nFileSize == 0) {
                 return true;  // Empty file
             }
 
-            if (nFileSize < 0 || nFileSize > 1024 * 1024 * 1024) {
-                // Invalid size
+            if ((nFileSize < 0) || (nFileSize > 1024 * 1024 * 1024)) {
                 return false;
             }
 
-            // Check if we have enough data
             if (pContext->nDecompressedOffset + nFileSize > pContext->nDecompressedSize) {
-                // Not enough data in decompressed buffer
                 qint64 nAvailable = pContext->nDecompressedSize - pContext->nDecompressedOffset;
                 if (nAvailable <= 0) {
                     return false;
@@ -560,48 +540,43 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
                 nFileSize = (qint32)nAvailable;
             }
 
-            // Extract file data from decompressed buffer
             QByteArray baFileData = pContext->baDecompressedData.mid(pContext->nDecompressedOffset, nFileSize);
 
             if (!baFileData.isEmpty()) {
                 qint64 nWritten = pDevice->write(baFileData);
-
-                // Update offset for next file
                 pContext->nDecompressedOffset += nFileSize;
-
                 return (nWritten == baFileData.size());
             }
 
             return false;
         }
     } else {
-        // Non-solid compression - each file is independently compressed
-
-        if (nCurrentIndex < 0 || nCurrentIndex >= pContext->listEntries.size()) {
+        // -------- Non-solid path: each file compressed independently --------
+        if (nIndex >= pContext->listEntries.size()) {
             return false;
         }
 
-        const FILE_ENTRY &entry = pContext->listEntries.at(nCurrentIndex);
+        const FILE_ENTRY &entry = pContext->listEntries.at(nIndex);
 
-        // Read size field
-        qint64 nDataOffset = entry.nOffset + 4;
+        qint64 nDataOffset = entry.nOffset + 4;  // Skip the 4-byte size field
         qint32 nSize = entry.nCompressedSize;
 
-        if (entry.bIsCompressed) {
-            // Skip compression method field
-            nDataOffset += 4;
+        if (nSize == 0) {
+            return true;  // Empty file – nothing to write
+        }
 
-            // Read compressed data
+        if (entry.bIsCompressed) {
+            nDataOffset += 4;  // Skip the 4-byte compression-method header
+
             QByteArray baCompressed = read_array_process(nDataOffset, nSize, pPdStruct);
             if (baCompressed.isEmpty() && nSize > 0) {
                 return false;
             }
 
-            // Decompress using NSIS-aware decompression
             QByteArray baDecompressed = _decompressBlock(baCompressed, entry.compressMethod, pPdStruct);
 
-            if (baDecompressed.isEmpty() && baCompressed.size() > 0) {
-                // Decompression failed, try writing raw data
+            if (baDecompressed.isEmpty() && !baCompressed.isEmpty()) {
+                // Decompression failed – fall back to raw data
                 baDecompressed = baCompressed;
             }
 
@@ -609,21 +584,20 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
                 qint64 nWritten = pDevice->write(baDecompressed);
                 return (nWritten == baDecompressed.size());
             }
-        } else {
-            // Uncompressed data
-            if (nSize == 0) {
-                return true;  // Empty file
-            }
 
+            return false;
+        } else {
+            // Stored (uncompressed)
             QByteArray baData = read_array_process(nDataOffset, nSize, pPdStruct);
+
             if (!baData.isEmpty()) {
                 qint64 nWritten = pDevice->write(baData);
                 return (nWritten == baData.size());
             }
+
+            return false;
         }
     }
-
-    return false;
 }
 
 bool XNSIS::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
@@ -636,23 +610,10 @@ bool XNSIS::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 
     UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
 
-    // Move to next record
     pState->nCurrentIndex++;
+    pContext->nCurrentFileIndex = pState->nCurrentIndex;
 
-    // Check if we've reached the end
-    if (pState->nCurrentIndex >= pState->nNumberOfRecords) {
-        return false;
-    }
-
-    // Update current offset for non-solid archives
-    if (!pContext->bIsSolid) {
-        // The current offset is managed by the file entry list
-        // No need to manually track position
-    }
-
-    pContext->nCurrentFileIndex++;
-
-    return true;
+    return (pState->nCurrentIndex < pState->nNumberOfRecords);
 }
 
 bool XNSIS::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
@@ -663,7 +624,6 @@ bool XNSIS::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         return false;
     }
 
-    // Clean up context
     if (pState->pContext) {
         UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
         pContext->listEntries.clear();
@@ -673,7 +633,6 @@ bool XNSIS::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         pState->pContext = nullptr;
     }
 
-    // Reset state
     pState->nCurrentOffset = 0;
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
