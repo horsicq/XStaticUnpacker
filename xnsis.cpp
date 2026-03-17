@@ -451,14 +451,10 @@ XBinary::ARCHIVERECORD XNSIS::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStr
             }
         }
 
-        result.mapProperties[FPART_PROP_ORIGINALNAME] = entry.sFileName.isEmpty()
-            ? QString("content.%1").arg(nIndex, 3, 10, QChar('0'))
-            : entry.sFileName;
+        result.mapProperties[FPART_PROP_ORIGINALNAME] = entry.sFileName.isEmpty() ? QString("content.%1").arg(nIndex, 3, 10, QChar('0')) : entry.sFileName;
         result.mapProperties[FPART_PROP_COMPRESSEDSIZE] = (qint64)entry.nCompressedSize;
         result.mapProperties[FPART_PROP_UNCOMPRESSEDSIZE] = (qint64)entry.nUncompressedSize;
-        result.mapProperties[FPART_PROP_HANDLEMETHOD] = pContext->bIsSolid
-            ? pContext->compressMethod
-            : entry.compressMethod;
+        result.mapProperties[FPART_PROP_HANDLEMETHOD] = pContext->bIsSolid ? pContext->compressMethod : entry.compressMethod;
         result.mapProperties[FPART_PROP_ISFOLDER] = false;
         result.mapProperties[FPART_PROP_ISSOLID] = pContext->bIsSolid;
     } else {

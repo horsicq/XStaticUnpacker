@@ -27,49 +27,49 @@ public:
     // Real InnoSetup offset table parsed from rDlPtS magic
     struct OFFSET_TABLE {
         bool bIsValid;
-        qint64 nTableOffset;        // Absolute offset of the rDlPtS magic
+        qint64 nTableOffset;  // Absolute offset of the rDlPtS magic
         quint32 nRevision;
         quint32 nExeOffset;
         quint32 nExeCompressedSize;
         quint32 nExeUncompressedSize;
         quint32 nExeChecksum;
         quint32 nMessageOffset;
-        quint32 nHeaderOffset;       // Relative to signature
-        quint32 nDataOffset;         // Relative to signature
+        quint32 nHeaderOffset;  // Relative to signature
+        quint32 nDataOffset;    // Relative to signature
     };
 
     // Data entry from Block Stream 2 (data locations)
     struct DATA_ENTRY {
-        qint64 nChunkSubOffset;        // Offset within decompressed chunk (stored at entry+12)
+        qint64 nChunkSubOffset;  // Offset within decompressed chunk (stored at entry+12)
         qint64 nOriginalSize;
-        qint64 nChunkCompressedSize;   // Identifies which solid chunk this belongs to
-        QByteArray baSHA256;           // 32-byte SHA-256 hash
-        quint64 nFileTime;             // NTFS FileTime
+        qint64 nChunkCompressedSize;  // Identifies which solid chunk this belongs to
+        QByteArray baSHA256;          // 32-byte SHA-256 hash
+        quint64 nFileTime;            // NTFS FileTime
         quint32 nFileVersionMS;
         quint32 nFileVersionLS;
-        quint8 nFlags;                 // Bit flags (0x80 = normal, 0x90 = BCJ x86)
+        quint8 nFlags;  // Bit flags (0x80 = normal, 0x90 = BCJ x86)
     };
 
     // File entry from Block Stream 1 (file metadata)
     struct FILE_ENTRY {
-        QString sDestName;             // Destination path (e.g., {app}\file.txt)
-        qint32 nLocationEntry;         // Index into DATA_ENTRY array (-1 if none)
+        QString sDestName;      // Destination path (e.g., {app}\file.txt)
+        qint32 nLocationEntry;  // Index into DATA_ENTRY array (-1 if none)
     };
 
     // Decompressed chunk cache for solid compression
     struct CHUNK_CACHE {
-        qint64 nChunkCompressedSize;   // Key identifying which chunk
+        qint64 nChunkCompressedSize;    // Key identifying which chunk
         QByteArray baDecompressedData;  // Full decompressed chunk content
     };
 
     struct UNPACK_CONTEXT {
         QList<ARCHIVERECORD> listAllRecords;
-        bool bIsRealFormat;            // true = real InnoSetup, false = synthetic ISDF
+        bool bIsRealFormat;  // true = real InnoSetup, false = synthetic ISDF
         qint64 nSignatureOffset;
-        qint64 nDataStreamOffset;      // Absolute offset of data overlay (zlb chunks)
+        qint64 nDataStreamOffset;  // Absolute offset of data overlay (zlb chunks)
         QList<DATA_ENTRY> listDataEntries;
         QList<FILE_ENTRY> listFileEntries;
-        CHUNK_CACHE chunkCache;        // Cached decompressed chunk
+        CHUNK_CACHE chunkCache;  // Cached decompressed chunk
     };
 
     explicit XInnoSetup(QIODevice *pDevice, bool bIsImage = false, XADDR nModuleAddress = -1);

@@ -315,9 +315,9 @@ bool XInnoSetup::unpackCurrent(XBinary::UNPACK_STATE *pState, QIODevice *pDevice
 
     if (pContext->bIsRealFormat) {
         // Real InnoSetup: solid LZMA decompression
-        qint64 nStreamOffset = record.nStreamOffset;     // Absolute offset of zlb chunk in file
-        qint64 nStreamSize = record.nStreamSize;          // Compressed size of the zlb chunk
-        qint64 nDecompressedOffset = record.mapProperties.value(FPART_PROP_STREAMOFFSET).toLongLong();  // Offset within decompressed chunk
+        qint64 nStreamOffset = record.nStreamOffset;                                                       // Absolute offset of zlb chunk in file
+        qint64 nStreamSize = record.nStreamSize;                                                           // Compressed size of the zlb chunk
+        qint64 nDecompressedOffset = record.mapProperties.value(FPART_PROP_STREAMOFFSET).toLongLong();     // Offset within decompressed chunk
         qint64 nChunkCompressedSize = record.mapProperties.value(FPART_PROP_COMPRESSEDSIZE).toLongLong();  // Chunk ID
 
         // Check if we have this chunk cached
@@ -338,8 +338,7 @@ bool XInnoSetup::unpackCurrent(XBinary::UNPACK_STATE *pState, QIODevice *pDevice
         const QByteArray &baChunk = pContext->chunkCache.baDecompressedData;
 
         if (nDecompressedOffset + nUncompressedSize > baChunk.size()) {
-            qWarning() << "[InnoSetup] File data exceeds chunk boundary: offset" << nDecompressedOffset
-                       << "size" << nUncompressedSize << "chunk size" << baChunk.size();
+            qWarning() << "[InnoSetup] File data exceeds chunk boundary: offset" << nDecompressedOffset << "size" << nUncompressedSize << "chunk size" << baChunk.size();
             return false;
         }
 
@@ -1076,8 +1075,8 @@ bool XInnoSetup::_parseRealInnoSetup(UNPACK_CONTEXT *pContext, qint64 nSignature
     }
 
     // Step 2: Build per-entry maps for chunk file offset and chunk compressed size
-    QMap<qint32, qint64> mapEntryChunkFileOffset;     // data entry index -> abs file offset of chunk
-    QMap<qint32, qint64> mapEntryChunkCompressedSize; // data entry index -> chunk compressed size
+    QMap<qint32, qint64> mapEntryChunkFileOffset;      // data entry index -> abs file offset of chunk
+    QMap<qint32, qint64> mapEntryChunkCompressedSize;  // data entry index -> chunk compressed size
 
     for (qint32 cIdx = 0; cIdx < listChunks.count(); cIdx++) {
         const ChunkInfo &chunk = listChunks.at(cIdx);
@@ -1105,12 +1104,12 @@ bool XInnoSetup::_parseRealInnoSetup(UNPACK_CONTEXT *pContext, qint64 nSignature
         sFileName = sFileName.replace(QString("\\"), QString("/"));
 
         ARCHIVERECORD record = {};
-        record.nStreamOffset = mapEntryChunkFileOffset.value(nLocIdx, 0);   // Abs offset of zlb chunk
+        record.nStreamOffset = mapEntryChunkFileOffset.value(nLocIdx, 0);        // Abs offset of zlb chunk
         record.nStreamSize = mapEntryChunkCompressedSize.value(nLocIdx, 0) + 4;  // Chunk size including 4-byte zlb magic
         record.mapProperties.insert(FPART_PROP_ORIGINALNAME, sFileName);
         record.mapProperties.insert(FPART_PROP_UNCOMPRESSEDSIZE, dataEntry.nOriginalSize);
         record.mapProperties.insert(FPART_PROP_COMPRESSEDSIZE, dataEntry.nChunkCompressedSize);  // Used as chunk ID
-        record.mapProperties.insert(FPART_PROP_STREAMOFFSET, dataEntry.nChunkSubOffset);  // Decompressed offset within chunk
+        record.mapProperties.insert(FPART_PROP_STREAMOFFSET, dataEntry.nChunkSubOffset);         // Decompressed offset within chunk
         record.mapProperties.insert(FPART_PROP_STREAMSIZE, dataEntry.nOriginalSize);
         record.mapProperties.insert(FPART_PROP_ISFOLDER, false);
 
