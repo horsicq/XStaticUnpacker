@@ -853,6 +853,8 @@ bool XNSIS::_decompressNSISLZMA(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
     state.pDeviceOutput = &outputBuffer;
     state.nInputOffset = 5;  // Start after properties
     state.nInputLimit = nCompSize;
+    state.nProcessedOffset = 0;
+    state.nProcessedLimit = -1;  // No output limit
     state.nCountInput = 0;
     state.nCountOutput = 0;
 
