@@ -86,7 +86,7 @@ bool XUPX::isValid(PDSTRUCT *pPdStruct)
     return getInternalInfo(pPdStruct).bIsValid;
 }
 
-bool XUPX::isValid(QIODevice *pDevice)
+bool XUPX::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
     XUPX upx(pDevice);
 
@@ -564,3 +564,4 @@ QList<XBinary::FPART> XUPX::getFileParts(quint32 nFileParts, qint32 nLimit, PDST
 
     return listResult;
 }
+
