@@ -53,13 +53,13 @@ public:
         quint8 l_format;
     };
     struct p_info {           // 12-byte packed program header
-        quint32 p_progid;     // 'UPX!' BE
-        quint32 p_filesize;   // original file size BE
-        quint32 p_blocksize;  // block size BE
+        quint32 p_progid;     // target-endian
+        quint32 p_filesize;   // target-endian
+        quint32 p_blocksize;  // target-endian
     };
     struct b_info {              // 12-byte header before each compressed block
-        quint32 sz_unc;          // uncompressed_size BE
-        quint32 sz_cpr;          // compressed_size BE
+        quint32 sz_unc;          // target-endian
+        quint32 sz_cpr;          // target-endian
         unsigned char b_method;  // compression algorithm
         unsigned char b_ftid;    // filter id
         unsigned char b_cto8;    // filter parameter
@@ -146,6 +146,8 @@ public:
     explicit XUPX(QIODevice *pDevice, bool bIsImage = false, XADDR nModuleAddress = -1);
     ~XUPX() override;
 
+    virtual QList<QString> getSearchSignatures() override;
+    virtual XBinary *createInstance(QIODevice *pDevice, bool bIsImage = false, XADDR nModuleAddress = -1) override;
     virtual bool isValid(PDSTRUCT *pPdStruct = nullptr) override;
     static bool isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr);
     virtual FT getFileType() override;
@@ -164,25 +166,39 @@ public:
     virtual QList<FPART> getFileParts(quint32 nFileParts, qint32 nLimit = -1, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct = nullptr) override;
     virtual ARCHIVERECORD infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
-    virtual bool unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
 
     INTERNAL_INFO getInternalInfo(PDSTRUCT *pPdStruct = nullptr);
 
     // Unpacking functionality
-    bool unpack(const QString &sOutputFileName, PDSTRUCT *pPdStruct = nullptr);
+    virtual bool unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
     bool isPackedFile(PDSTRUCT *pPdStruct = nullptr);
     QString getPackerVersion(PDSTRUCT *pPdStruct = nullptr);
     QString getCompressionMethod(PDSTRUCT *pPdStruct = nullptr);
 
 private:
+    bool _readPackHeader(qint64 nOffset, qint64 nHeaderSize, bool bIsBigEndian, INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct);
+    bool _detectELFInfo(INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct);
+    bool _detectPEInfo(INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct);
+    bool _detectGenericInfo(INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct);
+    static bool _isPackHeaderValid(const INTERNAL_INFO &info);
+    static bool _isPEFileType(FT fileType);
+    static bool _isELFFileType(FT fileType);
+    static bool _isDOSFileType(FT fileType);
+    static bool _isDOSFormat(quint8 nFormat);
+    bool _prepareOutputDevice(QIODevice *pDevice, bool *pbCloseOutputDevice);
+    bool _writeBufferToDevice(const QByteArray &baData, QIODevice *pDevice, PDSTRUCT *pPdStruct);
+    bool _copyFileToDevice(const QString &sInputFileName, QIODevice *pDevice, PDSTRUCT *pPdStruct);
+    bool _unpackToFile(QIODevice *pDevice, PDSTRUCT *pPdStruct);
+    bool _fallbackUnpack(QIODevice *pDevice, PDSTRUCT *pPdStruct);
     INTERNAL_INFO _read_packheader(char *pInfoData, qint32 nDataSize, bool bIsBigEndian);
     ARCHIVERECORD _createArchiveRecord(const INTERNAL_INFO &info);
     QString _getUnpackedFileName();
     bool _upxDecompress(const unsigned char *pSrc, quint32 nSrcSize, unsigned char *pDst, quint32 *pnDstSize, quint8 method);
-    bool _unpackPE(const QString &sOutputFileName, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct);
-    bool _unpackELF(const QString &sOutputFileName, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct);
+    bool _unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct);
+    bool _unpackELF(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct);
+    bool _runUPXDecompress(QIODevice *pDevice, PDSTRUCT *pPdStruct);
 };
 
 #endif  // XUPX_H

@@ -5,12 +5,20 @@
 
 #include "xupx.h"
 
+#include "Algos/xdeflatedecoder.h"
+#include "LzmaDec.h"
+
 #include <QDir>
+#include <QBuffer>
 #include <QFile>
 #include <QFileInfo>
 #include <QProcess>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+
+extern "C" {
+#include <ucl/ucl.h>
+}
 
 // clang-format off
 static XBinary::XCONVERT _TABLE_XUPX_UPX_F[] = {
@@ -75,6 +83,122 @@ XBinary::XCONVERT _TABLE_XUPX_STRUCTID[] = {
     {XUPX::STRUCTID_HEADER, "HEADER", QString("Header")},
 };
 
+namespace {
+using IMAGE_DOS_HEADEREX = XMSDOS_DEF::IMAGE_DOS_HEADEREX;
+using IMAGE_NT_HEADERS32 = XPE_DEF::IMAGE_NT_HEADERS32;
+using IMAGE_NT_HEADERS64 = XPE_DEF::IMAGE_NT_HEADERS64;
+using IMAGE_SECTION_HEADER = XPE_DEF::IMAGE_SECTION_HEADER;
+using IMAGE_IMPORT_DESCRIPTOR = XPE_DEF::IMAGE_IMPORT_DESCRIPTOR;
+using IMAGE_EXPORT_DIRECTORY = XPE_DEF::IMAGE_EXPORT_DIRECTORY;
+using IMAGE_RESOURCE_DATA_ENTRY = XPE_DEF::IMAGE_RESOURCE_DATA_ENTRY;
+
+const qint64 XUPX_TRAILER_READ_SIZE = 0x3000;
+const qint64 XUPX_HEADER_SEARCH_SIZE = 0x1000;
+const qint64 XUPX_PACK_HEADER_SIZE = 36;
+const qint64 XUPX_MIN_PACK_HEADER_SIZE = 20;
+
+static void *xupxSzAlloc(ISzAllocPtr, size_t nSize)
+{
+    return malloc(nSize);
+}
+
+static void xupxSzFree(ISzAllocPtr, void *pAddress)
+{
+    free(pAddress);
+}
+
+static ISzAlloc g_xupxAlloc = {xupxSzAlloc, xupxSzFree};
+
+static QString upxMethodToString(quint8 nMethod)
+{
+    switch (nMethod) {
+        case XUPX::UPX_M_NRV2B_LE32: return "NRV2B_LE32";
+        case XUPX::UPX_M_NRV2B_8: return "NRV2B_8";
+        case XUPX::UPX_M_NRV2B_LE16: return "NRV2B_LE16";
+        case XUPX::UPX_M_NRV2D_LE32: return "NRV2D_LE32";
+        case XUPX::UPX_M_NRV2D_8: return "NRV2D_8";
+        case XUPX::UPX_M_NRV2D_LE16: return "NRV2D_LE16";
+        case XUPX::UPX_M_NRV2E_LE32: return "NRV2E_LE32";
+        case XUPX::UPX_M_NRV2E_8: return "NRV2E_8";
+        case XUPX::UPX_M_NRV2E_LE16: return "NRV2E_LE16";
+        case XUPX::UPX_M_LZMA: return "LZMA";
+        case XUPX::UPX_M_DEFLATE: return "DEFLATE";
+        default: return QString("Unknown (%1)").arg(nMethod);
+    }
+}
+
+static bool applyPEFilter(unsigned char *pData, qint64 nDataSize, quint8 nFilter, quint8 nFilterCTO, quint32 nAddValue)
+{
+    if ((!pData) || (nDataSize <= 0)) {
+        return false;
+    }
+
+    if (nFilter == 0) {
+        return true;
+    }
+
+    if (nFilter == 0x14) {
+        for (qint64 i = 0; i < (nDataSize - 5); i++) {
+            if (pData[i] == 0xe8) {
+                quint32 nJC = XBinary::_read_uint32((char *)pData + i + 1, true);
+                XBinary::_write_uint32((char *)pData + i + 1, nJC - (quint32)i - 1 - nAddValue);
+                i += 4;
+            }
+        }
+    } else if (nFilter == 0x16) {
+        for (qint64 i = 0; i < (nDataSize - 5); i++) {
+            if ((pData[i] == 0xe8) || (pData[i] == 0xe9)) {
+                quint32 nJC = XBinary::_read_uint32((char *)pData + i + 1, true);
+                XBinary::_write_uint32((char *)pData + i + 1, nJC - (quint32)i - 1 - nAddValue);
+                i += 4;
+            }
+        }
+    } else if (nFilter == 0x24) {
+        quint32 nCTO = ((quint32)nFilterCTO) << 24;
+
+        for (qint64 i = 0; i < (nDataSize - 5); i++) {
+            if ((pData[i] == 0xe8) && ((unsigned char)pData[i + 1] == nFilterCTO)) {
+                quint32 nJC = XBinary::_read_uint32((char *)pData + i + 1, true);
+                XBinary::_write_uint32((char *)pData + i + 1, nJC - (quint32)i - 1 - nAddValue - nCTO);
+                i += 4;
+            }
+        }
+    } else if (nFilter == 0x26) {
+        quint32 nCTO = ((quint32)nFilterCTO) << 24;
+
+        for (qint64 i = 0; i < (nDataSize - 5); i++) {
+            if (((pData[i] == 0xe8) || (pData[i] == 0xe9)) && ((unsigned char)pData[i + 1] == nFilterCTO)) {
+                quint32 nJC = XBinary::_read_uint32((char *)pData + i + 1, true);
+                XBinary::_write_uint32((char *)pData + i + 1, nJC - (quint32)i - 1 - nAddValue - nCTO);
+                i += 4;
+            }
+        }
+    } else if (nFilter == 0x49) {
+        quint32 nCTO = ((quint32)nFilterCTO) << 24;
+        quint32 nLastCall = 0;
+
+        for (qint64 i = 0; i < (nDataSize - 5); i++) {
+            bool bMatch = (pData[i] == 0xe8) || (pData[i] == 0xe9);
+
+            if ((!bMatch) && (i > 0) && ((9 <= (0x0f & nFilter)) && (nLastCall != (quint32)i) && (0x0f == pData[i - 1]) && (0x80 <= pData[i]) && (pData[i] <= 0x8f))) {
+                bMatch = true;
+            }
+
+            if (bMatch && ((unsigned char)pData[i + 1] == nFilterCTO)) {
+                quint32 nJC = XBinary::_read_uint32((char *)pData + i + 1, true);
+                XBinary::_write_uint32((char *)pData + i + 1, nJC - (quint32)i - 1 - nAddValue - nCTO);
+                i += 4;
+                nLastCall = (quint32)i + 1;
+            }
+        }
+    } else {
+        return false;
+    }
+
+    return true;
+}
+}  // namespace
+
 XUPX::XUPX(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : XBinary(pDevice, bIsImage, nModuleAddress)
 {
     setIsArchive(true);
@@ -82,6 +206,16 @@ XUPX::XUPX(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : XBinary(pD
 
 XUPX::~XUPX()
 {
+}
+
+QList<QString> XUPX::getSearchSignatures()
+{
+    return XBinary::getSearchSignatures();
+}
+
+XBinary *XUPX::createInstance(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress)
+{
+    return new XUPX(pDevice, bIsImage, nModuleAddress);
 }
 
 QString XUPX::structIDToString(quint32 nID)
@@ -96,11 +230,206 @@ bool XUPX::isValid(PDSTRUCT *pPdStruct)
 
 bool XUPX::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(pPdStruct)
-
     XUPX upx(pDevice);
 
-    return upx.isValid();
+    return upx.isValid(pPdStruct);
+}
+
+bool XUPX::_isPackHeaderValid(const INTERNAL_INFO &info)
+{
+    return (info.magic[0] == 'U') && (info.magic[1] == 'P') && (info.magic[2] == 'X') && (info.magic[3] == '!');
+}
+
+bool XUPX::_isPEFileType(FT fileType)
+{
+    return (fileType == FT_PE32) || (fileType == FT_PE64);
+}
+
+bool XUPX::_isELFFileType(FT fileType)
+{
+    return (fileType == FT_ELF32) || (fileType == FT_ELF64);
+}
+
+bool XUPX::_isDOSFileType(FT fileType)
+{
+    return (fileType == FT_MSDOS) || (fileType == FT_COM);
+}
+
+bool XUPX::_isDOSFormat(quint8 nFormat)
+{
+    return (nFormat == UPX_F_DOS_COM) || (nFormat == UPX_F_DOS_SYS) || (nFormat == UPX_F_DOS_EXE) || (nFormat == UPX_F_DOS_EXEH);
+}
+
+bool XUPX::_readPackHeader(qint64 nOffset, qint64 nHeaderSize, bool bIsBigEndian, INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct)
+{
+    if ((!pInfo) || (nOffset < 0) || (nHeaderSize < XUPX_MIN_PACK_HEADER_SIZE) || (nOffset >= this->getSize())) {
+        return false;
+    }
+
+    qint64 nAvailableSize = qMin(nHeaderSize, this->getSize() - nOffset);
+
+    if (nAvailableSize < XUPX_MIN_PACK_HEADER_SIZE) {
+        return false;
+    }
+
+    QByteArray baHeader = read_array_process(nOffset, nAvailableSize, pPdStruct);
+
+    if (baHeader.size() != nAvailableSize) {
+        return false;
+    }
+
+    INTERNAL_INFO info = _read_packheader(baHeader.data(), baHeader.size(), bIsBigEndian);
+
+    if (!_isPackHeaderValid(info)) {
+        return false;
+    }
+
+    info.bIsValid = true;
+    info.nHeaderOffset = nOffset;
+    info.nDataOffset = nOffset + info.nPackHeaderSize;
+
+    *pInfo = info;
+
+    return true;
+}
+
+bool XUPX::_detectELFInfo(INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct)
+{
+    if (!pInfo) {
+        return false;
+    }
+
+    XELF elf(this->getDevice(), this->isImage(), this->getModuleAddress());
+
+    if (!elf.isValid(pPdStruct)) {
+        return false;
+    }
+
+    const bool bIsBigEndian = (elf.getEndian() == ENDIAN_BIG);
+    const qint64 nReadSize = qMin((qint64)XUPX_TRAILER_READ_SIZE, this->getSize());
+
+    if (nReadSize < XUPX_PACK_HEADER_SIZE) {
+        return false;
+    }
+
+    const qint64 nBufferOffset = this->getSize() - nReadSize;
+    QByteArray baBuffer = elf.read_array_process(nBufferOffset, nReadSize, pPdStruct);
+
+    if (baBuffer.size() != nReadSize) {
+        return false;
+    }
+
+    qint64 nBufferSize = getPhysSize(baBuffer.data(), baBuffer.size());
+    nBufferSize = align_up(nBufferSize, 4);
+
+    if ((nBufferSize < XUPX_PACK_HEADER_SIZE) || (nBufferSize > baBuffer.size())) {
+        return false;
+    }
+
+    INTERNAL_INFO info = _read_packheader(baBuffer.data() + nBufferSize - XUPX_PACK_HEADER_SIZE, XUPX_PACK_HEADER_SIZE, bIsBigEndian);
+
+    if (!_isPackHeaderValid(info)) {
+        return false;
+    }
+
+    info.bIsValid = true;
+    info.fileType = elf.getFileType();
+    info.nHeaderOffset = nBufferOffset + nBufferSize - XUPX_PACK_HEADER_SIZE;
+    info.nDataOffset = XBinary::_read_uint32_safe(baBuffer.data(), baBuffer.size(), nBufferSize - XUPX_PACK_HEADER_SIZE + info.nPackHeaderSize, bIsBigEndian);
+
+    QByteArray baProgramInfo = read_array_process(info.nDataOffset, sizeof(p_info), pPdStruct);
+    QByteArray baBlockInfo = read_array_process(info.nDataOffset + sizeof(p_info), sizeof(b_info), pPdStruct);
+
+    if ((baProgramInfo.size() == (qint64)sizeof(p_info)) && (baBlockInfo.size() == (qint64)sizeof(b_info))) {
+        p_info programInfo = {};
+        b_info blockInfo = {};
+
+        XBinary::_copyMemory((char *)(&programInfo), baProgramInfo.constData(), sizeof(p_info));
+        XBinary::_copyMemory((char *)(&blockInfo), baBlockInfo.constData(), sizeof(b_info));
+
+        info.u_len = XBinary::_read_uint32((char *)(&programInfo.p_filesize), bIsBigEndian);
+        info.c_len = XBinary::_read_uint32((char *)(&blockInfo.sz_cpr), bIsBigEndian);
+    }
+
+    *pInfo = info;
+
+    return true;
+}
+
+bool XUPX::_detectPEInfo(INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct)
+{
+    if (!pInfo) {
+        return false;
+    }
+
+    XPE pe(this->getDevice(), this->isImage(), this->getModuleAddress());
+
+    if (!pe.isValid(pPdStruct)) {
+        return false;
+    }
+
+    const qint64 nSearchSize = qMin((qint64)XUPX_HEADER_SEARCH_SIZE, this->getSize());
+
+    if (nSearchSize < XUPX_MIN_PACK_HEADER_SIZE) {
+        return false;
+    }
+
+    const qint64 nOffset = find_ansiString(0, nSearchSize, "UPX!");
+
+    if (nOffset == -1) {
+        return false;
+    }
+
+    INTERNAL_INFO info = {};
+
+    if (!_readPackHeader(nOffset, XUPX_PACK_HEADER_SIZE, false, &info, pPdStruct)) {
+        return false;
+    }
+
+    info.fileType = pe.getFileType();
+
+    *pInfo = info;
+
+    return true;
+}
+
+bool XUPX::_detectGenericInfo(INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct)
+{
+    if (!pInfo) {
+        return false;
+    }
+
+    const qint64 nSearchSize = qMin((qint64)XUPX_HEADER_SEARCH_SIZE, this->getSize());
+
+    if (nSearchSize < XUPX_MIN_PACK_HEADER_SIZE) {
+        return false;
+    }
+
+    const qint64 nOffset = find_ansiString(0, nSearchSize, "UPX!");
+
+    if (nOffset == -1) {
+        return false;
+    }
+
+    INTERNAL_INFO info = {};
+
+    if (!_readPackHeader(nOffset, XUPX_PACK_HEADER_SIZE, false, &info, pPdStruct)) {
+        return false;
+    }
+
+    XMSDOS msdos(this->getDevice(), this->isImage(), this->getModuleAddress());
+
+    if (msdos.isValid(pPdStruct)) {
+        info.fileType = msdos.getFileType();
+    } else if ((info.format == UPX_F_DOS_COM) || (info.format == UPX_F_DOS_SYS)) {
+        info.fileType = FT_COM;
+    } else if ((info.format == UPX_F_DOS_EXE) || (info.format == UPX_F_DOS_EXEH)) {
+        info.fileType = FT_MSDOS;
+    }
+
+    *pInfo = info;
+
+    return true;
 }
 
 XUPX::INTERNAL_INFO XUPX::_read_packheader(char *pInfoData, qint32 nDataSize, bool bIsBigEndian)
@@ -176,6 +505,10 @@ XUPX::INTERNAL_INFO XUPX::_read_packheader(char *pInfoData, qint32 nDataSize, bo
         }
     }
 
+    if ((result.version > 10) && (result.off_filter < (quint32)nDataSize)) {
+        result.filter = (quint8)pInfoData[result.off_filter];
+    }
+
     return result;
 }
 
@@ -183,122 +516,16 @@ XUPX::INTERNAL_INFO XUPX::getInternalInfo(PDSTRUCT *pPdStruct)
 {
     XUPX::INTERNAL_INFO result = {};
 
-    bool bFound = false;
-
-    if (!bFound) {
-        XELF elf(this->getDevice(), this->isImage(), this->getModuleAddress());
-        if (elf.isValid(pPdStruct)) {
-            bool bIsBE = (elf.getEndian() == ENDIAN_BIG);
-            result.fileType = elf.getFileType();
-
-            qint64 nBufferSize = 0x3000;
-
-            nBufferSize = qMin(nBufferSize, this->getSize());
-
-            char *pBuffer = new char[nBufferSize];
-
-            elf.read_array_process(this->getSize() - nBufferSize, pBuffer, nBufferSize, pPdStruct);
-
-            nBufferSize = getPhysSize(pBuffer, nBufferSize);
-            nBufferSize = align_up(nBufferSize, 4);
-
-            if (nBufferSize >= 36) {
-                result = _read_packheader(pBuffer + nBufferSize - 36, 36, bIsBE);
-
-                if ((result.magic[0] == 'U') && (result.magic[1] == 'P') && (result.magic[2] == 'X') && (result.magic[3] == '!')) {
-                    result.bIsValid = true;
-                    result.fileType = elf.getFileType();
-
-                    qint64 nDataOffset = XBinary::_read_uint32_safe(pBuffer, nBufferSize, nBufferSize - 36 + result.nPackHeaderSize, bIsBE);
-                    l_info linfo = {};
-                    read_array_process(nDataOffset - sizeof(l_info), (char *)(&linfo), sizeof(l_info), pPdStruct);
-                    p_info pinfo = {};
-                    read_array_process(nDataOffset, (char *)(&pinfo), sizeof(p_info), pPdStruct);
-                    b_info binfo = {};
-                    read_array_process(nDataOffset + sizeof(p_info), (char *)(&binfo), sizeof(b_info), pPdStruct);
-
-                    result.u_len = qFromBigEndian(pinfo.p_filesize);
-                    result.c_len = qFromBigEndian(binfo.sz_cpr);
-
-                    bFound = true;
-                }
-            }
-
-            delete[] pBuffer;
-        }
+    if (_detectELFInfo(&result, pPdStruct)) {
+        return result;
     }
 
-    if (!bFound) {
-        XPE pe(this->getDevice(), this->isImage(), this->getModuleAddress());
-        if (pe.isValid(pPdStruct)) {
-            result.fileType = pe.getFileType();
+    if (_detectPEInfo(&result, pPdStruct)) {
+        return result;
+    }
 
-            // Check for UPX signature in the file
-            qint64 nFileSize = this->getSize();
-            if (nFileSize >= 0x1000) {
-                qint64 nOffset = find_ansiString(0, 0x1000, "UPX!");
-
-                if (nOffset != -1) {
-                    // Read UPX header
-                    char headerData[36];
-                    if (read_array_process(nOffset, headerData, 36, pPdStruct)) {
-                        result = _read_packheader(headerData, 36, false);
-
-                        if ((result.magic[0] == 'U') && (result.magic[1] == 'P') && (result.magic[2] == 'X') && (result.magic[3] == '!')) {
-                            result.bIsValid = true;
-                            result.fileType = pe.getFileType();
-                            bFound = true;
-                        }
-                    }
-                }
-            }
-
-            // Alternative detection: Check for UPX sections
-            if (!bFound) {
-                // QList<XPE::SECTION_RECORD> listSections = pe.getSectionRecords();
-                // bool bHasUPX0 = false;
-                // bool bHasUPX1 = false;
-
-                // for (int i = 0; i < listSections.count(); i++) {
-                //     QString sSectionName = listSections.at(i).sName;
-                //     if (sSectionName.contains("UPX0")) {
-                //         bHasUPX0 = true;
-                //     } else if (sSectionName.contains("UPX1")) {
-                //         bHasUPX1 = true;
-                //     }
-                // }
-
-                // if (bHasUPX0 && bHasUPX1) {
-                //     // This looks like a UPX packed PE file
-                //     result.bIsValid = true;
-                //     result.fileType = pe.getFileType();
-
-                //     // Try to find UPX signature in the last section
-                //     if (listSections.count() > 0) {
-                //         XPE::SECTION_RECORD lastSection = listSections.last();
-                //         qint64 nSectionOffset = lastSection.nOffset;
-                //         qint64 nSectionSize = lastSection.nSize;
-
-                //         if (nSectionSize > 36) {
-                //             char *pSectionData = new char[nSectionSize];
-                //             if (read_array_process(nSectionOffset, pSectionData, nSectionSize, pPdStruct)) {
-                //                 // Look for UPX signature near the end of the section
-                //                 for (qint64 i = nSectionSize - 36; i >= 0; i--) {
-                //                     if ((pSectionData[i] == 'U') && (pSectionData[i+1] == 'P') &&
-                //                         (pSectionData[i+2] == 'X') && (pSectionData[i+3] == '!')) {
-                //                         result = _read_packheader(pSectionData + i, 36, false);
-                //                         break;
-                //                     }
-                //                 }
-                //             }
-                //             delete[] pSectionData;
-                //         }
-                //     }
-
-                //     bFound = true;
-                // }
-            }
-        }
+    if (_detectGenericInfo(&result, pPdStruct)) {
+        return result;
     }
 
     return result;
@@ -444,17 +671,142 @@ QList<XBinary::DATA_HEADER> XUPX::getDataHeaders(const DATA_HEADERS_OPTIONS &dat
     return listResult;
 }
 
-bool XUPX::unpack(const QString &sOutputFileName, PDSTRUCT *pPdStruct)
+bool XUPX::_prepareOutputDevice(QIODevice *pDevice, bool *pbCloseOutputDevice)
+{
+    if ((!pDevice) || (!pbCloseOutputDevice)) {
+        return false;
+    }
+
+    *pbCloseOutputDevice = false;
+
+    if (!pDevice->isOpen()) {
+        if (!pDevice->open(QIODevice::WriteOnly)) {
+            return false;
+        }
+
+        *pbCloseOutputDevice = true;
+    }
+
+    if (!(pDevice->openMode() & QIODevice::WriteOnly)) {
+        if (*pbCloseOutputDevice) {
+            pDevice->close();
+            *pbCloseOutputDevice = false;
+        }
+
+        return false;
+    }
+
+    if (XBinary::isResizeEnable(pDevice)) {
+        XBinary::resize(pDevice, 0);
+    }
+
+    if (!pDevice->isSequential()) {
+        pDevice->seek(0);
+    }
+
+    return true;
+}
+
+bool XUPX::_writeBufferToDevice(const QByteArray &baData, QIODevice *pDevice, PDSTRUCT *pPdStruct)
+{
+    if (!pDevice) {
+        return false;
+    }
+
+    bool bCloseOutputDevice = false;
+
+    if (!_prepareOutputDevice(pDevice, &bCloseOutputDevice)) {
+        return false;
+    }
+
+    const qint64 nChunkSize = 0x100000;
+    qint64 nOffset = 0;
+    bool bResult = true;
+
+    while ((nOffset < baData.size()) && XBinary::isPdStructNotCanceled(pPdStruct)) {
+        qint64 nCurrentChunkSize = qMin(nChunkSize, (qint64)baData.size() - nOffset);
+
+        if (pDevice->write(baData.constData() + nOffset, nCurrentChunkSize) != nCurrentChunkSize) {
+            bResult = false;
+            break;
+        }
+
+        nOffset += nCurrentChunkSize;
+    }
+
+    if (bCloseOutputDevice) {
+        pDevice->close();
+    }
+
+    return bResult && XBinary::isPdStructNotCanceled(pPdStruct) && (nOffset == baData.size());
+}
+
+bool XUPX::_copyFileToDevice(const QString &sInputFileName, QIODevice *pDevice, PDSTRUCT *pPdStruct)
+{
+    if ((!pDevice) || (sInputFileName.isEmpty())) {
+        return false;
+    }
+
+    bool bCloseOutputDevice = false;
+
+    if (!_prepareOutputDevice(pDevice, &bCloseOutputDevice)) {
+        return false;
+    }
+
+    QFile fileUnpacked(sInputFileName);
+
+    if (!fileUnpacked.open(QIODevice::ReadOnly)) {
+        if (bCloseOutputDevice) {
+            pDevice->close();
+        }
+
+        return false;
+    }
+
+    const qint64 nChunkSize = 0x100000;
+    bool bResult = true;
+
+    while (!fileUnpacked.atEnd() && XBinary::isPdStructNotCanceled(pPdStruct)) {
+        QByteArray baData = fileUnpacked.read(nChunkSize);
+
+        if (baData.isEmpty() && !fileUnpacked.atEnd()) {
+            bResult = false;
+            break;
+        }
+
+        if ((!baData.isEmpty()) && (pDevice->write(baData) != baData.size())) {
+            bResult = false;
+            break;
+        }
+    }
+
+    fileUnpacked.close();
+
+    if (bCloseOutputDevice) {
+        pDevice->close();
+    }
+
+    return bResult && XBinary::isPdStructNotCanceled(pPdStruct);
+}
+
+bool XUPX::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
+{
+    return _unpackToFile(pDevice, pPdStruct);
+}
+
+bool XUPX::_unpackToFile(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
     bool bResult = false;
 
     INTERNAL_INFO info = getInternalInfo(pPdStruct);
 
     if (info.bIsValid) {
-        if ((info.fileType == FT_PE32) || (info.fileType == FT_PE64)) {
-            bResult = _unpackPE(sOutputFileName, info, pPdStruct);
-        } else if ((info.fileType == FT_ELF32) || (info.fileType == FT_ELF64)) {
-            bResult = _unpackELF(sOutputFileName, info, pPdStruct);
+        if (_isPEFileType(info.fileType)) {
+            bResult = _unpackPE(pDevice, info, pPdStruct);
+        } else if (_isELFFileType(info.fileType)) {
+            bResult = _unpackELF(pDevice, info, pPdStruct);
+        } else if (_isDOSFileType(info.fileType) || _isDOSFormat(info.format)) {
+            bResult = _runUPXDecompress(pDevice, pPdStruct);
         }
     }
 
@@ -554,51 +906,6 @@ XBinary::ARCHIVERECORD XUPX::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStru
     return result;
 }
 
-bool XUPX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct)
-{
-    if ((!pState) || (!pState->pContext) || (!pDevice)) {
-        return false;
-    }
-
-    if ((pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
-        return false;
-    }
-
-    QTemporaryDir tempDir;
-
-    if (!tempDir.isValid()) {
-        return false;
-    }
-
-    QString sTempOutputFileName = tempDir.filePath(_getUnpackedFileName());
-
-    if (!unpack(sTempOutputFileName, pPdStruct)) {
-        return false;
-    }
-
-    QFile fileUnpacked(sTempOutputFileName);
-
-    if (!fileUnpacked.open(QIODevice::ReadOnly)) {
-        return false;
-    }
-
-    const qint64 nChunkSize = 0x100000;
-
-    while (!fileUnpacked.atEnd() && XBinary::isPdStructNotCanceled(pPdStruct)) {
-        QByteArray baData = fileUnpacked.read(nChunkSize);
-
-        if (baData.isEmpty() && !fileUnpacked.atEnd()) {
-            return false;
-        }
-
-        if ((!baData.isEmpty()) && (pDevice->write(baData) != baData.size())) {
-            return false;
-        }
-    }
-
-    return XBinary::isPdStructNotCanceled(pPdStruct);
-}
-
 bool XUPX::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
     Q_UNUSED(pPdStruct)
@@ -652,41 +959,744 @@ QString XUPX::getCompressionMethod(PDSTRUCT *pPdStruct)
 {
     INTERNAL_INFO info = getInternalInfo(pPdStruct);
     if (info.bIsValid) {
-        switch (info.method) {
-            case 2: return "NRV2B_LE32";
-            case 3: return "NRV2B_8";
-            case 4: return "NRV2B_LE16";
-            case 5: return "NRV2D_LE32";
-            case 6: return "NRV2D_8";
-            case 7: return "NRV2D_LE16";
-            case 8: return "NRV2E_LE32";
-            case 9: return "NRV2E_8";
-            case 10: return "NRV2E_LE16";
-            case 14: return "LZMA";
-            case 15: return "DEFLATE";
-            default: return QString("Unknown (%1)").arg(info.method);
-        }
+        return upxMethodToString(info.method);
     }
     return QString();
 }
 
-bool XUPX::_unpackPE(const QString &sOutputFileName, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct)
+bool XUPX::_upxDecompress(const unsigned char *pSrc, quint32 nSrcSize, unsigned char *pDst, quint32 *pnDstSize, quint8 method)
 {
-    Q_UNUSED(info)
+    if ((!pSrc) || (!pDst) || (!pnDstSize)) {
+        return false;
+    }
 
-    return _runUPXDecompress(sOutputFileName, pPdStruct);
+    bool bResult = false;
+
+    switch (method) {
+        case UPX_M_NRV2B_8:
+        case UPX_M_NRV2B_LE16:
+        case UPX_M_NRV2B_LE32:
+        case UPX_M_NRV2D_8:
+        case UPX_M_NRV2D_LE16:
+        case UPX_M_NRV2D_LE32:
+        case UPX_M_NRV2E_8:
+        case UPX_M_NRV2E_LE16:
+        case UPX_M_NRV2E_LE32: {
+            ucl_uint nDstSize = *pnDstSize;
+            int nRes = UCL_E_ERROR;
+
+            switch (method) {
+                case UPX_M_NRV2B_8: nRes = ucl_nrv2b_decompress_safe_8(pSrc, nSrcSize, pDst, &nDstSize, nullptr); break;
+                case UPX_M_NRV2B_LE16: nRes = ucl_nrv2b_decompress_safe_le16(pSrc, nSrcSize, pDst, &nDstSize, nullptr); break;
+                case UPX_M_NRV2B_LE32: nRes = ucl_nrv2b_decompress_safe_le32(pSrc, nSrcSize, pDst, &nDstSize, nullptr); break;
+                case UPX_M_NRV2D_8: nRes = ucl_nrv2d_decompress_safe_8(pSrc, nSrcSize, pDst, &nDstSize, nullptr); break;
+                case UPX_M_NRV2D_LE16: nRes = ucl_nrv2d_decompress_safe_le16(pSrc, nSrcSize, pDst, &nDstSize, nullptr); break;
+                case UPX_M_NRV2D_LE32: nRes = ucl_nrv2d_decompress_safe_le32(pSrc, nSrcSize, pDst, &nDstSize, nullptr); break;
+                case UPX_M_NRV2E_8: nRes = ucl_nrv2e_decompress_safe_8(pSrc, nSrcSize, pDst, &nDstSize, nullptr); break;
+                case UPX_M_NRV2E_LE16: nRes = ucl_nrv2e_decompress_safe_le16(pSrc, nSrcSize, pDst, &nDstSize, nullptr); break;
+                case UPX_M_NRV2E_LE32: nRes = ucl_nrv2e_decompress_safe_le32(pSrc, nSrcSize, pDst, &nDstSize, nullptr); break;
+                default: break;
+            }
+
+            *pnDstSize = nDstSize;
+            bResult = (nRes == UCL_E_OK);
+            break;
+        }
+
+        case UPX_M_LZMA: {
+            if (nSrcSize < 3) {
+                return false;
+            }
+
+            quint8 pb = pSrc[0] & 7;
+            quint8 lp = pSrc[1] >> 4;
+            quint8 lc = pSrc[1] & 0x0f;
+
+            if ((pb >= 5) || (lp >= 5) || (lc >= 9)) {
+                return false;
+            }
+
+            if ((pSrc[0] >> 3) != (lc + lp)) {
+                return false;
+            }
+
+            unsigned char props[5] = {};
+            props[0] = (unsigned char)((pb * 5 + lp) * 9 + lc);
+            XBinary::_write_uint32((char *)props + 1, qMax<quint32>(1, *pnDstSize), false);
+
+            SizeT nSrcProcessed = nSrcSize - 2;
+            SizeT nDstProcessed = *pnDstSize;
+            ELzmaStatus status = LZMA_STATUS_NOT_FINISHED;
+            SRes nRes = LzmaDecode((Byte *)pDst, &nDstProcessed, (const Byte *)(pSrc + 2), &nSrcProcessed, props, 5, LZMA_FINISH_END, &status, &g_xupxAlloc);
+
+            *pnDstSize = (quint32)nDstProcessed;
+            bResult = (nRes == SZ_OK) &&
+                      ((status == LZMA_STATUS_FINISHED_WITH_MARK) || (status == LZMA_STATUS_MAYBE_FINISHED_WITHOUT_MARK));
+            break;
+        }
+
+        case UPX_M_DEFLATE: {
+            z_stream stream = {};
+            stream.next_in = (Bytef *)pSrc;
+            stream.avail_in = nSrcSize;
+            stream.next_out = (Bytef *)pDst;
+            stream.avail_out = *pnDstSize;
+
+            if (inflateInit2(&stream, -MAX_WBITS) != Z_OK) {
+                return false;
+            }
+
+            int nRes = Z_OK;
+
+            while (nRes == Z_OK) {
+                nRes = inflate(&stream, Z_FINISH);
+            }
+
+            inflateEnd(&stream);
+
+            *pnDstSize = (quint32)stream.total_out;
+            bResult = (nRes == Z_STREAM_END);
+            break;
+        }
+
+        default: break;
+    }
+
+    return bResult;
 }
 
-bool XUPX::_unpackELF(const QString &sOutputFileName, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct)
+bool XUPX::_fallbackUnpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(info)
-
-    return _runUPXDecompress(sOutputFileName, pPdStruct);
+    return _runUPXDecompress(pDevice, pPdStruct);
 }
 
-bool XUPX::_runUPXDecompress(const QString &sOutputFileName, PDSTRUCT *pPdStruct)
+bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct)
 {
-    if ((!getDevice()) || (sOutputFileName.isEmpty())) {
+    if ((!getDevice()) || (!pDevice) || (!info.c_len) || (!info.u_len)) {
+        return false;
+    }
+
+    QByteArray baCompressed = read_array_process(info.nDataOffset, info.c_len, pPdStruct);
+
+    if ((quint32)baCompressed.size() != info.c_len) {
+        return _fallbackUnpack(pDevice, pPdStruct);
+    }
+
+    QByteArray baPayload(info.u_len, 0);
+    quint32 nPayloadSize = info.u_len;
+
+    if (!_upxDecompress((const unsigned char *)baCompressed.constData(), (quint32)baCompressed.size(), (unsigned char *)baPayload.data(), &nPayloadSize, info.method)) {
+        return _fallbackUnpack(pDevice, pPdStruct);
+    }
+
+    baPayload.resize(nPayloadSize);
+
+    XPE pe(this->getDevice(), this->isImage(), this->getModuleAddress());
+
+    if (!pe.isValid(pPdStruct)) {
+        return _fallbackUnpack(pDevice, pPdStruct);
+    }
+
+    bool bIs64 = pe.is64();
+    IMAGE_DOS_HEADEREX idh = pe.getDosHeaderEx();
+    QByteArray baStub = pe.getDosStub();
+    qint64 nBaseAddress = pe.getBaseAddress();
+
+    if (baPayload.size() < 4) {
+        return _fallbackUnpack(pDevice, pPdStruct);
+    }
+
+    quint32 nExtraInfoOffset = XBinary::_read_uint32(baPayload.data() + baPayload.size() - 4, false);
+
+    if ((!bIs64) && ((quint64)nExtraInfoOffset + sizeof(IMAGE_NT_HEADERS32) > (quint64)baPayload.size())) {
+        return _fallbackUnpack(pDevice, pPdStruct);
+    }
+
+    if ((bIs64) && ((quint64)nExtraInfoOffset + sizeof(IMAGE_NT_HEADERS64) > (quint64)baPayload.size())) {
+        return _fallbackUnpack(pDevice, pPdStruct);
+    }
+
+    char *pExtraInfo = baPayload.data() + nExtraInfoOffset;
+    IMAGE_NT_HEADERS32 ih32 = {};
+    IMAGE_NT_HEADERS64 ih64 = {};
+    quint32 nFileAlignment = 0;
+    quint32 nSectionAlignment = 0;
+    qint64 nRVAmin = 0;
+    QList<IMAGE_SECTION_HEADER> listSections;
+    int nNumberOfSections = 0;
+    quint32 nBaseOfCode = 0;
+    quint32 nSizeOfCode = 0;
+
+    if (!bIs64) {
+        XBinary::_copyMemory((char *)&ih32, pExtraInfo, sizeof(IMAGE_NT_HEADERS32));
+        nFileAlignment = ih32.OptionalHeader.FileAlignment;
+        nSectionAlignment = ih32.OptionalHeader.SectionAlignment;
+        nRVAmin = XBinary::align_up(ih32.OptionalHeader.SizeOfHeaders, nSectionAlignment);
+        nNumberOfSections = ih32.FileHeader.NumberOfSections;
+        nBaseOfCode = ih32.OptionalHeader.BaseOfCode;
+        nSizeOfCode = ih32.OptionalHeader.SizeOfCode;
+        pExtraInfo += sizeof(IMAGE_NT_HEADERS32);
+    } else {
+        XBinary::_copyMemory((char *)&ih64, pExtraInfo, sizeof(IMAGE_NT_HEADERS64));
+        nFileAlignment = ih64.OptionalHeader.FileAlignment;
+        nSectionAlignment = ih64.OptionalHeader.SectionAlignment;
+        nRVAmin = XBinary::align_up(ih64.OptionalHeader.SizeOfHeaders, nSectionAlignment);
+        nNumberOfSections = ih64.FileHeader.NumberOfSections;
+        nBaseOfCode = ih64.OptionalHeader.BaseOfCode;
+        nSizeOfCode = ih64.OptionalHeader.SizeOfCode;
+        pExtraInfo += sizeof(IMAGE_NT_HEADERS64);
+    }
+
+    if (((!bIs64) && (ih32.Signature != XPE_DEF::S_IMAGE_NT_SIGNATURE)) || ((bIs64) && (ih64.Signature != XPE_DEF::S_IMAGE_NT_SIGNATURE))) {
+        return _fallbackUnpack(pDevice, pPdStruct);
+    }
+
+    for (int i = 0; i < nNumberOfSections; i++) {
+        IMAGE_SECTION_HEADER sectionHeader = {};
+        XBinary::_copyMemory((char *)&sectionHeader, pExtraInfo, sizeof(IMAGE_SECTION_HEADER));
+        listSections.append(sectionHeader);
+        pExtraInfo += sizeof(IMAGE_SECTION_HEADER);
+    }
+
+    QByteArray baImage(nRVAmin + baPayload.size(), 0);
+    XBinary::_copyMemory(baImage.data() + nRVAmin, baPayload.data(), baPayload.size());
+
+    char *pMemOut0 = baImage.data();
+    char *pMemOut = pMemOut0 + nRVAmin;
+
+    if (nSizeOfCode && (nBaseOfCode >= (quint32)nRVAmin) && ((qint64)(nBaseOfCode - nRVAmin + nSizeOfCode) <= baPayload.size())) {
+        unsigned char *pFilteredData = (unsigned char *)(pMemOut + nBaseOfCode - nRVAmin);
+        qint64 nFilteredDataSize = nSizeOfCode;
+        quint32 nAddValue = nBaseOfCode - nRVAmin;
+
+        if (!applyPEFilter(pFilteredData, nFilteredDataSize, info.filter, info.filter_cto, nAddValue)) {
+            return _fallbackUnpack(pDevice, pPdStruct);
+        }
+    }
+
+    bool bIsImportPresent = false;
+    bool bIsTdRelocsPresent = false;
+    bool bIsRelocsPresent = false;
+    bool bIsExportPresent = false;
+    bool bIsResourcesPresent = false;
+
+    if (!bIs64) {
+        bIsImportPresent = ih32.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+        bIsTdRelocsPresent = ih32.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].Size == 8;
+        bIsRelocsPresent = (ih32.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress) &&
+                           (ih32.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].Size) &&
+                           (!(ih32.FileHeader.Characteristics & XPE_DEF::S_IMAGE_FILE_RELOCS_STRIPPED));
+        bIsExportPresent = ih32.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress !=
+                           pe.getOptionalHeader_DataDirectory(XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_EXPORT).VirtualAddress;
+        bIsResourcesPresent = ih32.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_RESOURCE].VirtualAddress;
+    } else {
+        bIsImportPresent = ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+        bIsTdRelocsPresent = ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].Size == 8;
+        bIsRelocsPresent = (ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress) &&
+                           (ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].Size) &&
+                           (!(ih64.FileHeader.Characteristics & XPE_DEF::S_IMAGE_FILE_RELOCS_STRIPPED));
+        bIsExportPresent = ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress !=
+                           pe.getOptionalHeader_DataDirectory(XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_EXPORT).VirtualAddress;
+        bIsResourcesPresent = ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_RESOURCE].VirtualAddress;
+    }
+
+    if (bIsImportPresent) {
+        quint32 nImportOffset = XBinary::_read_uint32(pExtraInfo, false);
+        quint32 nINamePosition = XBinary::_read_uint32(pExtraInfo + 4, false);
+        pExtraInfo += 8;
+        char *pIData = pMemOut + nImportOffset;
+        QByteArray baImport = pe.getDataDirectory(XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_IMPORT);
+        char *pOffset = nullptr;
+        quint32 nDllNames = 0;
+
+        for (pOffset = pIData; XBinary::_read_uint32(pOffset, false); ++pOffset) {
+            quint32 nNameOffset = XBinary::_read_uint32(pOffset, false);
+
+            if (nNameOffset >= (quint32)baImport.size()) {
+                return _fallbackUnpack(pDevice, pPdStruct);
+            }
+
+            char *pDName = baImport.data() + nNameOffset;
+            int nNameSize = (int)strlen(pDName);
+            nDllNames += nNameSize + 1;
+            pOffset += 8;
+
+            for (; *pOffset;) {
+                if (*pOffset == 1) {
+                    pOffset++;
+                    pOffset += strlen(pOffset) + 1;
+                } else if ((unsigned char)(*pOffset) == 0xFF) {
+                    pOffset += 1 + 2;
+                } else {
+                    pOffset += 1 + 4;
+                }
+            }
+        }
+
+        nDllNames = (quint32)XBinary::align_up(nDllNames, 2);
+        char *pIID = nullptr;
+
+        if (!bIs64) {
+            pIID = pMemOut0 + ih32.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+        } else {
+            pIID = pMemOut0 + ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+        }
+
+        char *pDllNames = pMemOut0 + nINamePosition;
+        char *pImportedNames = pDllNames + nDllNames;
+        char *pImportedNamesStart = pImportedNames;
+
+        for (pOffset = pIData; XBinary::_read_uint32(pOffset, false); ++pOffset) {
+            quint32 nNameOffset = XBinary::_read_uint32(pOffset, false);
+            char *pDName = baImport.data() + nNameOffset;
+            int nNameSize = (int)strlen(pDName);
+            quint32 nIAT = XBinary::_read_uint32(pOffset + 4, false) + nRVAmin;
+
+            if (nINamePosition) {
+                strcpy(pDllNames, pDName);
+                XBinary::_write_uint32(pIID + offsetof(IMAGE_IMPORT_DESCRIPTOR, Name), (quint32)(pDllNames - pMemOut0), false);
+                pDllNames += nNameSize + 1;
+            } else {
+                strcpy(pMemOut0 + XBinary::_read_uint32(pIID + offsetof(IMAGE_IMPORT_DESCRIPTOR, Name), false), pDName);
+            }
+
+            XBinary::_write_uint32(pIID + offsetof(IMAGE_IMPORT_DESCRIPTOR, FirstThunk), nIAT, false);
+            char *pIAT = pMemOut0 + nIAT;
+            pOffset += 8;
+            int nStepIAT = bIs64 ? 8 : 4;
+
+            for (; *pOffset; pIAT += nStepIAT) {
+                if (*pOffset == 1) {
+                    pOffset++;
+                    int nIlen = (int)strlen(pOffset) + 1;
+
+                    if (nINamePosition) {
+                        if ((pImportedNames - pImportedNamesStart) & 1) {
+                            pImportedNames -= 1;
+                        }
+
+                        strcpy(pImportedNames + 2, pOffset);
+                        quint32 nDelta = (quint32)(pImportedNames - pMemOut0);
+                        XBinary::_write_uint32(pIAT, nDelta, false);
+                        pImportedNames += 2 + nIlen;
+                    } else {
+                        quint32 nIAddress = XBinary::_read_uint32(pIAT, false);
+                        strcpy(pMemOut0 + nIAddress + 2, pOffset);
+                    }
+
+                    pOffset += nIlen;
+                } else if ((unsigned char)(*pOffset) == 0xFF) {
+                    if (!bIs64) {
+                        XBinary::_write_uint32(pIAT, XBinary::_read_uint16(pOffset + 1, false) + 0x80000000, false);
+                    } else {
+                        XBinary::_write_uint64(pIAT, XBinary::_read_uint16(pOffset + 1, false) + 0x8000000000000000ULL, false);
+                    }
+
+                    pOffset += 1 + 2;
+                } else {
+                    quint32 nThunkOffset = XBinary::_read_uint32(pOffset + 1, false);
+
+                    if ((qint64)nThunkOffset + 4 > baImport.size()) {
+                        return _fallbackUnpack(pDevice, pPdStruct);
+                    }
+
+                    quint32 nThunkValue = XBinary::_read_uint32(baImport.data() + nThunkOffset, false);
+
+                    if (!bIs64) {
+                        XBinary::_write_uint32(pIAT, nThunkValue, false);
+                    } else {
+                        XBinary::_write_uint64(pIAT, nThunkValue, false);
+                    }
+
+                    pOffset += 1 + 4;
+                }
+            }
+
+            if (!bIs64) {
+                XBinary::_write_uint32(pIAT, 0, false);
+            } else {
+                XBinary::_write_uint64(pIAT, 0, false);
+            }
+
+            pIID += sizeof(IMAGE_IMPORT_DESCRIPTOR);
+        }
+    }
+
+    if (bIsTdRelocsPresent) {
+        if (!bIs64) {
+            XBinary::_copyMemory(pMemOut0 + ih32.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress,
+                                 "\x0\x0\x0\x0\x8\x0\x0\x0", 8);
+        } else {
+            XBinary::_copyMemory(pMemOut0 + ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress,
+                                 "\x0\x0\x0\x0\x8\x0\x0\x0", 8);
+        }
+    } else if (bIsRelocsPresent) {
+        quint32 nRelocsOffset = XBinary::_read_uint32(pExtraInfo, false);
+        quint8 nBig = (quint8)XBinary::_read_uint32(pExtraInfo + 4, false);
+        pExtraInfo += 5;
+        char *pRelocs = pMemOut + nRelocsOffset;
+        int nRelocsCount = 0;
+
+        for (char *pTemp = pRelocs; *pTemp; pTemp++) {
+            if ((unsigned char)(*pTemp) >= 0xF0) {
+                if (((unsigned char)(*pTemp) == 0xF0) && (XBinary::_read_uint16(pTemp + 1, false) == 0)) {
+                    pTemp += 4;
+                }
+
+                pTemp += 2;
+            }
+
+            nRelocsCount++;
+        }
+
+        QByteArray baBuffer(4 * nRelocsCount + 4, 0);
+        char *pOutReloc = baBuffer.data();
+        quint32 jc = (quint32)(-4);
+        char *pTemp = pRelocs;
+
+        for (; *pTemp; pTemp++) {
+            if ((unsigned char)(*pTemp) < 0xF0) {
+                jc += (unsigned char)(*pTemp);
+            } else {
+                quint32 dif = (*pTemp & 0x0F) * 0x10000 + XBinary::_read_uint16(pTemp + 1, false);
+                pTemp += 2;
+
+                if (dif == 0) {
+                    dif = XBinary::_read_uint32(pTemp + 1, false);
+                    pTemp += 4;
+                }
+
+                jc += dif;
+            }
+
+            XBinary::_write_uint32(pOutReloc, jc, false);
+            pOutReloc += 4;
+
+            char *pTempOffset = pMemOut + jc;
+
+            if (!bIs64) {
+                quint32 nTemp = XBinary::_read_uint32(pTempOffset, false);
+                XBinary::_write_uint32(pTempOffset, nTemp, true);
+            } else {
+                quint64 nTemp = XBinary::_read_uint64(pTempOffset, false);
+                XBinary::_write_uint64(pTempOffset, nTemp, true);
+            }
+        }
+
+        Q_UNUSED(nBig)
+        QList<XADDR> listRelocs;
+        quint32 nRelocs2 = (quint32)((pOutReloc - baBuffer.data()) / 4);
+
+        for (quint32 i = 0; i < nRelocs2; i++) {
+            quint32 nOffset = XBinary::_read_uint32(baBuffer.data() + 4 * i, false);
+            char *pTempOffset = pMemOut + nOffset;
+
+            if (!bIs64) {
+                XBinary::_write_uint32(pTempOffset, XBinary::_read_uint32(pTempOffset, false) + ih32.OptionalHeader.ImageBase + nRVAmin, false);
+            } else {
+                XBinary::_write_uint64(pTempOffset, XBinary::_read_uint64(pTempOffset, false) + ih64.OptionalHeader.ImageBase + nRVAmin, false);
+            }
+
+            listRelocs.append(nRVAmin + nOffset);
+        }
+
+        QByteArray baRelocs = XPE::relocsAsRVAListToByteArray(&listRelocs, bIs64);
+
+        if (!bIs64) {
+            XBinary::_copyMemory(pMemOut0 + ih32.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress, baRelocs.data(), baRelocs.size());
+            ih32.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].Size = baRelocs.size();
+        } else {
+            XBinary::_copyMemory(pMemOut0 + ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress, baRelocs.data(), baRelocs.size());
+            ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].Size = baRelocs.size();
+        }
+    }
+
+    if (bIsExportPresent) {
+        char *pExport = nullptr;
+
+        if (!bIs64) {
+            pExport = pMemOut0 + ih32.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+        } else {
+            pExport = pMemOut0 + ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+        }
+
+        pe.read_array(pe.getDataDirectoryOffset(XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_EXPORT), pExport,
+                      pe.getOptionalHeader_DataDirectory(XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_EXPORT).Size);
+
+        qint32 nDelta = 0;
+
+        if (!bIs64) {
+            nDelta = pe.getOptionalHeader_DataDirectory(XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_EXPORT).VirtualAddress -
+                     ih32.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+        } else {
+            nDelta = pe.getOptionalHeader_DataDirectory(XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_EXPORT).VirtualAddress -
+                     ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+        }
+
+        XBinary::_write_uint32(pExport + offsetof(IMAGE_EXPORT_DIRECTORY, Name), XBinary::_read_uint32(pExport + offsetof(IMAGE_EXPORT_DIRECTORY, Name), false) - nDelta, false);
+        XBinary::_write_uint32(pExport + offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfFunctions),
+                               XBinary::_read_uint32(pExport + offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfFunctions), false) - nDelta, false);
+        XBinary::_write_uint32(pExport + offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfNames),
+                               XBinary::_read_uint32(pExport + offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfNames), false) - nDelta, false);
+        XBinary::_write_uint32(pExport + offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfNameOrdinals),
+                               XBinary::_read_uint32(pExport + offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfNameOrdinals), false) - nDelta, false);
+
+        quint32 nNumberOfNames = XBinary::_read_uint32(pExport + offsetof(IMAGE_EXPORT_DIRECTORY, NumberOfNames), false);
+        quint32 nAddressOfNames = XBinary::_read_uint32(pExport + offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfNames), false);
+        char *pNames = pMemOut0 + nAddressOfNames;
+
+        for (quint32 i = 0; i < nNumberOfNames; i++) {
+            XBinary::_write_uint32(pNames, XBinary::_read_uint32(pNames, false) - nDelta, false);
+            pNames += 4;
+        }
+    }
+
+    if (bIsResourcesPresent) {
+        quint16 nIconDirCount = XBinary::_read_uint16(pExtraInfo, false);
+        pExtraInfo += 2;
+        QList<XPE::RESOURCE_RECORD> listResources = pe.getResources(10000, pPdStruct);
+        quint32 nSectionAddress = pe.getSection_VirtualAddress(2);
+        quint32 nMaxOffset = 0;
+        QMap<quint32, QString> mapResNames;
+
+        for (int i = 0; i < listResources.count(); i++) {
+            nMaxOffset = qMax((quint32)(listResources.at(i).nIRDEOffset + sizeof(IMAGE_RESOURCE_DATA_ENTRY)), nMaxOffset);
+
+            for (int j = 0; j < 3; j++) {
+                if (!listResources.at(i).irin[j].sName.isEmpty()) {
+                    mapResNames.insert(listResources.at(i).irin[j].nNameOffset, listResources.at(i).irin[j].sName);
+                }
+            }
+        }
+
+        quint32 nResNamesData = 0;
+        QMapIterator<quint32, QString> iRes(mapResNames);
+
+        while (iRes.hasNext()) {
+            iRes.next();
+            nResNamesData += 2 + iRes.value().length() * 2;
+        }
+
+        nMaxOffset += nResNamesData;
+
+        if (!bIs64) {
+            nMaxOffset = qMin(nMaxOffset, ih32.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_RESOURCE].Size);
+        } else {
+            nMaxOffset = qMin(nMaxOffset, ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_RESOURCE].Size);
+        }
+
+        if (!bIs64) {
+            pe.read_array(pe.getDataDirectoryOffset(XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_RESOURCE),
+                          pMemOut0 + ih32.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_RESOURCE].VirtualAddress, nMaxOffset);
+        } else {
+            pe.read_array(pe.getDataDirectoryOffset(XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_RESOURCE),
+                          pMemOut0 + ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_RESOURCE].VirtualAddress, nMaxOffset);
+        }
+
+        for (int i = 0; i < listResources.count(); i++) {
+            if ((listResources.at(i).nOffset != -1) && (listResources.at(i).nAddress >= nSectionAddress + nBaseAddress)) {
+                quint32 nOrigOffset = pe.read_uint32(listResources.at(i).nOffset - 4);
+                char *pIRDE = nullptr;
+
+                if (!bIs64) {
+                    pIRDE = pMemOut0 + ih32.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_RESOURCE].VirtualAddress + listResources.at(i).nIRDEOffset;
+                } else {
+                    pIRDE = pMemOut0 + ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_RESOURCE].VirtualAddress + listResources.at(i).nIRDEOffset;
+                }
+
+                XBinary::_write_uint32(pIRDE, nOrigOffset, false);
+                pe.read_array(listResources.at(i).nOffset, pMemOut0 + nOrigOffset, XBinary::align_up(listResources.at(i).nSize, 4));
+
+                if (nIconDirCount && (!listResources.at(i).irin[0].bIsName) && (listResources.at(i).irin[0].nID == XPE_DEF::S_RT_GROUP_ICON)) {
+                    XBinary::_write_uint32(pMemOut0 + nOrigOffset + 4, nIconDirCount, false);
+                    nIconDirCount = 0;
+                }
+            }
+        }
+    }
+
+    qint64 nFileSize = 0;
+
+    for (int i = 0; i < listSections.count(); i++) {
+        IMAGE_SECTION_HEADER ish = listSections.at(i);
+
+        if (ish.PointerToRawData) {
+            nFileSize = qMax((qint64)(ish.PointerToRawData + ish.SizeOfRawData), nFileSize);
+        }
+    }
+
+    if (!bIs64) {
+        nFileSize = XBinary::align_up(nFileSize, ih32.OptionalHeader.FileAlignment);
+    } else {
+        nFileSize = XBinary::align_up(nFileSize, ih64.OptionalHeader.FileAlignment);
+    }
+
+    QByteArray baResultFile(nFileSize, 0);
+    QBuffer buffer(&baResultFile);
+
+    if (!buffer.open(QIODevice::ReadWrite)) {
+        return _fallbackUnpack(pDevice, pPdStruct);
+    }
+
+    XPE peNew(&buffer);
+    qint64 nCurrentOffset = 0;
+    peNew.write_array(nCurrentOffset, (char *)&idh, sizeof(IMAGE_DOS_HEADEREX));
+    nCurrentOffset += sizeof(IMAGE_DOS_HEADEREX);
+    peNew.write_array(nCurrentOffset, baStub.data(), baStub.size());
+    nCurrentOffset += baStub.size();
+
+    if (!bIs64) {
+        peNew.write_array(nCurrentOffset, (char *)&ih32, sizeof(IMAGE_NT_HEADERS32));
+    } else {
+        peNew.write_array(nCurrentOffset, (char *)&ih64, sizeof(IMAGE_NT_HEADERS64));
+    }
+
+    for (int i = 0; i < listSections.count(); i++) {
+        IMAGE_SECTION_HEADER ish = listSections.at(i);
+        peNew.setSectionHeader(i, &ish);
+
+        if (ish.PointerToRawData) {
+            peNew.write_array(ish.PointerToRawData, pMemOut0 + ish.VirtualAddress, XBinary::align_up(ish.SizeOfRawData, nFileAlignment));
+        }
+    }
+
+    XPE_DEF::IMAGE_DATA_DIRECTORY idd = {};
+    peNew.setOptionalHeader_DataDirectory(XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_DEBUG, &idd);
+    peNew.setOptionalHeader_DataDirectory(XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_IAT, &idd);
+    peNew.setOptionalHeader_DataDirectory(XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT, &idd);
+    peNew.setOptionalHeader_CheckSum(0);
+
+    if (pe.isOverlayPresent(pPdStruct)) {
+        const qint64 nOverlayOffset = pe.getOverlayOffset(pPdStruct);
+        const qint64 nOverlaySize = pe.getOverlaySize(pPdStruct);
+
+        if ((nOverlayOffset >= 0) && (nOverlaySize > 0)) {
+            QByteArray baOverlay = read_array_process(nOverlayOffset, nOverlaySize, pPdStruct);
+
+            if ((baOverlay.size() != nOverlaySize) || (!XBinary::isPdStructNotCanceled(pPdStruct))) {
+                buffer.close();
+
+                return _fallbackUnpack(pDevice, pPdStruct);
+            }
+
+            baResultFile.append(baOverlay);
+        }
+    }
+
+    buffer.close();
+
+    return _writeBufferToDevice(baResultFile, pDevice, pPdStruct);
+}
+
+bool XUPX::_unpackELF(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct)
+{
+    XELF elf(this->getDevice(), this->isImage(), this->getModuleAddress());
+
+    if (!elf.isValid(pPdStruct)) {
+        return _runUPXDecompress(pDevice, pPdStruct);
+    }
+
+    bool bIsBE = (elf.getEndian() == ENDIAN_BIG);
+    QByteArray baPInfo = read_array_process(info.nDataOffset, sizeof(p_info), pPdStruct);
+
+    if (baPInfo.size() != (qint64)sizeof(p_info)) {
+        return _runUPXDecompress(pDevice, pPdStruct);
+    }
+
+    quint32 nOrigFileSize = XBinary::_read_uint32(baPInfo.data() + offsetof(p_info, p_filesize), bIsBE);
+    quint32 nBlockSize = XBinary::_read_uint32(baPInfo.data() + offsetof(p_info, p_blocksize), bIsBE);
+
+    if ((!nOrigFileSize) || (!nBlockSize) || (nBlockSize > nOrigFileSize)) {
+        return _runUPXDecompress(pDevice, pPdStruct);
+    }
+
+    QByteArray baOutput;
+    QBuffer buffer(&baOutput);
+
+    if (!buffer.open(QIODevice::WriteOnly)) {
+        return false;
+    }
+
+    qint64 nCurrentOffset = info.nDataOffset + sizeof(p_info);
+    quint32 nTotalOut = 0;
+    bool bReachedEnd = false;
+
+    while (XBinary::isPdStructNotCanceled(pPdStruct)) {
+        QByteArray baBInfo = read_array_process(nCurrentOffset, sizeof(b_info), pPdStruct);
+
+        if (baBInfo.size() != (qint64)sizeof(b_info)) {
+            break;
+        }
+
+        b_info header = {};
+        XBinary::_copyMemory((char *)&header, baBInfo.constData(), sizeof(b_info));
+
+        quint32 nUncompressedSize = XBinary::_read_uint32((char *)&header.sz_unc, bIsBE);
+        quint32 nCompressedSize = XBinary::_read_uint32((char *)&header.sz_cpr, bIsBE);
+        nCurrentOffset += sizeof(b_info);
+
+        if (nUncompressedSize == 0) {
+            if (XBinary::_read_uint32((char *)&header.sz_cpr, false) == 0x21585055) {
+                bReachedEnd = true;
+            }
+
+            break;
+        }
+
+        if ((!nCompressedSize) || (nCompressedSize > nBlockSize) || (nUncompressedSize > nBlockSize)) {
+            break;
+        }
+
+        QByteArray baBlock = read_array_process(nCurrentOffset, nCompressedSize, pPdStruct);
+
+        if ((quint32)baBlock.size() != nCompressedSize) {
+            break;
+        }
+
+        QByteArray baDecoded;
+
+        if (nCompressedSize < nUncompressedSize) {
+            baDecoded.resize(nUncompressedSize);
+            quint32 nDecodedSize = nUncompressedSize;
+
+            if (!_upxDecompress((const unsigned char *)baBlock.constData(), nCompressedSize, (unsigned char *)baDecoded.data(), &nDecodedSize, header.b_method)) {
+                break;
+            }
+
+            baDecoded.resize(nDecodedSize);
+
+            if (header.b_ftid) {
+                if (!applyPEFilter((unsigned char *)baDecoded.data(), baDecoded.size(), header.b_ftid, header.b_cto8, 0)) {
+                    break;
+                }
+            }
+        } else if (nCompressedSize == nUncompressedSize) {
+            baDecoded = baBlock;
+        } else {
+            break;
+        }
+
+        if (buffer.write(baDecoded) != baDecoded.size()) {
+            return false;
+        }
+
+        nTotalOut += baDecoded.size();
+        nCurrentOffset += nCompressedSize;
+    }
+
+    buffer.close();
+
+    if (bReachedEnd && (nTotalOut == nOrigFileSize) && baOutput.startsWith("\x7f"
+                                                                           "ELF")) {
+        return _writeBufferToDevice(baOutput, pDevice, pPdStruct);
+    }
+
+    return _runUPXDecompress(pDevice, pPdStruct);
+}
+
+bool XUPX::_runUPXDecompress(QIODevice *pDevice, PDSTRUCT *pPdStruct)
+{
+    if ((!getDevice()) || (!pDevice)) {
         return false;
     }
 
@@ -696,9 +1706,6 @@ bool XUPX::_runUPXDecompress(const QString &sOutputFileName, PDSTRUCT *pPdStruct
         return false;
     }
 
-    QFileInfo fiOutput(sOutputFileName);
-    QDir().mkpath(fiOutput.absolutePath());
-
     QTemporaryDir tempDir;
 
     if (!tempDir.isValid()) {
@@ -706,6 +1713,7 @@ bool XUPX::_runUPXDecompress(const QString &sOutputFileName, PDSTRUCT *pPdStruct
     }
 
     QString sTempInputFileName = tempDir.filePath("packed_input.bin");
+    QString sTempOutputFileName = tempDir.filePath("unpacked_output.bin");
 
     if (!XBinary::dumpToFile(sTempInputFileName, getDevice(), pPdStruct)) {
         return false;
@@ -715,7 +1723,7 @@ bool XUPX::_runUPXDecompress(const QString &sOutputFileName, PDSTRUCT *pPdStruct
     process.setProcessChannelMode(QProcess::MergedChannels);
 
     QStringList listArgs;
-    listArgs << "-d" << "-q" << "--no-color" << "--no-backup" << "--force-overwrite" << QString("-o%1").arg(sOutputFileName) << sTempInputFileName;
+    listArgs << "-d" << "-q" << "--no-color" << "--no-backup" << "--force-overwrite" << QString("-o%1").arg(sTempOutputFileName) << sTempInputFileName;
 
     process.start(sUPX, listArgs);
 
@@ -738,9 +1746,9 @@ bool XUPX::_runUPXDecompress(const QString &sOutputFileName, PDSTRUCT *pPdStruct
         return false;
     }
 
-    QFileInfo fiResult(sOutputFileName);
+    QFileInfo fiResult(sTempOutputFileName);
 
-    return fiResult.exists() && fiResult.isFile() && (fiResult.size() >= 0);
+    return fiResult.exists() && fiResult.isFile() && (fiResult.size() >= 0) && _copyFileToDevice(sTempOutputFileName, pDevice, pPdStruct);
 }
 
 QList<XBinary::FPART> XUPX::getFileParts(quint32 nFileParts, qint32 nLimit, PDSTRUCT *pPdStruct)
