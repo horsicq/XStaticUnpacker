@@ -80,15 +80,6 @@ XBinary::XCONVERT _TABLE_XUPX_STRUCTID[] = {
     {XUPX::STRUCTID_HEADER, "HEADER", QString("Header")},
 };
 
-namespace {
-using IMAGE_DOS_HEADEREX = XMSDOS_DEF::IMAGE_DOS_HEADEREX;
-using IMAGE_NT_HEADERS32 = XPE_DEF::IMAGE_NT_HEADERS32;
-using IMAGE_NT_HEADERS64 = XPE_DEF::IMAGE_NT_HEADERS64;
-using IMAGE_SECTION_HEADER = XPE_DEF::IMAGE_SECTION_HEADER;
-using IMAGE_IMPORT_DESCRIPTOR = XPE_DEF::IMAGE_IMPORT_DESCRIPTOR;
-using IMAGE_EXPORT_DIRECTORY = XPE_DEF::IMAGE_EXPORT_DIRECTORY;
-using IMAGE_RESOURCE_DATA_ENTRY = XPE_DEF::IMAGE_RESOURCE_DATA_ENTRY;
-
 const qint64 XUPX_TRAILER_READ_SIZE = 0x3000;
 const qint64 XUPX_HEADER_SEARCH_SIZE = 0x1000;
 const qint64 XUPX_PACK_HEADER_SIZE = 36;
@@ -214,7 +205,6 @@ static bool applyPEFilter(unsigned char *pData, qint64 nDataSize, quint8 nFilter
 
     return true;
 }
-}  // namespace
 
 XUPX::XUPX(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : XBinary(pDevice, bIsImage, nModuleAddress)
 {
@@ -1131,7 +1121,7 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
     }
 
     bool bIs64 = pe.is64();
-    IMAGE_DOS_HEADEREX idh = pe.getDosHeaderEx();
+    XMSDOS_DEF::IMAGE_DOS_HEADEREX idh = pe.getDosHeaderEx();
     QByteArray baStub = pe.getDosStub();
     qint64 nBaseAddress = pe.getBaseAddress();
 
@@ -1141,43 +1131,43 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
 
     quint32 nExtraInfoOffset = XBinary::_read_uint32(baPayload.data() + baPayload.size() - 4, false);
 
-    if ((!bIs64) && ((quint64)nExtraInfoOffset + sizeof(IMAGE_NT_HEADERS32) > (quint64)baPayload.size())) {
+    if ((!bIs64) && ((quint64)nExtraInfoOffset + sizeof(XPE_DEF::IMAGE_NT_HEADERS32) > (quint64)baPayload.size())) {
         return _fallbackUnpack(pDevice, pPdStruct);
     }
 
-    if ((bIs64) && ((quint64)nExtraInfoOffset + sizeof(IMAGE_NT_HEADERS64) > (quint64)baPayload.size())) {
+    if ((bIs64) && ((quint64)nExtraInfoOffset + sizeof(XPE_DEF::IMAGE_NT_HEADERS64) > (quint64)baPayload.size())) {
         return _fallbackUnpack(pDevice, pPdStruct);
     }
 
     char *pExtraInfo = baPayload.data() + nExtraInfoOffset;
-    IMAGE_NT_HEADERS32 ih32 = {};
-    IMAGE_NT_HEADERS64 ih64 = {};
+    XPE_DEF::IMAGE_NT_HEADERS32 ih32 = {};
+    XPE_DEF::IMAGE_NT_HEADERS64 ih64 = {};
     quint32 nFileAlignment = 0;
     quint32 nSectionAlignment = 0;
     qint64 nRVAmin = 0;
-    QList<IMAGE_SECTION_HEADER> listSections;
+    QList<XPE_DEF::IMAGE_SECTION_HEADER> listSections;
     int nNumberOfSections = 0;
     quint32 nBaseOfCode = 0;
     quint32 nSizeOfCode = 0;
 
     if (!bIs64) {
-        XBinary::_copyMemory((char *)&ih32, pExtraInfo, sizeof(IMAGE_NT_HEADERS32));
+        XBinary::_copyMemory((char *)&ih32, pExtraInfo, sizeof(XPE_DEF::IMAGE_NT_HEADERS32));
         nFileAlignment = ih32.OptionalHeader.FileAlignment;
         nSectionAlignment = ih32.OptionalHeader.SectionAlignment;
         nRVAmin = XBinary::align_up(ih32.OptionalHeader.SizeOfHeaders, nSectionAlignment);
         nNumberOfSections = ih32.FileHeader.NumberOfSections;
         nBaseOfCode = ih32.OptionalHeader.BaseOfCode;
         nSizeOfCode = ih32.OptionalHeader.SizeOfCode;
-        pExtraInfo += sizeof(IMAGE_NT_HEADERS32);
+        pExtraInfo += sizeof(XPE_DEF::IMAGE_NT_HEADERS32);
     } else {
-        XBinary::_copyMemory((char *)&ih64, pExtraInfo, sizeof(IMAGE_NT_HEADERS64));
+        XBinary::_copyMemory((char *)&ih64, pExtraInfo, sizeof(XPE_DEF::IMAGE_NT_HEADERS64));
         nFileAlignment = ih64.OptionalHeader.FileAlignment;
         nSectionAlignment = ih64.OptionalHeader.SectionAlignment;
         nRVAmin = XBinary::align_up(ih64.OptionalHeader.SizeOfHeaders, nSectionAlignment);
         nNumberOfSections = ih64.FileHeader.NumberOfSections;
         nBaseOfCode = ih64.OptionalHeader.BaseOfCode;
         nSizeOfCode = ih64.OptionalHeader.SizeOfCode;
-        pExtraInfo += sizeof(IMAGE_NT_HEADERS64);
+        pExtraInfo += sizeof(XPE_DEF::IMAGE_NT_HEADERS64);
     }
 
     if (((!bIs64) && (ih32.Signature != XPE_DEF::S_IMAGE_NT_SIGNATURE)) || ((bIs64) && (ih64.Signature != XPE_DEF::S_IMAGE_NT_SIGNATURE))) {
@@ -1185,10 +1175,10 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
     }
 
     for (int i = 0; i < nNumberOfSections; i++) {
-        IMAGE_SECTION_HEADER sectionHeader = {};
-        XBinary::_copyMemory((char *)&sectionHeader, pExtraInfo, sizeof(IMAGE_SECTION_HEADER));
+        XPE_DEF::IMAGE_SECTION_HEADER sectionHeader = {};
+        XBinary::_copyMemory((char *)&sectionHeader, pExtraInfo, sizeof(XPE_DEF::IMAGE_SECTION_HEADER));
         listSections.append(sectionHeader);
-        pExtraInfo += sizeof(IMAGE_SECTION_HEADER);
+        pExtraInfo += sizeof(XPE_DEF::IMAGE_SECTION_HEADER);
     }
 
     QByteArray baImage(nRVAmin + baPayload.size(), 0);
@@ -1287,13 +1277,13 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
 
             if (nINamePosition) {
                 strcpy(pDllNames, pDName);
-                XBinary::_write_uint32(pIID + offsetof(IMAGE_IMPORT_DESCRIPTOR, Name), (quint32)(pDllNames - pMemOut0), false);
+                XBinary::_write_uint32(pIID + offsetof(XPE_DEF::IMAGE_IMPORT_DESCRIPTOR, Name), (quint32)(pDllNames - pMemOut0), false);
                 pDllNames += nNameSize + 1;
             } else {
-                strcpy(pMemOut0 + XBinary::_read_uint32(pIID + offsetof(IMAGE_IMPORT_DESCRIPTOR, Name), false), pDName);
+                strcpy(pMemOut0 + XBinary::_read_uint32(pIID + offsetof(XPE_DEF::IMAGE_IMPORT_DESCRIPTOR, Name), false), pDName);
             }
 
-            XBinary::_write_uint32(pIID + offsetof(IMAGE_IMPORT_DESCRIPTOR, FirstThunk), nIAT, false);
+            XBinary::_write_uint32(pIID + offsetof(XPE_DEF::IMAGE_IMPORT_DESCRIPTOR, FirstThunk), nIAT, false);
             char *pIAT = pMemOut0 + nIAT;
             pOffset += 8;
             int nStepIAT = bIs64 ? 8 : 4;
@@ -1351,7 +1341,7 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
                 XBinary::_write_uint64(pIAT, 0, false);
             }
 
-            pIID += sizeof(IMAGE_IMPORT_DESCRIPTOR);
+            pIID += sizeof(XPE_DEF::IMAGE_IMPORT_DESCRIPTOR);
         }
     }
 
@@ -1466,16 +1456,16 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
                      ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
         }
 
-        XBinary::_write_uint32(pExport + offsetof(IMAGE_EXPORT_DIRECTORY, Name), XBinary::_read_uint32(pExport + offsetof(IMAGE_EXPORT_DIRECTORY, Name), false) - nDelta, false);
-        XBinary::_write_uint32(pExport + offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfFunctions),
-                               XBinary::_read_uint32(pExport + offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfFunctions), false) - nDelta, false);
-        XBinary::_write_uint32(pExport + offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfNames),
-                               XBinary::_read_uint32(pExport + offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfNames), false) - nDelta, false);
-        XBinary::_write_uint32(pExport + offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfNameOrdinals),
-                               XBinary::_read_uint32(pExport + offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfNameOrdinals), false) - nDelta, false);
+        XBinary::_write_uint32(pExport + offsetof(XPE_DEF::IMAGE_EXPORT_DIRECTORY, Name), XBinary::_read_uint32(pExport + offsetof(XPE_DEF::IMAGE_EXPORT_DIRECTORY, Name), false) - nDelta, false);
+        XBinary::_write_uint32(pExport + offsetof(XPE_DEF::IMAGE_EXPORT_DIRECTORY, AddressOfFunctions),
+                               XBinary::_read_uint32(pExport + offsetof(XPE_DEF::IMAGE_EXPORT_DIRECTORY, AddressOfFunctions), false) - nDelta, false);
+        XBinary::_write_uint32(pExport + offsetof(XPE_DEF::IMAGE_EXPORT_DIRECTORY, AddressOfNames),
+                               XBinary::_read_uint32(pExport + offsetof(XPE_DEF::IMAGE_EXPORT_DIRECTORY, AddressOfNames), false) - nDelta, false);
+        XBinary::_write_uint32(pExport + offsetof(XPE_DEF::IMAGE_EXPORT_DIRECTORY, AddressOfNameOrdinals),
+                               XBinary::_read_uint32(pExport + offsetof(XPE_DEF::IMAGE_EXPORT_DIRECTORY, AddressOfNameOrdinals), false) - nDelta, false);
 
-        quint32 nNumberOfNames = XBinary::_read_uint32(pExport + offsetof(IMAGE_EXPORT_DIRECTORY, NumberOfNames), false);
-        quint32 nAddressOfNames = XBinary::_read_uint32(pExport + offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfNames), false);
+        quint32 nNumberOfNames = XBinary::_read_uint32(pExport + offsetof(XPE_DEF::IMAGE_EXPORT_DIRECTORY, NumberOfNames), false);
+        quint32 nAddressOfNames = XBinary::_read_uint32(pExport + offsetof(XPE_DEF::IMAGE_EXPORT_DIRECTORY, AddressOfNames), false);
         char *pNames = pMemOut0 + nAddressOfNames;
 
         for (quint32 i = 0; i < nNumberOfNames; i++) {
@@ -1493,7 +1483,7 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
         QMap<quint32, QString> mapResNames;
 
         for (int i = 0; i < listResources.count(); i++) {
-            nMaxOffset = qMax((quint32)(listResources.at(i).nIRDEOffset + sizeof(IMAGE_RESOURCE_DATA_ENTRY)), nMaxOffset);
+            nMaxOffset = qMax((quint32)(listResources.at(i).nIRDEOffset + sizeof(XPE_DEF::IMAGE_RESOURCE_DATA_ENTRY)), nMaxOffset);
 
             for (int j = 0; j < 3; j++) {
                 if (!listResources.at(i).irin[j].sName.isEmpty()) {
@@ -1551,7 +1541,7 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
     qint64 nFileSize = 0;
 
     for (int i = 0; i < listSections.count(); i++) {
-        IMAGE_SECTION_HEADER ish = listSections.at(i);
+        XPE_DEF::IMAGE_SECTION_HEADER ish = listSections.at(i);
 
         if (ish.PointerToRawData) {
             nFileSize = qMax((qint64)(ish.PointerToRawData + ish.SizeOfRawData), nFileSize);
@@ -1573,20 +1563,20 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
 
     XPE peNew(&buffer);
     qint64 nCurrentOffset = 0;
-    peNew.write_array(nCurrentOffset, (char *)&idh, sizeof(IMAGE_DOS_HEADEREX));
-    nCurrentOffset += sizeof(IMAGE_DOS_HEADEREX);
+    peNew.write_array(nCurrentOffset, (char *)&idh, sizeof(XMSDOS_DEF::IMAGE_DOS_HEADEREX));
+    nCurrentOffset += sizeof(XMSDOS_DEF::IMAGE_DOS_HEADEREX);
     peNew.write_array(nCurrentOffset, baStub.data(), baStub.size());
     nCurrentOffset += baStub.size();
 
     if (!bIs64) {
-        peNew.write_array(nCurrentOffset, (char *)&ih32, sizeof(IMAGE_NT_HEADERS32));
+        peNew.write_array(nCurrentOffset, (char *)&ih32, sizeof(XPE_DEF::IMAGE_NT_HEADERS32));
     } else {
-        peNew.write_array(nCurrentOffset, (char *)&ih64, sizeof(IMAGE_NT_HEADERS64));
+        peNew.write_array(nCurrentOffset, (char *)&ih64, sizeof(XPE_DEF::IMAGE_NT_HEADERS64));
     }
 
     for (int i = 0; i < listSections.count(); i++) {
-        IMAGE_SECTION_HEADER ish = listSections.at(i);
-        peNew.setSectionHeader(i, &ish);
+        XPE_DEF::IMAGE_SECTION_HEADER ish = listSections.at(i);
+        peNew.setSectionHeader(i, reinterpret_cast<XPE_DEF::IMAGE_SECTION_HEADER *>(&ish));
 
         if (ish.PointerToRawData) {
             peNew.write_array(ish.PointerToRawData, pMemOut0 + ish.VirtualAddress, XBinary::align_up(ish.SizeOfRawData, nFileAlignment));
