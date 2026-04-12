@@ -26,6 +26,7 @@ public:
         quint8 format;
         quint8 method;
         quint8 level;
+        quint8 filter;
         quint8 filter_cto;
         quint32 u_len;
         quint32 c_len;
@@ -35,6 +36,12 @@ public:
         quint8 n_mru;
         quint32 off_filter;
         quint32 nPackHeaderSize;
+        qint64 nHeaderOffset;
+        qint64 nDataOffset;
+    };
+
+    struct UNPACK_CONTEXT {
+        QList<ARCHIVERECORD> listRecords;
     };
 #pragma pack(push)
 #pragma pack(1)
@@ -122,6 +129,20 @@ public:
         UPX_F_DYLIB_PPC64 = 142
     };
 
+    enum UPX_M {
+        UPX_M_NRV2B_LE32 = 2,
+        UPX_M_NRV2B_8 = 3,
+        UPX_M_NRV2B_LE16 = 4,
+        UPX_M_NRV2D_LE32 = 5,
+        UPX_M_NRV2D_8 = 6,
+        UPX_M_NRV2D_LE16 = 7,
+        UPX_M_NRV2E_LE32 = 8,
+        UPX_M_NRV2E_8 = 9,
+        UPX_M_NRV2E_LE16 = 10,
+        UPX_M_LZMA = 14,
+        UPX_M_DEFLATE = 15
+    };
+
     explicit XUPX(QIODevice *pDevice, bool bIsImage = false, XADDR nModuleAddress = -1);
     ~XUPX() override;
 
@@ -141,6 +162,11 @@ public:
     virtual QString structIDToString(quint32 nID) override;
     virtual QList<DATA_HEADER> getDataHeaders(const DATA_HEADERS_OPTIONS &dataHeadersOptions, PDSTRUCT *pPdStruct) override;
     virtual QList<FPART> getFileParts(quint32 nFileParts, qint32 nLimit = -1, PDSTRUCT *pPdStruct = nullptr) override;
+    virtual bool initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct = nullptr) override;
+    virtual ARCHIVERECORD infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
+    virtual bool unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
+    virtual bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
+    virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
 
     INTERNAL_INFO getInternalInfo(PDSTRUCT *pPdStruct = nullptr);
 
@@ -152,6 +178,9 @@ public:
 
 private:
     INTERNAL_INFO _read_packheader(char *pInfoData, qint32 nDataSize, bool bIsBigEndian);
+    ARCHIVERECORD _createArchiveRecord(const INTERNAL_INFO &info);
+    QString _getUnpackedFileName();
+    bool _upxDecompress(const unsigned char *pSrc, quint32 nSrcSize, unsigned char *pDst, quint32 *pnDstSize, quint8 method);
     bool _unpackPE(const QString &sOutputFileName, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct);
     bool _unpackELF(const QString &sOutputFileName, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct);
 };

@@ -5,6 +5,13 @@
 
 #include "xupx.h"
 
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QProcess>
+#include <QStandardPaths>
+#include <QTemporaryDir>
+
 // clang-format off
 static XBinary::XCONVERT _TABLE_XUPX_UPX_F[] = {
     {XUPX::UPX_F_DOS_COM, "DOS_COM", QString("DOS COM")},
@@ -70,6 +77,7 @@ XBinary::XCONVERT _TABLE_XUPX_STRUCTID[] = {
 
 XUPX::XUPX(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : XBinary(pDevice, bIsImage, nModuleAddress)
 {
+    setIsArchive(true);
 }
 
 XUPX::~XUPX()
@@ -88,6 +96,8 @@ bool XUPX::isValid(PDSTRUCT *pPdStruct)
 
 bool XUPX::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
+    Q_UNUSED(pPdStruct)
+
     XUPX upx(pDevice);
 
     return upx.isValid();
@@ -178,7 +188,7 @@ XUPX::INTERNAL_INFO XUPX::getInternalInfo(PDSTRUCT *pPdStruct)
     if (!bFound) {
         XELF elf(this->getDevice(), this->isImage(), this->getModuleAddress());
         if (elf.isValid(pPdStruct)) {
-            bool bIsBE = (getEndian() == ENDIAN_BIG);
+            bool bIsBE = (elf.getEndian() == ENDIAN_BIG);
             result.fileType = elf.getFileType();
 
             qint64 nBufferSize = 0x3000;
@@ -372,7 +382,11 @@ qint64 XUPX::getFileFormatSize(PDSTRUCT *pPdStruct)
 QString XUPX::getVersion()
 {
     INTERNAL_INFO info = getInternalInfo();
-    return QString::number(info.version);
+    if (info.bIsValid) {
+        return QString::number(info.version);
+    }
+
+    return QString();
 }
 
 QList<XBinary::MAPMODE> XUPX::getMapModesList()
@@ -447,6 +461,179 @@ bool XUPX::unpack(const QString &sOutputFileName, PDSTRUCT *pPdStruct)
     return bResult;
 }
 
+XBinary::ARCHIVERECORD XUPX::_createArchiveRecord(const INTERNAL_INFO &info)
+{
+    ARCHIVERECORD result = {};
+
+    result.nStreamOffset = 0;
+    result.nStreamSize = getSize();
+    result.mapProperties.insert(FPART_PROP_ORIGINALNAME, _getUnpackedFileName());
+    result.mapProperties.insert(FPART_PROP_COMPRESSEDSIZE, getSize());
+    result.mapProperties.insert(FPART_PROP_UNCOMPRESSEDSIZE, (qint64)(info.u_file_size ? info.u_file_size : info.u_len));
+    result.mapProperties.insert(FPART_PROP_FILETYPE, (qint32)info.fileType);
+    result.mapProperties.insert(FPART_PROP_HANDLEMETHOD, HANDLE_METHOD_FILE);
+    result.mapProperties.insert(FPART_PROP_ISFOLDER, false);
+
+    QString sMethod = QString("UPX %1").arg(getCompressionMethod());
+    QString sVersion = getPackerVersion();
+
+    if (!sVersion.isEmpty()) {
+        sMethod += QString(" (v%1)").arg(sVersion);
+    }
+
+    result.mapProperties.insert(FPART_PROP_INFO, sMethod);
+
+    return result;
+}
+
+QString XUPX::_getUnpackedFileName()
+{
+    QString sResult = "content";
+
+    if (QFile *pFile = qobject_cast<QFile *>(getDevice())) {
+        QFileInfo fi(pFile->fileName());
+
+        if (!fi.fileName().isEmpty()) {
+            sResult = fi.fileName();
+        }
+    } else if (getDevice() && !getDevice()->objectName().isEmpty()) {
+        QFileInfo fi(getDevice()->objectName());
+
+        if (!fi.fileName().isEmpty()) {
+            sResult = fi.fileName();
+        }
+    }
+
+    return sResult;
+}
+
+bool XUPX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
+{
+    if (!pState) {
+        return false;
+    }
+
+    pState->nCurrentOffset = 0;
+    pState->nTotalSize = getSize();
+    pState->nCurrentIndex = 0;
+    pState->nNumberOfRecords = 0;
+    pState->mapUnpackProperties = mapProperties;
+    pState->pContext = nullptr;
+
+    INTERNAL_INFO info = getInternalInfo(pPdStruct);
+
+    if (!info.bIsValid) {
+        return false;
+    }
+
+    UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT;
+    pContext->listRecords.append(_createArchiveRecord(info));
+
+    pState->pContext = pContext;
+    pState->nNumberOfRecords = pContext->listRecords.count();
+
+    return (pState->nNumberOfRecords > 0);
+}
+
+XBinary::ARCHIVERECORD XUPX::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    ARCHIVERECORD result = {};
+
+    if ((!pState) || (!pState->pContext)) {
+        return result;
+    }
+
+    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
+
+    if ((pState->nCurrentIndex >= 0) && (pState->nCurrentIndex < pContext->listRecords.count())) {
+        result = pContext->listRecords.at(pState->nCurrentIndex);
+    }
+
+    return result;
+}
+
+bool XUPX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct)
+{
+    if ((!pState) || (!pState->pContext) || (!pDevice)) {
+        return false;
+    }
+
+    if ((pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
+        return false;
+    }
+
+    QTemporaryDir tempDir;
+
+    if (!tempDir.isValid()) {
+        return false;
+    }
+
+    QString sTempOutputFileName = tempDir.filePath(_getUnpackedFileName());
+
+    if (!unpack(sTempOutputFileName, pPdStruct)) {
+        return false;
+    }
+
+    QFile fileUnpacked(sTempOutputFileName);
+
+    if (!fileUnpacked.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+
+    const qint64 nChunkSize = 0x100000;
+
+    while (!fileUnpacked.atEnd() && XBinary::isPdStructNotCanceled(pPdStruct)) {
+        QByteArray baData = fileUnpacked.read(nChunkSize);
+
+        if (baData.isEmpty() && !fileUnpacked.atEnd()) {
+            return false;
+        }
+
+        if ((!baData.isEmpty()) && (pDevice->write(baData) != baData.size())) {
+            return false;
+        }
+    }
+
+    return XBinary::isPdStructNotCanceled(pPdStruct);
+}
+
+bool XUPX::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    if ((!pState) || (!pState->pContext)) {
+        return false;
+    }
+
+    pState->nCurrentIndex++;
+
+    return (pState->nCurrentIndex < pState->nNumberOfRecords);
+}
+
+bool XUPX::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    if (!pState) {
+        return false;
+    }
+
+    if (pState->pContext) {
+        UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
+        pContext->listRecords.clear();
+        delete pContext;
+        pState->pContext = nullptr;
+    }
+
+    pState->nCurrentOffset = 0;
+    pState->nCurrentIndex = 0;
+    pState->nNumberOfRecords = 0;
+
+    return true;
+}
+
 bool XUPX::isPackedFile(PDSTRUCT *pPdStruct)
 {
     return getInternalInfo(pPdStruct).bIsValid;
@@ -485,35 +672,75 @@ QString XUPX::getCompressionMethod(PDSTRUCT *pPdStruct)
 
 bool XUPX::_unpackPE(const QString &sOutputFileName, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(sOutputFileName)
     Q_UNUSED(info)
-    Q_UNUSED(pPdStruct)
 
-    // TODO: Implement PE unpacking
-    // This would require:
-    // 1. Reading compressed data
-    // 2. Decompressing using the appropriate algorithm
-    // 3. Reconstructing the PE file structure
-    // 4. Handling import table reconstruction
-    // 5. Handling relocations
-    // 6. Applying filters
-
-    return false;
+    return _runUPXDecompress(sOutputFileName, pPdStruct);
 }
 
 bool XUPX::_unpackELF(const QString &sOutputFileName, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(sOutputFileName)
     Q_UNUSED(info)
-    Q_UNUSED(pPdStruct)
 
-    // TODO: Implement ELF unpacking
-    // This would require:
-    // 1. Reading compressed data
-    // 2. Decompressing using the appropriate algorithm
-    // 3. Reconstructing the ELF file structure
+    return _runUPXDecompress(sOutputFileName, pPdStruct);
+}
 
-    return false;
+bool XUPX::_runUPXDecompress(const QString &sOutputFileName, PDSTRUCT *pPdStruct)
+{
+    if ((!getDevice()) || (sOutputFileName.isEmpty())) {
+        return false;
+    }
+
+    QString sUPX = QStandardPaths::findExecutable("upx");
+
+    if (sUPX.isEmpty()) {
+        return false;
+    }
+
+    QFileInfo fiOutput(sOutputFileName);
+    QDir().mkpath(fiOutput.absolutePath());
+
+    QTemporaryDir tempDir;
+
+    if (!tempDir.isValid()) {
+        return false;
+    }
+
+    QString sTempInputFileName = tempDir.filePath("packed_input.bin");
+
+    if (!XBinary::dumpToFile(sTempInputFileName, getDevice(), pPdStruct)) {
+        return false;
+    }
+
+    QProcess process;
+    process.setProcessChannelMode(QProcess::MergedChannels);
+
+    QStringList listArgs;
+    listArgs << "-d" << "-q" << "--no-color" << "--no-backup" << "--force-overwrite" << QString("-o%1").arg(sOutputFileName) << sTempInputFileName;
+
+    process.start(sUPX, listArgs);
+
+    if (!process.waitForStarted()) {
+        return false;
+    }
+
+    while (process.state() != QProcess::NotRunning) {
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
+            process.kill();
+            process.waitForFinished();
+
+            return false;
+        }
+
+        process.waitForFinished(100);
+    }
+
+    if ((process.exitStatus() != QProcess::NormalExit) || (process.exitCode() != 0)) {
+        return false;
+    }
+
+    QFileInfo fiResult(sOutputFileName);
+
+    return fiResult.exists() && fiResult.isFile() && (fiResult.size() >= 0);
 }
 
 QList<XBinary::FPART> XUPX::getFileParts(quint32 nFileParts, qint32 nLimit, PDSTRUCT *pPdStruct)
