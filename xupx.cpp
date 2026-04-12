@@ -5,7 +5,7 @@
 
 #include "xupx.h"
 
-#include "Algos/xdeflatedecoder.h"
+#include "Algos/xucldecoder.h"
 #include "LzmaDec.h"
 
 #include <QDir>
@@ -15,10 +15,7 @@
 #include <QProcess>
 #include <QStandardPaths>
 #include <QTemporaryDir>
-
-extern "C" {
-#include <ucl/ucl.h>
-}
+#include <zlib.h>
 
 // clang-format off
 static XBinary::XCONVERT _TABLE_XUPX_UPX_F[] = {
@@ -125,6 +122,26 @@ static QString upxMethodToString(quint8 nMethod)
         case XUPX::UPX_M_DEFLATE: return "DEFLATE";
         default: return QString("Unknown (%1)").arg(nMethod);
     }
+}
+
+static bool upxMethodToUCLMethod(quint8 nMethod, XUCLDecoder::METHOD *pMethod)
+{
+    bool bResult = true;
+
+    switch (nMethod) {
+        case XUPX::UPX_M_NRV2B_8: *pMethod = XUCLDecoder::METHOD_NRV2B_8; break;
+        case XUPX::UPX_M_NRV2B_LE16: *pMethod = XUCLDecoder::METHOD_NRV2B_LE16; break;
+        case XUPX::UPX_M_NRV2B_LE32: *pMethod = XUCLDecoder::METHOD_NRV2B_LE32; break;
+        case XUPX::UPX_M_NRV2D_8: *pMethod = XUCLDecoder::METHOD_NRV2D_8; break;
+        case XUPX::UPX_M_NRV2D_LE16: *pMethod = XUCLDecoder::METHOD_NRV2D_LE16; break;
+        case XUPX::UPX_M_NRV2D_LE32: *pMethod = XUCLDecoder::METHOD_NRV2D_LE32; break;
+        case XUPX::UPX_M_NRV2E_8: *pMethod = XUCLDecoder::METHOD_NRV2E_8; break;
+        case XUPX::UPX_M_NRV2E_LE16: *pMethod = XUCLDecoder::METHOD_NRV2E_LE16; break;
+        case XUPX::UPX_M_NRV2E_LE32: *pMethod = XUCLDecoder::METHOD_NRV2E_LE32; break;
+        default: bResult = false; break;
+    }
+
+    return bResult;
 }
 
 static bool applyPEFilter(unsigned char *pData, qint64 nDataSize, quint8 nFilter, quint8 nFilterCTO, quint32 nAddValue)
@@ -982,24 +999,40 @@ bool XUPX::_upxDecompress(const unsigned char *pSrc, quint32 nSrcSize, unsigned 
         case UPX_M_NRV2E_8:
         case UPX_M_NRV2E_LE16:
         case UPX_M_NRV2E_LE32: {
-            ucl_uint nDstSize = *pnDstSize;
-            int nRes = UCL_E_ERROR;
+            XUCLDecoder::METHOD uclMethod = XUCLDecoder::METHOD_NRV2B_8;
 
-            switch (method) {
-                case UPX_M_NRV2B_8: nRes = ucl_nrv2b_decompress_safe_8(pSrc, nSrcSize, pDst, &nDstSize, nullptr); break;
-                case UPX_M_NRV2B_LE16: nRes = ucl_nrv2b_decompress_safe_le16(pSrc, nSrcSize, pDst, &nDstSize, nullptr); break;
-                case UPX_M_NRV2B_LE32: nRes = ucl_nrv2b_decompress_safe_le32(pSrc, nSrcSize, pDst, &nDstSize, nullptr); break;
-                case UPX_M_NRV2D_8: nRes = ucl_nrv2d_decompress_safe_8(pSrc, nSrcSize, pDst, &nDstSize, nullptr); break;
-                case UPX_M_NRV2D_LE16: nRes = ucl_nrv2d_decompress_safe_le16(pSrc, nSrcSize, pDst, &nDstSize, nullptr); break;
-                case UPX_M_NRV2D_LE32: nRes = ucl_nrv2d_decompress_safe_le32(pSrc, nSrcSize, pDst, &nDstSize, nullptr); break;
-                case UPX_M_NRV2E_8: nRes = ucl_nrv2e_decompress_safe_8(pSrc, nSrcSize, pDst, &nDstSize, nullptr); break;
-                case UPX_M_NRV2E_LE16: nRes = ucl_nrv2e_decompress_safe_le16(pSrc, nSrcSize, pDst, &nDstSize, nullptr); break;
-                case UPX_M_NRV2E_LE32: nRes = ucl_nrv2e_decompress_safe_le32(pSrc, nSrcSize, pDst, &nDstSize, nullptr); break;
-                default: break;
+            if (upxMethodToUCLMethod(method, &uclMethod)) {
+                QByteArray baInput((const char *)pSrc, (qint32)nSrcSize);
+                QByteArray baOutput;
+                baOutput.resize(*pnDstSize);
+
+                QBuffer bufferInput(&baInput);
+                QBuffer bufferOutput(&baOutput);
+
+                if (bufferInput.open(QIODevice::ReadOnly) && bufferOutput.open(QIODevice::WriteOnly)) {
+                    XBinary::DATAPROCESS_STATE decompressState = {};
+                    decompressState.pDeviceInput = &bufferInput;
+                    decompressState.pDeviceOutput = &bufferOutput;
+                    decompressState.nInputOffset = 0;
+                    decompressState.nInputLimit = nSrcSize;
+                    decompressState.nProcessedOffset = 0;
+                    decompressState.nProcessedLimit = -1;
+                    decompressState.mapProperties.insert(XBinary::FPART_PROP_TYPE, (quint32)uclMethod);
+                    decompressState.mapProperties.insert(XBinary::FPART_PROP_UNCOMPRESSEDSIZE, (qint64)(*pnDstSize));
+
+                    bResult = XUCLDecoder::decompress(&decompressState);
+
+                    if (bResult) {
+                        *pnDstSize = (quint32)decompressState.nCountOutput;
+
+                        if (*pnDstSize > (quint32)baOutput.size()) {
+                            bResult = false;
+                        } else if (*pnDstSize > 0) {
+                            memcpy(pDst, baOutput.constData(), *pnDstSize);
+                        }
+                    }
+                }
             }
-
-            *pnDstSize = nDstSize;
-            bResult = (nRes == UCL_E_OK);
             break;
         }
 
