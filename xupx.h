@@ -180,11 +180,13 @@ public:
 private:
     bool _readPackHeader(qint64 nOffset, qint64 nHeaderSize, bool bIsBigEndian, INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct);
     bool _detectELFInfo(INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct);
+    bool _detectMachInfo(INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct);
     bool _detectPEInfo(INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct);
     bool _detectGenericInfo(INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct);
     static bool _isPackHeaderValid(const INTERNAL_INFO &info);
     static bool _isPEFileType(FT fileType);
     static bool _isELFFileType(FT fileType);
+    static bool _isMachFileType(FT fileType);
     static bool _isDOSFileType(FT fileType);
     static bool _isDOSFormat(quint8 nFormat);
     bool _prepareOutputDevice(QIODevice *pDevice, bool *pbCloseOutputDevice);
@@ -198,6 +200,8 @@ private:
     bool _upxDecompress(const unsigned char *pSrc, quint32 nSrcSize, unsigned char *pDst, quint32 *pnDstSize, quint8 method);
     bool _unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct);
     bool _unpackELF(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct);
+    bool _unpackMach(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct);
+    bool _unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct);
     bool _runUPXDecompress(QIODevice *pDevice, PDSTRUCT *pPdStruct);
 };
 
