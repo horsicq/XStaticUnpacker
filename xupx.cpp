@@ -10,13 +10,9 @@
 #include "xmach.h"
 
 #include <algorithm>
-#include <QDir>
 #include <QBuffer>
 #include <QFile>
 #include <QFileInfo>
-#include <QProcess>
-#include <QStandardPaths>
-#include <QTemporaryDir>
 #include <zlib.h>
 
 // clang-format off
@@ -960,54 +956,6 @@ bool XUPX::_writeBufferToDevice(const QByteArray &baData, QIODevice *pDevice, PD
     }
 
     return bResult && XBinary::isPdStructNotCanceled(pPdStruct) && (nOffset == baData.size());
-}
-
-bool XUPX::_copyFileToDevice(const QString &sInputFileName, QIODevice *pDevice, PDSTRUCT *pPdStruct)
-{
-    if ((!pDevice) || (sInputFileName.isEmpty())) {
-        return false;
-    }
-
-    bool bCloseOutputDevice = false;
-
-    if (!_prepareOutputDevice(pDevice, &bCloseOutputDevice)) {
-        return false;
-    }
-
-    QFile fileUnpacked(sInputFileName);
-
-    if (!fileUnpacked.open(QIODevice::ReadOnly)) {
-        if (bCloseOutputDevice) {
-            pDevice->close();
-        }
-
-        return false;
-    }
-
-    const qint64 nChunkSize = 0x100000;
-    bool bResult = true;
-
-    while (!fileUnpacked.atEnd() && XBinary::isPdStructNotCanceled(pPdStruct)) {
-        QByteArray baData = fileUnpacked.read(nChunkSize);
-
-        if (baData.isEmpty() && !fileUnpacked.atEnd()) {
-            bResult = false;
-            break;
-        }
-
-        if ((!baData.isEmpty()) && (pDevice->write(baData) != baData.size())) {
-            bResult = false;
-            break;
-        }
-    }
-
-    fileUnpacked.close();
-
-    if (bCloseOutputDevice) {
-        pDevice->close();
-    }
-
-    return bResult && XBinary::isPdStructNotCanceled(pPdStruct);
 }
 
 bool XUPX::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
@@ -2802,59 +2750,12 @@ bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
 
 bool XUPX::_runUPXDecompress(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
-    if ((!getDevice()) || (!pDevice)) {
-        return false;
-    }
+    Q_UNUSED(pDevice)
+    Q_UNUSED(pPdStruct)
 
-    QString sUPX = QStandardPaths::findExecutable("upx");
-
-    if (sUPX.isEmpty()) {
-        return false;
-    }
-
-    QTemporaryDir tempDir;
-
-    if (!tempDir.isValid()) {
-        return false;
-    }
-
-    QString sTempInputFileName = tempDir.filePath("packed_input.bin");
-    QString sTempOutputFileName = tempDir.filePath("unpacked_output.bin");
-
-    if (!XBinary::dumpToFile(sTempInputFileName, getDevice(), pPdStruct)) {
-        return false;
-    }
-
-    QProcess process;
-    process.setProcessChannelMode(QProcess::MergedChannels);
-
-    QStringList listArgs;
-    listArgs << "-d" << "-q" << "--no-color" << "--no-backup" << "--force-overwrite" << QString("-o%1").arg(sTempOutputFileName) << sTempInputFileName;
-
-    process.start(sUPX, listArgs);
-
-    if (!process.waitForStarted()) {
-        return false;
-    }
-
-    while (process.state() != QProcess::NotRunning) {
-        if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
-            process.kill();
-            process.waitForFinished();
-
-            return false;
-        }
-
-        process.waitForFinished(100);
-    }
-
-    if ((process.exitStatus() != QProcess::NormalExit) || (process.exitCode() != 0)) {
-        return false;
-    }
-
-    QFileInfo fiResult(sTempOutputFileName);
-
-    return fiResult.exists() && fiResult.isFile() && (fiResult.size() >= 0) && _copyFileToDevice(sTempOutputFileName, pDevice, pPdStruct);
+    // Keep the shared fallback hook, but do not shell out to the system "upx".
+    // XUPX now relies exclusively on its in-process unpackers.
+    return false;
 }
 
 QList<XBinary::FPART> XUPX::getFileParts(quint32 nFileParts, qint32 nLimit, PDSTRUCT *pPdStruct)

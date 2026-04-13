@@ -191,7 +191,6 @@ private:
     static bool _isDOSFormat(quint8 nFormat);
     bool _prepareOutputDevice(QIODevice *pDevice, bool *pbCloseOutputDevice);
     bool _writeBufferToDevice(const QByteArray &baData, QIODevice *pDevice, PDSTRUCT *pPdStruct);
-    bool _copyFileToDevice(const QString &sInputFileName, QIODevice *pDevice, PDSTRUCT *pPdStruct);
     bool _unpackToFile(QIODevice *pDevice, PDSTRUCT *pPdStruct);
     bool _fallbackUnpack(QIODevice *pDevice, PDSTRUCT *pPdStruct);
     INTERNAL_INFO _read_packheader(char *pInfoData, qint32 nDataSize, bool bIsBigEndian);
