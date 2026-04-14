@@ -304,6 +304,16 @@ QString XUPX::structIDToString(quint32 nID)
     return XBinary::XCONVERT_idToTransString(nID, _TABLE_XUPX_STRUCTID, sizeof(_TABLE_XUPX_STRUCTID) / sizeof(XBinary::XCONVERT));
 }
 
+QString XUPX::structIDToFtString(quint32 nID)
+{
+    return XBinary::XCONVERT_idToFtString(nID, _TABLE_XUPX_STRUCTID, sizeof(_TABLE_XUPX_STRUCTID) / sizeof(XBinary::XCONVERT));
+}
+
+quint32 XUPX::ftStringToStructID(const QString &sFtString)
+{
+    return XCONVERT_ftStringToId(sFtString, _TABLE_XUPX_STRUCTID, sizeof(_TABLE_XUPX_STRUCTID) / sizeof(XBinary::XCONVERT));
+}
+
 bool XUPX::isValid(PDSTRUCT *pPdStruct)
 {
     return getInternalInfo(pPdStruct).bIsValid;

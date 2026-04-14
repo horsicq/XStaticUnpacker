@@ -68,6 +68,8 @@ public:
     INTERNAL_INFO getInternalInfo(PDSTRUCT *pPdStruct = nullptr);
 
     virtual QString structIDToString(quint32 nID) override;
+    virtual QString structIDToFtString(quint32 nID) override;
+    virtual quint32 ftStringToStructID(const QString &sFtString) override;
 
     virtual bool initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct = nullptr) override;
     virtual ARCHIVERECORD infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;

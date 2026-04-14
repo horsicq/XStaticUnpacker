@@ -29,6 +29,16 @@ QString XNSIS::structIDToString(quint32 nID)
     return XBinary::XCONVERT_idToTransString(nID, _TABLE_XNSIS_STRUCTID, sizeof(_TABLE_XNSIS_STRUCTID) / sizeof(XBinary::XCONVERT));
 }
 
+QString XNSIS::structIDToFtString(quint32 nID)
+{
+    return XBinary::XCONVERT_idToFtString(nID, _TABLE_XNSIS_STRUCTID, sizeof(_TABLE_XNSIS_STRUCTID) / sizeof(XBinary::XCONVERT));
+}
+
+quint32 XNSIS::ftStringToStructID(const QString &sFtString)
+{
+    return XCONVERT_ftStringToId(sFtString, _TABLE_XNSIS_STRUCTID, sizeof(_TABLE_XNSIS_STRUCTID) / sizeof(XBinary::XCONVERT));
+}
+
 bool XNSIS::isValid(PDSTRUCT *pPdStruct)
 {
     return getInternalInfo(pPdStruct).bIsValid;
