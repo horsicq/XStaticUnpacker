@@ -2667,7 +2667,7 @@ bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
         oh.exe_rle_count = (quint16)nRelocNum;
 
         while (nRelocNum & 3) {
-            baRelocs.append(4, 0);
+            baRelocs.append(QByteArray(4, 0));
             nRelocNum++;
         }
 
@@ -2816,4 +2816,3 @@ QList<XBinary::FPART> XUPX::getFileParts(quint32 nFileParts, qint32 nLimit, PDST
 
     return listResult;
 }
-
