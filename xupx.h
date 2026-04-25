@@ -207,4 +207,3 @@ private:
 };
 
 #endif  // XUPX_H
-

@@ -1227,8 +1227,7 @@ bool XUPX::_upxDecompress(const unsigned char *pSrc, quint32 nSrcSize, unsigned 
             SRes nRes = LzmaDecode((Byte *)pDst, &nDstProcessed, (const Byte *)(pSrc + 2), &nSrcProcessed, props, 5, LZMA_FINISH_END, &status, &g_xupxAlloc);
 
             *pnDstSize = (quint32)nDstProcessed;
-            bResult = (nRes == SZ_OK) &&
-                      ((status == LZMA_STATUS_FINISHED_WITH_MARK) || (status == LZMA_STATUS_MAYBE_FINISHED_WITHOUT_MARK));
+            bResult = (nRes == SZ_OK) && ((status == LZMA_STATUS_FINISHED_WITH_MARK) || (status == LZMA_STATUS_MAYBE_FINISHED_WITHOUT_MARK));
             break;
         }
 
@@ -1269,9 +1268,7 @@ bool XUPX::_fallbackUnpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 
 bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct)
 {
-    auto fallback = [&]() -> bool {
-        return _fallbackUnpack(pDevice, pPdStruct);
-    };
+    auto fallback = [&]() -> bool { return _fallbackUnpack(pDevice, pPdStruct); };
 
     if ((!getDevice()) || (!pDevice) || (!info.c_len) || (!info.u_len)) {
         return false;
@@ -1525,11 +1522,9 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
 
     if (bIsTdRelocsPresent) {
         if (!bIs64) {
-            XBinary::_copyMemory(pMemOut0 + ih32.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress,
-                                 "\x0\x0\x0\x0\x8\x0\x0\x0", 8);
+            XBinary::_copyMemory(pMemOut0 + ih32.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress, "\x0\x0\x0\x0\x8\x0\x0\x0", 8);
         } else {
-            XBinary::_copyMemory(pMemOut0 + ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress,
-                                 "\x0\x0\x0\x0\x8\x0\x0\x0", 8);
+            XBinary::_copyMemory(pMemOut0 + ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress, "\x0\x0\x0\x0\x8\x0\x0\x0", 8);
         }
     } else if (bIsRelocsPresent) {
         quint32 nRelocsOffset = XBinary::_read_uint32(pExtraInfo, false);
@@ -1604,10 +1599,12 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
         QByteArray baRelocs = XPE::relocsAsRVAListToByteArray(&listRelocs, bIs64);
 
         if (!bIs64) {
-            XBinary::_copyMemory(pMemOut0 + ih32.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress, baRelocs.data(), baRelocs.size());
+            XBinary::_copyMemory(pMemOut0 + ih32.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress, baRelocs.data(),
+                                 baRelocs.size());
             ih32.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].Size = baRelocs.size();
         } else {
-            XBinary::_copyMemory(pMemOut0 + ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress, baRelocs.data(), baRelocs.size());
+            XBinary::_copyMemory(pMemOut0 + ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress, baRelocs.data(),
+                                 baRelocs.size());
             ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BASERELOC].Size = baRelocs.size();
         }
     }
@@ -1634,7 +1631,8 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
                      ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
         }
 
-        XBinary::_write_uint32(pExport + offsetof(XPE_DEF::IMAGE_EXPORT_DIRECTORY, Name), XBinary::_read_uint32(pExport + offsetof(XPE_DEF::IMAGE_EXPORT_DIRECTORY, Name), false) - nDelta, false);
+        XBinary::_write_uint32(pExport + offsetof(XPE_DEF::IMAGE_EXPORT_DIRECTORY, Name),
+                               XBinary::_read_uint32(pExport + offsetof(XPE_DEF::IMAGE_EXPORT_DIRECTORY, Name), false) - nDelta, false);
         XBinary::_write_uint32(pExport + offsetof(XPE_DEF::IMAGE_EXPORT_DIRECTORY, AddressOfFunctions),
                                XBinary::_read_uint32(pExport + offsetof(XPE_DEF::IMAGE_EXPORT_DIRECTORY, AddressOfFunctions), false) - nDelta, false);
         XBinary::_write_uint32(pExport + offsetof(XPE_DEF::IMAGE_EXPORT_DIRECTORY, AddressOfNames),
@@ -2177,9 +2175,7 @@ bool XUPX::_unpackELF(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
 
 bool XUPX::_unpackMach(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct)
 {
-    auto fallback = [&]() -> bool {
-        return _runUPXDecompress(pDevice, pPdStruct);
-    };
+    auto fallback = [&]() -> bool { return _runUPXDecompress(pDevice, pPdStruct); };
 
     XMACH mach(this->getDevice(), this->isImage(), this->getModuleAddress());
 
@@ -2355,13 +2351,9 @@ bool XUPX::_unpackMach(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *
         return a.nStructOffset < b.nStructOffset;
     });
 
-    auto getSegmentFileOffset = [](const XMACH::SEGMENT_RECORD &record) -> quint64 {
-        return record.bIs64 ? record.s.segment64.fileoff : record.s.segment32.fileoff;
-    };
+    auto getSegmentFileOffset = [](const XMACH::SEGMENT_RECORD &record) -> quint64 { return record.bIs64 ? record.s.segment64.fileoff : record.s.segment32.fileoff; };
 
-    auto getSegmentFileSize = [](const XMACH::SEGMENT_RECORD &record) -> quint64 {
-        return record.bIs64 ? record.s.segment64.filesize : record.s.segment32.filesize;
-    };
+    auto getSegmentFileSize = [](const XMACH::SEGMENT_RECORD &record) -> quint64 { return record.bIs64 ? record.s.segment64.filesize : record.s.segment32.filesize; };
 
     auto findSegmentGap = [&](qint32 nIndex) -> quint64 {
         const quint64 nHigh = getSegmentFileOffset(listSegments.at(nIndex)) + getSegmentFileSize(listSegments.at(nIndex));
@@ -2479,9 +2471,7 @@ bool XUPX::_unpackMach(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *
 
 bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct)
 {
-    auto fallback = [&]() -> bool {
-        return _runUPXDecompress(pDevice, pPdStruct);
-    };
+    auto fallback = [&]() -> bool { return _runUPXDecompress(pDevice, pPdStruct); };
 
     if ((!getDevice()) || (!pDevice) || (!info.c_len) || (!info.u_len)) {
         return false;
@@ -2567,7 +2557,8 @@ bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
     QByteArray baUnpacked(info.u_len, 0);
     quint32 nUnpackedSize = info.u_len;
 
-    if (!_upxDecompress((const unsigned char *)baPackedImage.constData() + nPackedDataOffset, info.c_len, (unsigned char *)baUnpacked.data(), &nUnpackedSize, info.method)) {
+    if (!_upxDecompress((const unsigned char *)baPackedImage.constData() + nPackedDataOffset, info.c_len, (unsigned char *)baUnpacked.data(), &nUnpackedSize,
+                        info.method)) {
         return fallback();
     }
 
