@@ -13,7 +13,7 @@ class XUPX : public XBinary {
     Q_OBJECT
 
 public:
-    enum STRUCTID {
+    enum STRUCTID : qint32 {
         STRUCTID_UNKNOWN = 0,
         STRUCTID_HEADER,
     };
@@ -67,7 +67,7 @@ public:
     };
 #pragma pack(pop)
     // Executable formats (info: big endian types are >= 128); DO NOT CHANGE
-    enum UPX_F {
+    enum UPX_F : qint32 {
         UPX_F_DOS_COM = 1,
         UPX_F_DOS_SYS = 2,
         UPX_F_DOS_EXE = 3,
@@ -129,7 +129,7 @@ public:
         UPX_F_DYLIB_PPC64 = 142
     };
 
-    enum UPX_M {
+    enum UPX_M : qint32 {
         UPX_M_NRV2B_LE32 = 2,
         UPX_M_NRV2B_8 = 3,
         UPX_M_NRV2B_LE16 = 4,
@@ -176,8 +176,8 @@ public:
     // Unpacking functionality
     virtual bool unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
     bool isPackedFile(PDSTRUCT *pPdStruct = nullptr);
-    QString getPackerVersion(PDSTRUCT *pPdStruct = nullptr);
-    QString getCompressionMethod(PDSTRUCT *pPdStruct = nullptr);
+    QString packerVersion(PDSTRUCT *pPdStruct = nullptr);
+    QString compressionMethod(PDSTRUCT *pPdStruct = nullptr);
 
 private:
     bool _readPackHeader(qint64 nOffset, qint64 nHeaderSize, bool bIsBigEndian, INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct);

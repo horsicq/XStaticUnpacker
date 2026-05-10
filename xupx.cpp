@@ -6,7 +6,7 @@
 #include "xupx.h"
 
 #include "Algos/xucldecoder.h"
-#include "LzmaDec.h"
+#include "Algos/xalgo_local.h"
 #include "xmach.h"
 
 #include <algorithm>
@@ -14,6 +14,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <zlib.h>
+
+SRes X_LzmaDecode(Byte *dest, SizeT *destLen, const Byte *src, SizeT *srcLen, const Byte *propData, unsigned propSize, ELzmaFinishMode finishMode, ELzmaStatus *status, ISzAllocPtr alloc);
 
 // clang-format off
 static XBinary::XCONVERT _TABLE_XUPX_UPX_F[] = {
@@ -238,7 +240,7 @@ static quint64 upxAlignUp(quint64 nValue, quint64 nAlign)
 
 static quint64 findELFLoadGap(const QList<XELF_DEF::Elf_Phdr> &listProgramHeaders, qint32 nIndex, quint64 nFileSize)
 {
-    if ((nIndex < 0) || (nIndex >= listProgramHeaders.count())) {
+    if ((nIndex < 0) || (nIndex >= listProgramHeaders.size())) {
         return 0;
     }
 
@@ -256,7 +258,7 @@ static quint64 findELFLoadGap(const QList<XELF_DEF::Elf_Phdr> &listProgramHeader
 
     quint64 nNextOffset = nFileSize;
 
-    for (qint32 i = 0; i < listProgramHeaders.count(); i++) {
+    for (qint32 i = 0; i < listProgramHeaders.size(); i++) {
         if (i == nIndex) {
             continue;
         }
@@ -271,7 +273,7 @@ static quint64 findELFLoadGap(const QList<XELF_DEF::Elf_Phdr> &listProgramHeader
     return nNextOffset - nCurrentEnd;
 }
 
-enum DOS_EXE_UPX_FLAGS {
+enum DOS_EXE_UPX_FLAGS : qint32 {
     DOS_EXE_FLAG_NORELOC = 1,
     DOS_EXE_FLAG_USEJUMP = 2,
     DOS_EXE_FLAG_SS = 4,
@@ -1007,8 +1009,8 @@ XBinary::ARCHIVERECORD XUPX::_createArchiveRecord(const INTERNAL_INFO &info)
     result.mapProperties.insert(FPART_PROP_HANDLEMETHOD, HANDLE_METHOD_FILE);
     result.mapProperties.insert(FPART_PROP_ISFOLDER, false);
 
-    QString sMethod = QString("UPX %1").arg(getCompressionMethod());
-    QString sVersion = getPackerVersion();
+    QString sMethod = QString("UPX %1").arg(compressionMethod());
+    QString sVersion = packerVersion();
 
     if (!sVersion.isEmpty()) {
         sMethod += QString(" (v%1)").arg(sVersion);
@@ -1063,7 +1065,7 @@ bool XUPX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     pContext->listRecords.append(_createArchiveRecord(info));
 
     pState->pContext = pContext;
-    pState->nNumberOfRecords = pContext->listRecords.count();
+    pState->nNumberOfRecords = pContext->listRecords.size();
 
     return (pState->nNumberOfRecords > 0);
 }
@@ -1080,7 +1082,7 @@ XBinary::ARCHIVERECORD XUPX::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStru
 
     UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
 
-    if ((pState->nCurrentIndex >= 0) && (pState->nCurrentIndex < pContext->listRecords.count())) {
+    if ((pState->nCurrentIndex >= 0) && (pState->nCurrentIndex < pContext->listRecords.size())) {
         result = pContext->listRecords.at(pState->nCurrentIndex);
     }
 
@@ -1127,7 +1129,7 @@ bool XUPX::isPackedFile(PDSTRUCT *pPdStruct)
     return getInternalInfo(pPdStruct).bIsValid;
 }
 
-QString XUPX::getPackerVersion(PDSTRUCT *pPdStruct)
+QString XUPX::packerVersion(PDSTRUCT *pPdStruct)
 {
     INTERNAL_INFO info = getInternalInfo(pPdStruct);
     if (info.bIsValid) {
@@ -1136,7 +1138,7 @@ QString XUPX::getPackerVersion(PDSTRUCT *pPdStruct)
     return QString();
 }
 
-QString XUPX::getCompressionMethod(PDSTRUCT *pPdStruct)
+QString XUPX::compressionMethod(PDSTRUCT *pPdStruct)
 {
     INTERNAL_INFO info = getInternalInfo(pPdStruct);
     if (info.bIsValid) {
@@ -1224,7 +1226,7 @@ bool XUPX::_upxDecompress(const unsigned char *pSrc, quint32 nSrcSize, unsigned 
             SizeT nSrcProcessed = nSrcSize - 2;
             SizeT nDstProcessed = *pnDstSize;
             ELzmaStatus status = LZMA_STATUS_NOT_FINISHED;
-            SRes nRes = LzmaDecode((Byte *)pDst, &nDstProcessed, (const Byte *)(pSrc + 2), &nSrcProcessed, props, 5, LZMA_FINISH_END, &status, &g_xupxAlloc);
+            SRes nRes = X_LzmaDecode((Byte *)pDst, &nDstProcessed, (const Byte *)(pSrc + 2), &nSrcProcessed, props, 5, LZMA_FINISH_END, &status, &g_xupxAlloc);
 
             *pnDstSize = (quint32)nDstProcessed;
             bResult = (nRes == SZ_OK) && ((status == LZMA_STATUS_FINISHED_WITH_MARK) || (status == LZMA_STATUS_MAYBE_FINISHED_WITHOUT_MARK));
@@ -1658,7 +1660,7 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
         quint32 nMaxOffset = 0;
         QMap<quint32, QString> mapResNames;
 
-        for (int i = 0; i < listResources.count(); i++) {
+        for (int i = 0; i < listResources.size(); i++) {
             nMaxOffset = qMax((quint32)(listResources.at(i).nIRDEOffset + sizeof(XPE_DEF::IMAGE_RESOURCE_DATA_ENTRY)), nMaxOffset);
 
             for (int j = 0; j < 3; j++) {
@@ -1673,7 +1675,7 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
 
         while (iRes.hasNext()) {
             iRes.next();
-            nResNamesData += 2 + iRes.value().length() * 2;
+            nResNamesData += 2 + iRes.value().size() * 2;
         }
 
         nMaxOffset += nResNamesData;
@@ -1692,7 +1694,7 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
                           pMemOut0 + ih64.OptionalHeader.DataDirectory[XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_RESOURCE].VirtualAddress, nMaxOffset);
         }
 
-        for (int i = 0; i < listResources.count(); i++) {
+        for (int i = 0; i < listResources.size(); i++) {
             if ((listResources.at(i).nOffset != -1) && (listResources.at(i).nAddress >= nSectionAddress + nBaseAddress)) {
                 quint32 nOrigOffset = pe.read_uint32(listResources.at(i).nOffset - 4);
                 char *pIRDE = nullptr;
@@ -1716,7 +1718,7 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
 
     qint64 nFileSize = 0;
 
-    for (int i = 0; i < listSections.count(); i++) {
+    for (int i = 0; i < listSections.size(); i++) {
         XPE_DEF::IMAGE_SECTION_HEADER ish = listSections.at(i);
 
         if (ish.PointerToRawData) {
@@ -1750,7 +1752,7 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
         peNew.write_array(nCurrentOffset, (char *)&ih64, sizeof(XPE_DEF::IMAGE_NT_HEADERS64));
     }
 
-    for (int i = 0; i < listSections.count(); i++) {
+    for (int i = 0; i < listSections.size(); i++) {
         XPE_DEF::IMAGE_SECTION_HEADER ish = listSections.at(i);
         peNew.setSectionHeader(i, reinterpret_cast<XPE_DEF::IMAGE_SECTION_HEADER *>(&ish));
 
@@ -1954,7 +1956,7 @@ bool XUPX::_unpackELF(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
     quint32 nLoadSegmentCount = 0;
     quint64 nDecodedLoadBytes = 0;
 
-    for (qint32 i = 0; i < listProgramHeaders.count(); i++) {
+    for (qint32 i = 0; i < listProgramHeaders.size(); i++) {
         const XELF_DEF::Elf_Phdr &programHeader = listProgramHeaders.at(i);
 
         if (programHeader.p_type != XELF_DEF::S_PT_LOAD) {
@@ -2014,7 +2016,7 @@ bool XUPX::_unpackELF(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
 
         bool bResult = true;
 
-        for (qint32 i = 0; i < listProgramHeaders.count(); i++) {
+        for (qint32 i = 0; i < listProgramHeaders.size(); i++) {
             const XELF_DEF::Elf_Phdr &programHeader = listProgramHeaders.at(i);
 
             if (programHeader.p_type != XELF_DEF::S_PT_LOAD) {
@@ -2086,7 +2088,7 @@ bool XUPX::_unpackELF(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
 
         quint64 nOffEntry = 0;
 
-        for (qint32 i = 0; i < listPackedProgramHeaders.count(); i++) {
+        for (qint32 i = 0; i < listPackedProgramHeaders.size(); i++) {
             const XELF_DEF::Elf_Phdr &programHeader = listPackedProgramHeaders.at(i);
 
             if ((programHeader.p_type == XELF_DEF::S_PT_LOAD) && (nEntry >= programHeader.p_vaddr) && ((nEntry - programHeader.p_vaddr) < programHeader.p_filesz)) {
@@ -2114,7 +2116,7 @@ bool XUPX::_unpackELF(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
             }
         };
 
-        if ((listPackedProgramHeaders.count() >= 2) && (listPackedProgramHeaders.at(0).p_filesz == 0x1000) && (listPackedProgramHeaders.at(0).p_offset == 0) &&
+        if ((listPackedProgramHeaders.size() >= 2) && (listPackedProgramHeaders.at(0).p_filesz == 0x1000) && (listPackedProgramHeaders.at(0).p_offset == 0) &&
             (listPackedProgramHeaders.at(1).p_offset == 0) && (listPackedProgramHeaders.at(1).p_filesz == listPackedProgramHeaders.at(1).p_memsz)) {
             addCandidateOffset((qint64)upxAlignUp(listPackedProgramHeaders.at(1).p_memsz, 4));
         }
@@ -2139,7 +2141,7 @@ bool XUPX::_unpackELF(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
 
         QByteArray baCandidateOutput = baOutput;
 
-        for (qint32 i = 0; i < listCandidateOffsets.count(); i++) {
+        for (qint32 i = 0; i < listCandidateOffsets.size(); i++) {
             if (decodeGapExtentsFromOffset(listCandidateOffsets.at(i), &baCandidateOutput)) {
                 baOutput = baCandidateOutput;
                 return true;
@@ -2359,7 +2361,7 @@ bool XUPX::_unpackMach(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *
         const quint64 nHigh = getSegmentFileOffset(listSegments.at(nIndex)) + getSegmentFileSize(listSegments.at(nIndex));
         quint64 nLow = nOrigFileSize;
 
-        for (qint32 i = 0; i < listSegments.count(); i++) {
+        for (qint32 i = 0; i < listSegments.size(); i++) {
             if (i == nIndex) {
                 continue;
             }
@@ -2391,7 +2393,7 @@ bool XUPX::_unpackMach(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *
     bReachedEnd = false;
     bStreamError = false;
 
-    for (qint32 i = 0; i < listSegments.count(); i++) {
+    for (qint32 i = 0; i < listSegments.size(); i++) {
         const quint64 nFileOffset = getSegmentFileOffset(listSegments.at(i));
         const quint64 nFileSize = getSegmentFileSize(listSegments.at(i));
 

@@ -10,6 +10,8 @@
 #include "../XArchive/xdecompress.h"
 #include "../XArchive/Algos/xlzmadecoder.h"
 
+#include <algorithm>
+
 XBinary::XCONVERT _TABLE_XNSIS_STRUCTID[] = {
     {XNSIS::STRUCTID_UNKNOWN, "Unknown", QObject::tr("Unknown")},
     {XNSIS::STRUCTID_HEADER, "HEADER", QString("Header")},
@@ -78,7 +80,7 @@ XNSIS::INTERNAL_INFO XNSIS::_analyse(PDSTRUCT *pPdStruct)
                 nRemainingSize = 0;
             }
 
-            qint64 nBytesToRead = qMin(nWindowSize, nRemainingSize);
+            qint64 nBytesToRead = (std::min)(nWindowSize, nRemainingSize);
 
             if (nBytesToRead > 0) {
                 QByteArray baWindow = read_array_process(nOffset, nBytesToRead, pPdStruct);
@@ -140,7 +142,7 @@ XNSIS::INTERNAL_INFO XNSIS::_analyse(PDSTRUCT *pPdStruct)
 
         if ((nOverlayOffset != -1) && (nOverlayOffset < nFileSize)) {
             qint64 nOverlaySize = nFileSize - nOverlayOffset;
-            qint64 nBytesToRead = qMin((qint64)0x40, nOverlaySize);
+            qint64 nBytesToRead = (std::min)((qint64)0x40, nOverlaySize);
 
             if (nBytesToRead > 0) {
                 QByteArray baOverlay = read_array_process(nOverlayOffset, nBytesToRead, pPdStruct);
@@ -216,7 +218,7 @@ qint32 XNSIS::_countFiles(qint64 nArchiveOffset, qint64 nArchiveSize, bool *pbIs
 
         // First entry detection for compression method
         if (nCount == 0) {
-            QByteArray baFirstData = read_array(nArchiveOffset + nPos + 4, qMin((qint64)4, nArchiveSize - nPos - 4));
+            QByteArray baFirstData = read_array(nArchiveOffset + nPos + 4, (std::min)((qint64)4, nArchiveSize - nPos - 4));
             if (!baFirstData.isEmpty()) {
                 // Store first compression method
             }
@@ -370,7 +372,7 @@ bool XNSIS::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
     qint64 nSignatureOffset = info.nSignatureOffset;
 
     // Widen the search range to 32 bytes before the signature
-    qint64 nSearchStart = qMax((qint64)0, nSignatureOffset - 32);
+    qint64 nSearchStart = (std::max)((qint64)0, nSignatureOffset - 32);
     qint64 nSearchEnd = nSignatureOffset;
 
     qint64 nActualHeaderOffset = -1;
@@ -395,7 +397,7 @@ bool XNSIS::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
                 qint64 nAvailableSize = pState->nTotalSize - nArchiveOffset;
 
                 if (nAvailableSize > 0) {
-                    qint64 nArchiveDataSize = qMin((qint64)(header.nArchiveSize - 0x1C), nAvailableSize);
+                    qint64 nArchiveDataSize = (std::min)((qint64)(header.nArchiveSize - 0x1C), nAvailableSize);
                     pContext->nHeaderOffset = nActualHeaderOffset;
 
                     if (_parseArchive(pContext, nArchiveOffset, nArchiveDataSize, pPdStruct)) {
@@ -798,7 +800,9 @@ bool XNSIS::_decompressSolidBlock(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
     } else {
         // Fallback to standard decompression
         QBuffer inputBuffer(&pContext->baCompressedData);
-        inputBuffer.open(QIODevice::ReadOnly);
+        if (!inputBuffer.open(QIODevice::ReadOnly)) {
+            return false;
+        }
 
         XDecompress decompressor;
 
@@ -827,7 +831,9 @@ bool XNSIS::_decompressNSISLZMA(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
     // NSIS LZMA format: uses raw LZMA stream
     // Try standard LZMA decompression first
     QBuffer inputBuffer(&pContext->baCompressedData);
-    inputBuffer.open(QIODevice::ReadOnly);
+    if (!inputBuffer.open(QIODevice::ReadOnly)) {
+        return false;
+    }
 
     XDecompress decompressor;
     pContext->baDecompressedData = decompressor.decomressToByteArray(&inputBuffer, 0, pContext->baCompressedData.size(), HANDLE_METHOD_LZMA, pPdStruct);
@@ -852,11 +858,15 @@ bool XNSIS::_decompressNSISLZMA(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
 
     // Try decompression using XArchive's LZMA decoder with properties
     inputBuffer.setData(pContext->baCompressedData);
-    inputBuffer.open(QIODevice::ReadOnly);
+    if (!inputBuffer.open(QIODevice::ReadOnly)) {
+        return false;
+    }
     inputBuffer.seek(5);  // Skip properties
 
     QBuffer outputBuffer;
-    outputBuffer.open(QIODevice::WriteOnly);
+    if (!outputBuffer.open(QIODevice::WriteOnly)) {
+        return false;
+    }
 
     DATAPROCESS_STATE state = {};
     state.pDeviceInput = &inputBuffer;
@@ -891,7 +901,9 @@ bool XNSIS::_decompressNSISBZIP2(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
     // NSIS BZIP2 format: uses raw bzip2 stream without BZ header
     // Try standard BZIP2 decompression
     QBuffer inputBuffer(&pContext->baCompressedData);
-    inputBuffer.open(QIODevice::ReadOnly);
+    if (!inputBuffer.open(QIODevice::ReadOnly)) {
+        return false;
+    }
 
     XDecompress decompressor;
     pContext->baDecompressedData = decompressor.decomressToByteArray(&inputBuffer, 0, pContext->baCompressedData.size(), HANDLE_METHOD_BZIP2, pPdStruct);
@@ -910,7 +922,9 @@ bool XNSIS::_decompressNSISZLIB(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
     // NSIS ZLIB format: uses deflate/zlib compression
     // Try standard DEFLATE decompression
     QBuffer inputBuffer(&pContext->baCompressedData);
-    inputBuffer.open(QIODevice::ReadOnly);
+    if (!inputBuffer.open(QIODevice::ReadOnly)) {
+        return false;
+    }
 
     XDecompress decompressor;
     pContext->baDecompressedData = decompressor.decomressToByteArray(&inputBuffer, 0, pContext->baCompressedData.size(), HANDLE_METHOD_DEFLATE, pPdStruct);
@@ -928,7 +942,9 @@ QByteArray XNSIS::_decompressBlock(const QByteArray &baCompressed, HANDLE_METHOD
 
     QBuffer inputBuffer;
     inputBuffer.setData(baCompressed);
-    inputBuffer.open(QIODevice::ReadOnly);
+    if (!inputBuffer.open(QIODevice::ReadOnly)) {
+        return QByteArray();
+    }
 
     XDecompress decompressor;
     QByteArray baDecompressed = decompressor.decomressToByteArray(&inputBuffer, 0, baCompressed.size(), method, pPdStruct);

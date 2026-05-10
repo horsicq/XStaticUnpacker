@@ -512,10 +512,14 @@ QByteArray XInnoSetup::_decompressLZMA1(const QByteArray &baData)
 
     QBuffer bufInput;
     bufInput.setData(baCompressed);
-    bufInput.open(QIODevice::ReadOnly);
 
     QBuffer bufOutput;
-    bufOutput.open(QIODevice::WriteOnly);
+
+    if (!bufInput.open(QIODevice::ReadOnly) || !bufOutput.open(QIODevice::WriteOnly)) {
+        bufInput.close();
+        bufOutput.close();
+        return QByteArray();
+    }
 
     XBinary::DATAPROCESS_STATE decompressState = {};
     decompressState.pDeviceInput = &bufInput;
@@ -1192,7 +1196,10 @@ QByteArray XInnoSetup::_decompressDataChunk(qint64 nChunkOffset, qint64 nChunkCo
     bool bIsLzma1 = (nDictSize > 0) && (nDictSize <= 0x10000000);  // dict <= 256MB
 
     QBuffer bufOutput;
-    bufOutput.open(QIODevice::WriteOnly);
+
+    if (!bufOutput.open(QIODevice::WriteOnly)) {
+        return QByteArray();
+    }
 
     XBinary::DATAPROCESS_STATE decompressState = {};
     decompressState.pDeviceInput = getDevice();
