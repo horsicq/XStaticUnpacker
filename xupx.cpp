@@ -872,33 +872,33 @@ XBinary::_MEMORY_MAP XUPX::getMemoryMap(MAPMODE mapMode, PDSTRUCT *pPdStruct)
     return result;
 }
 
-QList<XBinary::DATA_HEADER> XUPX::getDataHeaders(const DATA_HEADERS_OPTIONS &dataHeadersOptions, PDSTRUCT *pPdStruct)
-{
-    QList<DATA_HEADER> listResult;
+// QList<XBinary::DATA_HEADER> XUPX::getDataHeaders(const DATA_HEADERS_OPTIONS &dataHeadersOptions, PDSTRUCT *pPdStruct)
+// {
+//     QList<DATA_HEADER> listResult;
 
-    if (dataHeadersOptions.nID == STRUCTID_UNKNOWN) {
-        DATA_HEADERS_OPTIONS _dataHeadersOptions = dataHeadersOptions;
-        _dataHeadersOptions.bChildren = true;
-        _dataHeadersOptions.dsID_parent = _addDefaultHeaders(&listResult, pPdStruct);
-        _dataHeadersOptions.dhMode = XBinary::DHMODE_HEADER;
-        _dataHeadersOptions.fileType = dataHeadersOptions.pMemoryMap->fileType;
+//     if (dataHeadersOptions.nID == STRUCTID_UNKNOWN) {
+//         DATA_HEADERS_OPTIONS _dataHeadersOptions = dataHeadersOptions;
+//         _dataHeadersOptions.bChildren = true;
+//         _dataHeadersOptions.dsID_parent = _addDefaultHeaders(&listResult, pPdStruct);
+//         _dataHeadersOptions.dhMode = XBinary::DHMODE_HEADER;
+//         _dataHeadersOptions.fileType = dataHeadersOptions.pMemoryMap->fileType;
 
-        _dataHeadersOptions.nID = STRUCTID_HEADER;
-        _dataHeadersOptions.nLocation = 0;
-        _dataHeadersOptions.locType = XBinary::LT_OFFSET;
+//         _dataHeadersOptions.nID = STRUCTID_HEADER;
+//         _dataHeadersOptions.nLocation = 0;
+//         _dataHeadersOptions.locType = XBinary::LT_OFFSET;
 
-        listResult.append(getDataHeaders(_dataHeadersOptions, pPdStruct));
-    } else if (dataHeadersOptions.nID == STRUCTID_HEADER) {
-        DATA_HEADER dataHeader = _initDataHeader(dataHeadersOptions, XUPX::structIDToString(dataHeadersOptions.nID));
-        dataHeader.nSize = 0;  // TODO
+//         listResult.append(getDataHeaders(_dataHeadersOptions, pPdStruct));
+//     } else if (dataHeadersOptions.nID == STRUCTID_HEADER) {
+//         DATA_HEADER dataHeader = _initDataHeader(dataHeadersOptions, XUPX::structIDToString(dataHeadersOptions.nID));
+//         dataHeader.nSize = 0;  // TODO
 
-        // TODO: Add records
+//         // TODO: Add records
 
-        listResult.append(dataHeader);
-    }
+//         listResult.append(dataHeader);
+//     }
 
-    return listResult;
-}
+//     return listResult;
+// }
 
 bool XUPX::_prepareOutputDevice(QIODevice *pDevice, bool *pbCloseOutputDevice)
 {
