@@ -15,7 +15,8 @@
 #include <QFileInfo>
 #include <zlib.h>
 
-SRes X_LzmaDecode(Byte *dest, SizeT *destLen, const Byte *src, SizeT *srcLen, const Byte *propData, unsigned propSize, ELzmaFinishMode finishMode, ELzmaStatus *status, ISzAllocPtr alloc);
+SRes X_LzmaDecode(Byte *dest, SizeT *destLen, const Byte *src, SizeT *srcLen, const Byte *propData, unsigned propSize, ELzmaFinishMode finishMode, ELzmaStatus *status,
+                  ISzAllocPtr alloc);
 
 // clang-format off
 static XBinary::XCONVERT _TABLE_XUPX_UPX_F[] = {
