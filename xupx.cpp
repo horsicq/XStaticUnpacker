@@ -1696,7 +1696,7 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
         }
 
         for (int i = 0; i < listResources.size(); i++) {
-            if ((listResources.at(i).nOffset != -1) && (listResources.at(i).nAddress >= nSectionAddress + nBaseAddress)) {
+            if ((listResources.at(i).nOffset != -1) && (listResources.at(i).nAddress >= (XADDR)(nSectionAddress + nBaseAddress))) {
                 quint32 nOrigOffset = pe.read_uint32(listResources.at(i).nOffset - 4);
                 char *pIRDE = nullptr;
 
