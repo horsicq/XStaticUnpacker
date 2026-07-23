@@ -17,4 +17,22 @@ set(XSTATICUNPACKER_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/xnsis.h
     ${CMAKE_CURRENT_LIST_DIR}/xupx.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xupx.h
+    ${CMAKE_CURRENT_LIST_DIR}/xsfx.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xsfx.h
+    ${CMAKE_CURRENT_LIST_DIR}/xfsg.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xfsg.h
+    ${CMAKE_CURRENT_LIST_DIR}/xyoda.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xyoda.h
+    ${CMAKE_CURRENT_LIST_DIR}/xnspack.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xnspack.h
+    ${CMAKE_CURRENT_LIST_DIR}/xaspack.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xaspack.h
+    ${CMAKE_CURRENT_LIST_DIR}/xpetite.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xpetite.h
+    ${CMAKE_CURRENT_LIST_DIR}/xmew.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xmew.h
+    ${CMAKE_CURRENT_LIST_DIR}/xpespin.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xpespin.h
+    ${CMAKE_CURRENT_LIST_DIR}/xautoit.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xautoit.h
 )

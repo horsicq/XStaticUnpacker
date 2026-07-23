@@ -27,38 +27,78 @@ public:
         bool bIsUnicode;
     };
 
+    // NSIS compression method (matches 7-Zip NMethodType layout)
+    enum NMETHOD {
+        NMETHOD_COPY = 0,
+        NMETHOD_DEFLATE,
+        NMETHOD_BZIP2,
+        NMETHOD_LZMA
+    };
+
+    // NSIS command layout variants (matches 7-Zip ENsisType)
+    enum NSISTYPE {
+        NSISTYPE_NSIS2 = 0,
+        NSISTYPE_NSIS3,
+        NSISTYPE_PARK1,
+        NSISTYPE_PARK2,
+        NSISTYPE_PARK3
+    };
+
     struct NSIS_HEADER {
         quint32 nFlags;
         quint32 nHeaderSize;
         quint32 nArchiveSize;
     };
 
+    // A single extractable file (built from an EW_EXTRACTFILE / EW_WRITEUNINSTALLER instruction)
     struct FILE_ENTRY {
-        qint64 nOffset;                         // Offset in archive
-        qint32 nCompressedSize;                 // Size of compressed data (or uncompressed if not compressed)
-        qint32 nUncompressedSize;               // Size after decompression (if known)
-        bool bIsCompressed;                     // Whether this entry is compressed
-        XBinary::HANDLE_METHOD compressMethod;  // Compression method for this entry
-        qint32 nFileIndex;                      // Sequential file index
-        QString sFileName;                      // File name (if available)
-        qint64 nDataOffset;                     // Offset in decompressed stream (for solid)
+        QString sFileName;         // reduced (relative) name
+        quint32 nPos;              // position of the file inside the data block
+        quint32 nSize;             // uncompressed size (if known)
+        bool bSizeDefined;         // whether nSize is known before extraction
+        bool bIsCompressed;        // non-solid: this block is compressed
+        quint32 nCompressedSize;   // non-solid: size of the compressed block (without the 4-byte header)
+        quint32 nMTimeLow;
+        quint32 nMTimeHigh;
+        bool bIsEmptyFile;
+        bool bIsUninstaller;       // built from EW_WRITEUNINSTALLER (may be a patched stub)
     };
 
     struct UNPACK_CONTEXT {
-        qint64 nHeaderOffset;                   // Offset to NSIS header
-        qint64 nDataOffset;                     // Offset to archive data (after header)
-        qint64 nDataSize;                       // Size of archive data
-        bool bIsSolid;                          // True if solid compression
-        qint32 nCurrentFileIndex;               // Current file being processed
-        qint32 nTotalFiles;                     // Total number of files in archive
-        qint64 nCurrentOffset;                  // Current read position
-        XBinary::HANDLE_METHOD compressMethod;  // Primary compression method
-        QByteArray baCompressedData;            // Cached compressed data (for solid archives)
-        QByteArray baDecompressedData;          // Cached decompressed data (for solid archives)
-        qint64 nDecompressedOffset;             // Current offset in decompressed data
-        qint64 nDecompressedSize;               // Size of decompressed data
-        QList<FILE_ENTRY> listEntries;          // List of file entries (non-solid)
-        qint32 nCompressionCounts[4];           // Count of each compression type detected
+        // ---- first header ----
+        qint64 nFirstHeaderOffset;   // offset of the 0x1C-byte first header
+        qint64 nDataStreamOffset;    // nFirstHeaderOffset + 0x1C
+        quint32 nFlags;
+        quint32 nHeaderSize;         // uncompressed header size
+        quint32 nArchiveSize;
+
+        // ---- compression ----
+        NMETHOD method;
+        XBinary::HANDLE_METHOD compressMethod;  // mirror of method for reporting/tests
+        bool bIsSolid;
+        bool bFilterFlag;            // 7-Zip-modified NSIS with BCJ filter
+        bool bHeaderIsCompressed;
+        quint32 nNonSolidStartOffset;
+
+        // ---- parsed header ----
+        QByteArray baHeader;         // decompressed header (blocks + strings)
+        quint32 nStringsPos;         // string table offset inside baHeader
+        quint32 nNumStringChars;     // string table size (in chars)
+        bool bIsUnicode;
+        bool bIs64Bit;
+        qint32 nNsisType;            // NSISTYPE
+        bool bIsNsis225;
+
+        // ---- items ----
+        QList<FILE_ENTRY> listEntries;
+
+        // ---- solid decoded stream (header + all files) ----
+        QByteArray baSolid;
+        bool bSolidDecoded;
+
+        // ---- fields kept for reporting / test compatibility ----
+        qint64 nDataOffset;          // = nDataStreamOffset
+        qint64 nDataSize;            // size of the compressed data region
     };
 
     explicit XNSIS(QIODevice *pDevice, bool bIsImage = false, XADDR nModuleAddress = -1);
@@ -79,19 +119,39 @@ public:
 
 private:
     INTERNAL_INFO _analyse(PDSTRUCT *pPdStruct);
-    NSIS_HEADER _readHeader(qint64 nOffset, PDSTRUCT *pPdStruct);
-    XBinary::HANDLE_METHOD _detectCompression(const char *pData);
-    bool _parseArchive(UNPACK_CONTEXT *pContext, qint64 nArchiveOffset, qint64 nArchiveSize, PDSTRUCT *pPdStruct);
-    qint32 _countFiles(qint64 nArchiveOffset, qint64 nArchiveSize, bool *pbIsSolid, PDSTRUCT *pPdStruct);
-    bool _parseFileEntries(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
-    XBinary::HANDLE_METHOD _determineCompressionMethod(UNPACK_CONTEXT *pContext);
-    bool _decompressSolidBlock(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
-    bool _decompressNSISLZMA(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
-    bool _decompressNSISBZIP2(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
-    bool _decompressNSISZLIB(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
-    QByteArray _decompressBlock(const QByteArray &baCompressed, HANDLE_METHOD method, PDSTRUCT *pPdStruct);
-    bool _parseSolidFiles(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
-    qint32 _readFileSizeFromSolid(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
+    bool _findFirstHeader(qint64 nSignatureOffset, qint64 nTotalSize, UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
+
+    // opening / decoding
+    bool _open(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
+    bool _detectMethod(UNPACK_CONTEXT *pContext, const quint8 *pSig, qint64 nSigSize);
+    bool _decodeHeader(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
+    bool _decodeSolidStream(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
+
+    // low-level decompressors: decode one raw block
+    bool _decodeBlock(NMETHOD method, bool bFilterFlag, const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, QByteArray *pResult,
+                      PDSTRUCT *pPdStruct);
+    bool _lzmaDecode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, QByteArray *pResult);
+    bool _inflateRaw(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, QByteArray *pResult);
+
+    // header parse
+    bool _parseHeader(UNPACK_CONTEXT *pContext);
+    void _detectNsisType(UNPACK_CONTEXT *pContext, quint32 nEntriesOffset, quint32 nEntriesNum);
+    bool _readEntries(UNPACK_CONTEXT *pContext, quint32 nEntriesOffset, quint32 nEntriesNum, QStringList *pPrefixes);
+    void _sortItems(UNPACK_CONTEXT *pContext);
+
+    // string helpers (operate on pContext->baHeader)
+    QString _readStringRaw(const UNPACK_CONTEXT *pContext, quint32 nStrPos) const;
+    void _appendVar(QString *pRes, quint32 nIndex, const UNPACK_CONTEXT *pContext) const;
+    void _appendShellString(QString *pRes, unsigned nIndex1, unsigned nIndex2, const UNPACK_CONTEXT *pContext) const;
+    qint32 _getVarIndex(const UNPACK_CONTEXT *pContext, quint32 nStrPos) const;
+    qint32 _getVarIndex(const UNPACK_CONTEXT *pContext, quint32 nStrPos, quint32 *pResOffset) const;
+    bool _isAbsolutePathVar(const UNPACK_CONTEXT *pContext, quint32 nStrPos) const;
+    bool _isGoodString(const UNPACK_CONTEXT *pContext, quint32 nStrPos) const;
+
+    quint32 _getCmd(const UNPACK_CONTEXT *pContext, quint32 nCmd) const;
+
+    // Reconstruct a patched uninstaller: apply the NSIS patch stream onto the installer's PE stub.
+    static bool _uninstallerPatch(const QByteArray &baPatch, QByteArray *pDest);
 };
 
 #endif  // XNSIS_H
