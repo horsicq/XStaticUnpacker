@@ -31,8 +31,6 @@ set(XSTATICUNPACKER_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/xpetite.h
     ${CMAKE_CURRENT_LIST_DIR}/xmew.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xmew.h
-    ${CMAKE_CURRENT_LIST_DIR}/xpespin.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xpespin.h
     ${CMAKE_CURRENT_LIST_DIR}/xautoit.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xautoit.h
 )

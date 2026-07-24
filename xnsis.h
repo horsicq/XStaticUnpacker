@@ -64,6 +64,9 @@ public:
         bool bIsUninstaller;       // built from EW_WRITEUNINSTALLER (may be a patched stub)
     };
 
+    // Order file entries by ascending data-block position (std::stable_sort comparator).
+    static bool _fileEntryPosLess(const FILE_ENTRY &a, const FILE_ENTRY &b);
+
     struct UNPACK_CONTEXT {
         // ---- first header ----
         qint64 nFirstHeaderOffset;   // offset of the 0x1C-byte first header

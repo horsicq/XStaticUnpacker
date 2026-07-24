@@ -22,7 +22,6 @@ HEADERS += \
     $$PWD/xaspack.h \
     $$PWD/xpetite.h \
     $$PWD/xmew.h \
-    $$PWD/xpespin.h \
     $$PWD/xautoit.h \
 
 SOURCES += \
@@ -36,5 +35,4 @@ SOURCES += \
     $$PWD/xaspack.cpp \
     $$PWD/xpetite.cpp \
     $$PWD/xmew.cpp \
-    $$PWD/xpespin.cpp \
     $$PWD/xautoit.cpp \

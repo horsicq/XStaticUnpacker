@@ -101,6 +101,14 @@ static inline quint32 rd32(const quint8 *p)
     return (quint32)(p[0] | ((quint32)p[1] << 8) | ((quint32)p[2] << 16) | ((quint32)p[3] << 24));
 }
 
+// read the offset/count pair of block-header entry k (32- or 64-bit layout)
+static void nsisParseBlockHeader(const quint8 *p, unsigned nBhoSize, int k, quint32 *pOffset, quint32 *pNum)
+{
+    const quint8 *pb = p + 4 + nBhoSize * k;
+    *pOffset = rd32(pb);
+    *pNum = rd32(pb + nBhoSize - 4);
+}
+
 static bool nsisIsLZMA(const quint8 *p, quint32 *pDict)
 {
     if (pDict) {
@@ -1090,18 +1098,12 @@ bool XNSIS::_parseHeader(UNPACK_CONTEXT *pContext)
         return false;
     }
 
-    auto parseBH = [&](int k, quint32 *pOffset, quint32 *pNum) {
-        const quint8 *pb = p + 4 + nBhoSize * k;
-        *pOffset = rd32(pb);
-        *pNum = rd32(pb + nBhoSize - 4);
-    };
-
     quint32 nEntriesOffset, nEntriesNum;
     quint32 nStringsOffset, nStringsNum;
     quint32 nLangOffset, nLangNum;
-    parseBH(2, &nEntriesOffset, &nEntriesNum);
-    parseBH(3, &nStringsOffset, &nStringsNum);
-    parseBH(4, &nLangOffset, &nLangNum);
+    nsisParseBlockHeader(p, nBhoSize, 2, &nEntriesOffset, &nEntriesNum);
+    nsisParseBlockHeader(p, nBhoSize, 3, &nStringsOffset, &nStringsNum);
+    nsisParseBlockHeader(p, nBhoSize, 4, &nLangOffset, &nLangNum);
     Q_UNUSED(nStringsNum)
     Q_UNUSED(nLangNum)
 
@@ -1267,11 +1269,16 @@ bool XNSIS::_readEntries(UNPACK_CONTEXT *pContext, quint32 nEntriesOffset, quint
     return true;
 }
 
+bool XNSIS::_fileEntryPosLess(const FILE_ENTRY &a, const FILE_ENTRY &b)
+{
+    return a.nPos < b.nPos;
+}
+
 void XNSIS::_sortItems(UNPACK_CONTEXT *pContext)
 {
     QList<FILE_ENTRY> &list = pContext->listEntries;
 
-    std::stable_sort(list.begin(), list.end(), [](const FILE_ENTRY &a, const FILE_ENTRY &b) { return a.nPos < b.nPos; });
+    std::stable_sort(list.begin(), list.end(), _fileEntryPosLess);
 
     // drop consecutive duplicates (same position + same name)
     for (int i = 0; i + 1 < list.size();) {
