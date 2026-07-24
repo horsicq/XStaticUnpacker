@@ -1,0 +1,81 @@
+/* Copyright (c) 2017-2026 hors<horsicq@gmail.com>
+ *
+ * MIT License
+ */
+#ifndef XNSPACK_H
+#define XNSPACK_H
+
+#include "xpe.h"
+
+/* Static unpacker for NsPack-packed PE files. Clean-room implementation: the
+ * NsPack loader-stub layout and its custom LZMA-style range decoder were
+ * understood from the (GPL) libclamav unsp.c / pe.c reference, then
+ * reimplemented here from scratch.
+ *
+ * NOTE: not yet verified against real samples. Output is a rebuilt analysis PE
+ * (single decompressed section + restored OEP). */
+
+class XNSPACK : public XBinary {
+    Q_OBJECT
+
+public:
+    struct INTERNAL_INFO {
+        bool bIsValid;
+        qint64 nStartOfStuff;  // file offset of the compressed blob header
+        quint32 nSsize;        // packed size
+        quint32 nDsize;        // unpacked size
+        quint32 nOEP;          // original entry point RVA
+        quint32 nRva;          // target section RVA (sections[0].rva)
+        quint32 nImageBase;
+    };
+
+    explicit XNSPACK(QIODevice *pDevice = nullptr, bool bIsImage = false, XADDR nModuleAddress = -1);
+    ~XNSPACK() override;
+
+    bool isValid(PDSTRUCT *pPdStruct = nullptr) override;
+    static bool isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr);
+    INTERNAL_INFO getInternalInfo(PDSTRUCT *pPdStruct = nullptr);
+
+    virtual FT getFileType() override;
+
+    virtual bool unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
+
+private:
+    struct NSP_STATE {
+        const quint8 *pSrcCurr;
+        const quint8 *pSrcEnd;
+        quint32 nBitmap;
+        quint32 nOldval;
+        int nError;
+        quint16 *pTable;
+        quint32 nTableEntries;
+    };
+
+    static quint8 _getByte(NSP_STATE *s);
+    static int _getBit(NSP_STATE *s, quint32 nIndex);
+    static quint32 _get100(NSP_STATE *s, quint32 nBase);
+    static quint32 _get100Size(NSP_STATE *s, quint32 nBase, quint32 nMatchByte);
+    static quint32 _getN(NSP_STATE *s, quint32 nBase, quint32 nBits);
+    static quint32 _getNSize(NSP_STATE *s, quint32 nBase, quint32 nBackSize);
+    static quint32 _getBB(NSP_STATE *s, quint32 nBase, quint32 nBack);
+    static quint32 _getBitmap(NSP_STATE *s, quint32 nBits);
+
+    static bool _decompress(quint32 nTre, quint32 nAllocsz, quint32 nFirstByte, const quint8 *pSrc, quint32 nSsize, quint8 *pDst, quint32 nDsize, quint16 *pTable,
+                            quint32 nTableEntries);
+    // Reverse NsPack's E8/E9 CALL/JMP address filter over the decompressed blob.
+    static void _deFilterCallJmp(quint8 *pData, quint32 nSize);
+    // Rebuild the original import directory from NsPack's descriptor stream. Fills the
+    // IAT inside *pBaBlob and returns the bytes of a fresh import section to be placed
+    // at RVA nImpRva (empty on failure / no imports). Sets *pnDescSize.
+    QByteArray _reconstructImports(QByteArray *pBaBlob, quint32 nRva, quint32 nImpRva, quint32 *pnDescSize, PDSTRUCT *pPdStruct);
+    static QByteArray _buildPE(const QByteArray &baBlob, quint32 nRva, quint32 nImageBase, quint32 nOEP, const QByteArray &baImportSection = QByteArray(),
+                               quint32 nImpRva = 0, quint32 nDescSize = 0);
+
+    INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);
+    // Locate the nsp0 compressed-block header (start-of-stuff) by scanning for the
+    // highest self-consistent header whose dsize field equals nSec0Vsize. Used for
+    // NsPack versions whose entry-point stub does not carry the 2.x delta.
+    qint64 _findStartOfStuff(quint32 nSec0Vsize, PDSTRUCT *pPdStruct);
+};
+
+#endif  // XNSPACK_H
