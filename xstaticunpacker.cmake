@@ -33,4 +33,34 @@ set(XSTATICUNPACKER_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/xmew.h
     ${CMAKE_CURRENT_LIST_DIR}/xautoit.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xautoit.h
+    ${CMAKE_CURRENT_LIST_DIR}/x7zsfx.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/x7zsfx.h
+    ${CMAKE_CURRENT_LIST_DIR}/xwinrarsfx.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xwinrarsfx.h
+    ${CMAKE_CURRENT_LIST_DIR}/xiexpress.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xiexpress.h
+    ${CMAKE_CURRENT_LIST_DIR}/xmsi.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xmsi.h
+    ${CMAKE_CURRENT_LIST_DIR}/xwix.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xwix.h
+    ${CMAKE_CURRENT_LIST_DIR}/xadvancedinstaller.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xadvancedinstaller.h
+    ${CMAKE_CURRENT_LIST_DIR}/xactualinstaller.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xactualinstaller.h
+    ${CMAKE_CURRENT_LIST_DIR}/xclickteam.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xclickteam.h
+    ${CMAKE_CURRENT_LIST_DIR}/xcreateinstall.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xcreateinstall.h
+    ${CMAKE_CURRENT_LIST_DIR}/xenigmavb.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xenigmavb.h
+    ${CMAKE_CURRENT_LIST_DIR}/xboxedapp.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xboxedapp.h
+    ${CMAKE_CURRENT_LIST_DIR}/xinstallforge.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xinstallforge.h
+    ${CMAKE_CURRENT_LIST_DIR}/xinstallsimple.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xinstallsimple.h
+    ${CMAKE_CURRENT_LIST_DIR}/xsmartinstall.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xsmartinstall.h
+    ${CMAKE_CURRENT_LIST_DIR}/xtarma.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xtarma.h
 )
