@@ -64,7 +64,7 @@ XAUTOIT::~XAUTOIT()
 
 bool XAUTOIT::isValid(PDSTRUCT *pPdStruct)
 {
-    return getInternalInfo(pPdStruct).bIsValid;
+    return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
 bool XAUTOIT::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
@@ -309,14 +309,54 @@ XAUTOIT::INTERNAL_INFO XAUTOIT::_detect(PDSTRUCT *pPdStruct)
     return result;
 }
 
-XAUTOIT::INTERNAL_INFO XAUTOIT::getInternalInfo(PDSTRUCT *pPdStruct)
+XAUTOIT::INTERNAL_INFO XAUTOIT::_getInternalInfo(PDSTRUCT *pPdStruct)
 {
     return _detect(pPdStruct);
+}
+
+// Cache format-specific parsing together with the XBinary memory map.
+bool XAUTOIT::handleInternalInfo(PDSTRUCT *pPdStruct)
+{
+    if (!isInternalInfoHandled()) {
+        m_internalInfo = INTERNAL_INFO();
+        setIsInternalInfoHandled(true);
+        m_internalInfo = _getInternalInfo(pPdStruct);
+        m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    }
+
+    return true;
+}
+
+void *XAUTOIT::getInternalInfo(PDSTRUCT *pPdStruct)
+{
+    handleInternalInfo(pPdStruct);
+    return &m_internalInfo;
+}
+
+void XAUTOIT::setInternalInfo(void *pInternalInfo)
+{
+    if (pInternalInfo) {
+        m_internalInfo = *static_cast<INTERNAL_INFO *>(pInternalInfo);
+        setIsInternalInfoHandled(true);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    } else {
+        m_internalInfo = INTERNAL_INFO();
+        setIsInternalInfoHandled(false);
+        XBinary::setInternalInfo(nullptr);
+    }
 }
 
 // ---------------------------------------------------------------------------
 // streaming API
 // ---------------------------------------------------------------------------
+
+QMap<XBinary::UNPACK_PROP, QVariant> XAUTOIT::getDefaultUnpackProperties()
+{
+    QMap<XBinary::UNPACK_PROP, QVariant> result = XBinary::getDefaultUnpackProperties();
+
+    return result;
+}
 
 bool XAUTOIT::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {

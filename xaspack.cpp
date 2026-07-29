@@ -55,7 +55,7 @@ XASPACK::~XASPACK()
 
 bool XASPACK::isValid(PDSTRUCT *pPdStruct)
 {
-    return getInternalInfo(pPdStruct).bIsValid;
+    return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
 bool XASPACK::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
@@ -71,13 +71,45 @@ XBinary::FT XASPACK::getFileType()
 
 QString XASPACK::getVersion()
 {
-    INTERNAL_INFO info = getInternalInfo();
+    INTERNAL_INFO info = *static_cast<INTERNAL_INFO *>(getInternalInfo());
     return info.bIsValid ? info.sVersion : QString();
 }
 
-XASPACK::INTERNAL_INFO XASPACK::getInternalInfo(PDSTRUCT *pPdStruct)
+XASPACK::INTERNAL_INFO XASPACK::_getInternalInfo(PDSTRUCT *pPdStruct)
 {
     return _detect(pPdStruct);
+}
+
+// Cache format-specific parsing together with the XBinary memory map.
+bool XASPACK::handleInternalInfo(PDSTRUCT *pPdStruct)
+{
+    if (!isInternalInfoHandled()) {
+        m_internalInfo = _getInternalInfo(pPdStruct);
+        setIsInternalInfoHandled(true);
+        m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    }
+
+    return true;
+}
+
+void *XASPACK::getInternalInfo(PDSTRUCT *pPdStruct)
+{
+    handleInternalInfo(pPdStruct);
+    return &m_internalInfo;
+}
+
+void XASPACK::setInternalInfo(void *pInternalInfo)
+{
+    if (pInternalInfo) {
+        m_internalInfo = *static_cast<INTERNAL_INFO *>(pInternalInfo);
+        setIsInternalInfoHandled(true);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    } else {
+        m_internalInfo = INTERNAL_INFO();
+        setIsInternalInfoHandled(false);
+        XBinary::setInternalInfo(nullptr);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -485,12 +517,143 @@ XASPACK::INTERNAL_INFO XASPACK::_detect(PDSTRUCT *pPdStruct)
 }
 
 // ---------------------------------------------------------------------------
-// unpack
+// streaming API
 // ---------------------------------------------------------------------------
 
-bool XASPACK::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
+QMap<XBinary::UNPACK_PROP, QVariant> XASPACK::getDefaultUnpackProperties()
 {
-    if (!pDevice) return false;
+    QMap<XBinary::UNPACK_PROP, QVariant> result = XBinary::getDefaultUnpackProperties();
+
+    return result;
+}
+
+bool XASPACK::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
+{
+    if (!pState) {
+        return false;
+    }
+
+    pState->nCurrentOffset = 0;
+    pState->nTotalSize = getSize();
+    pState->nCurrentIndex = 0;
+    pState->nNumberOfRecords = 0;
+    pState->pContext = nullptr;
+    pState->mapUnpackProperties = mapProperties;
+
+    INTERNAL_INFO info = _detect(pPdStruct);
+    if (!info.bIsValid) {
+        return false;
+    }
+
+    UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT;
+    pContext->sFileName = getUnpackedFileName(getDevice());
+
+    if (!_unpackToBuffer(pContext->baData, pPdStruct)) {
+        delete pContext;
+        return false;
+    }
+
+    pState->pContext = pContext;
+    pState->nNumberOfRecords = (pContext->baData.size() > 0) ? 1 : 0;
+
+    return (pState->nNumberOfRecords > 0);
+}
+
+XBinary::ARCHIVERECORD XASPACK::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    ARCHIVERECORD result = {};
+
+    if ((!pState) || (!pState->pContext)) {
+        return result;
+    }
+
+    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
+    if (pState->nCurrentIndex != 0) {
+        return result;
+    }
+
+    result.nStreamOffset = 0;
+    result.nStreamSize = pContext->baData.size();
+    result.mapProperties.insert(FPART_PROP_ORIGINALNAME, pContext->sFileName);
+    result.mapProperties.insert(FPART_PROP_COMPRESSEDSIZE, getSize());
+    result.mapProperties.insert(FPART_PROP_UNCOMPRESSEDSIZE, (qint64)pContext->baData.size());
+    result.mapProperties.insert(FPART_PROP_HANDLEMETHOD, (qint32)HANDLE_METHOD_FILE);
+    result.mapProperties.insert(FPART_PROP_ISFOLDER, false);
+    result.mapProperties.insert(FPART_PROP_INFO, QString("ASPack %1").arg(getVersion()));
+
+    return result;
+}
+
+bool XASPACK::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    if ((!pState) || (!pState->pContext)) {
+        return false;
+    }
+
+    pState->nCurrentIndex++;
+
+    return (pState->nCurrentIndex < pState->nNumberOfRecords);
+}
+
+bool XASPACK::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    if (!pState) {
+        return false;
+    }
+
+    if (pState->pContext) {
+        delete (UNPACK_CONTEXT *)pState->pContext;
+        pState->pContext = nullptr;
+    }
+
+    pState->nCurrentOffset = 0;
+    pState->nCurrentIndex = 0;
+    pState->nNumberOfRecords = 0;
+
+    return true;
+}
+
+bool XASPACK::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct)
+{
+    if (!pState || !pState->pContext || !pDevice) {
+        return false;
+    }
+
+    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
+    if ((pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
+        return false;
+    }
+
+    const QByteArray &baData = pContext->baData;
+    qint64 nOffset = 0;
+    const qint64 nChunkSize = 0x100000;
+
+    while ((nOffset < baData.size()) && isPdStructNotCanceled(pPdStruct)) {
+        qint64 nCurrentChunkSize = qMin(nChunkSize, (qint64)baData.size() - nOffset);
+
+        if (pDevice->write(baData.constData() + nOffset, nCurrentChunkSize) != nCurrentChunkSize) {
+            return false;
+        }
+
+        nOffset += nCurrentChunkSize;
+    }
+
+    return isPdStructNotCanceled(pPdStruct) && (nOffset == baData.size());
+}
+
+bool XASPACK::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
+{
+    baOut.clear();
+
+    if (!isPdStructNotCanceled(pPdStruct)) {
+        return false;
+    }
 
     INTERNAL_INFO info = _detect(pPdStruct);
     if (!info.bIsValid) return false;
@@ -503,7 +666,7 @@ bool XASPACK::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
     if (nSectCount < 1) return false;
 
     const quint32 nImageBase = (quint32)pe.getOptionalHeader_ImageBase();
-    const quint32 nEp = pe.getOptionalHeader_AddressOfEntryPoint() - 1;  // ep = vep - 1
+    const quint32 nEp = pe.getOptionalHeader_AddressOfEntryPoint() - 1;
 
     quint32 nBlocksOff, nStrMltOff, nCompBOff, nWrkbufOff, nOepOff;
     switch (info.version) {
@@ -512,7 +675,6 @@ bool XASPACK::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
         default: nBlocksOff = ASP_BLOCKS_OTHER; nStrMltOff = ASP_STRMLT_OTHER; nCompBOff = ASP_COMPB_OTHER; nWrkbufOff = ASP_WRKBUF_OTHER; nOepOff = ASP_OEP_OTHER; break;
     }
 
-    // build the mapped image (sections by RVA)
     quint32 nImageSize = 0;
     for (int i = 0; i < nSectCount; i++) {
         nImageSize = qMax(nImageSize, listSections.at(i).VirtualAddress + listSections.at(i).Misc.VirtualSize);
@@ -531,7 +693,6 @@ bool XASPACK::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
     }
     quint8 *image = (quint8 *)baImage.data();
 
-    // dictionary work buffer carved into per-dict starts[]/ends[] + decrypt_dict
     QByteArray baWrk(0x1800, (char)0);
     quint8 *wrkbuf = (quint8 *)baWrk.data();
     ASPK st;
@@ -556,7 +717,6 @@ bool XASPACK::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
     if (((quint64)nEp + nCompBOff + 0x72) > nImageSize) return false;
     const quint8 *stuff = image + nEp + nCompBOff;
 
-    // decompress each block in place
     if (((quint64)nEp + nBlocksOff + 8) > nImageSize) return false;
     const quint8 *blocks = image + nEp + nBlocksOff;
     quint32 block_rva = 1, block_size = 0;
@@ -575,7 +735,6 @@ bool XASPACK::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
             return false;
         }
 
-        // the first decompressed block gets the CALL/JMP address filter reversed
         if (!bFiltered && (block_size > 7)) {
             bFiltered = true;
             quint32 mark = image[nEp + nWrkbufOff];
@@ -610,10 +769,9 @@ bool XASPACK::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
     }
 
     if (block_rva) {
-        return false;  // did not terminate cleanly
+        return false;
     }
 
-    // trim the two loader sections if present
     if ((nSectCount > 2) && (nEp == listSections.at(nSectCount - 2).VirtualAddress) && (!listSections.at(nSectCount - 1).SizeOfRawData)) {
         nSectCount -= 2;
     }
@@ -624,5 +782,7 @@ bool XASPACK::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
     QByteArray baPE = _buildPE(baImage, listSections, nSectCount, nImageBase, nOEP);
     if (baPE.isEmpty()) return false;
 
-    return (pDevice->write(baPE) == baPE.size());
+    baOut = baPE;
+
+    return true;
 }

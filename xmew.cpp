@@ -31,7 +31,7 @@ XMEW::~XMEW()
 
 bool XMEW::isValid(PDSTRUCT *pPdStruct)
 {
-    return getInternalInfo(pPdStruct).bIsValid;
+    return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
 bool XMEW::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
@@ -45,7 +45,7 @@ XBinary::FT XMEW::getFileType()
     return FT_BINARY;
 }
 
-XMEW::INTERNAL_INFO XMEW::getInternalInfo(PDSTRUCT *pPdStruct)
+XMEW::INTERNAL_INFO XMEW::_getInternalInfo(PDSTRUCT *pPdStruct)
 {
     INTERNAL_INFO result = {};
     DETECT d = _detect(pPdStruct);
@@ -53,6 +53,38 @@ XMEW::INTERNAL_INFO XMEW::getInternalInfo(PDSTRUCT *pPdStruct)
     result.bUsesLzma = (d.nUseLzma != 0);
     result.sVersion = d.bIsValid ? QString("11 SE") : QString();
     return result;
+}
+
+// Cache format-specific parsing together with the XBinary memory map.
+bool XMEW::handleInternalInfo(PDSTRUCT *pPdStruct)
+{
+    if (!isInternalInfoHandled()) {
+        m_internalInfo = _getInternalInfo(pPdStruct);
+        setIsInternalInfoHandled(true);
+        m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    }
+
+    return true;
+}
+
+void *XMEW::getInternalInfo(PDSTRUCT *pPdStruct)
+{
+    handleInternalInfo(pPdStruct);
+    return &m_internalInfo;
+}
+
+void XMEW::setInternalInfo(void *pInternalInfo)
+{
+    if (pInternalInfo) {
+        m_internalInfo = *static_cast<INTERNAL_INFO *>(pInternalInfo);
+        setIsInternalInfoHandled(true);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    } else {
+        m_internalInfo = INTERNAL_INFO();
+        setIsInternalInfoHandled(false);
+        XBinary::setInternalInfo(nullptr);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -470,12 +502,138 @@ XMEW::DETECT XMEW::_detect(PDSTRUCT *pPdStruct)
 }
 
 // ---------------------------------------------------------------------------
-// unpack
+// streaming API
 // ---------------------------------------------------------------------------
 
-bool XMEW::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
+QMap<XBinary::UNPACK_PROP, QVariant> XMEW::getDefaultUnpackProperties()
 {
-    if (!pDevice) return false;
+    QMap<XBinary::UNPACK_PROP, QVariant> result = XBinary::getDefaultUnpackProperties();
+
+    return result;
+}
+
+bool XMEW::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
+{
+    if (!pState) {
+        return false;
+    }
+
+    pState->nCurrentOffset = 0;
+    pState->nTotalSize = getSize();
+    pState->nCurrentIndex = 0;
+    pState->nNumberOfRecords = 0;
+    pState->pContext = nullptr;
+    pState->mapUnpackProperties = mapProperties;
+
+    if (!_detect(pPdStruct).bIsValid) {
+        return false;
+    }
+
+    UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT;
+    pContext->sFileName = getUnpackedFileName(getDevice());
+
+    if (!_unpackToBuffer(pContext->baData, pPdStruct)) {
+        delete pContext;
+        return false;
+    }
+
+    pState->pContext = pContext;
+    pState->nNumberOfRecords = (pContext->baData.size() > 0) ? 1 : 0;
+
+    return (pState->nNumberOfRecords > 0);
+}
+
+XBinary::ARCHIVERECORD XMEW::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    ARCHIVERECORD result = {};
+
+    if ((!pState) || (!pState->pContext)) {
+        return result;
+    }
+
+    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
+    if (pState->nCurrentIndex != 0) {
+        return result;
+    }
+
+    result.nStreamOffset = 0;
+    result.nStreamSize = pContext->baData.size();
+    result.mapProperties.insert(FPART_PROP_ORIGINALNAME, pContext->sFileName);
+    result.mapProperties.insert(FPART_PROP_COMPRESSEDSIZE, getSize());
+    result.mapProperties.insert(FPART_PROP_UNCOMPRESSEDSIZE, (qint64)pContext->baData.size());
+    result.mapProperties.insert(FPART_PROP_HANDLEMETHOD, (qint32)HANDLE_METHOD_FILE);
+    result.mapProperties.insert(FPART_PROP_ISFOLDER, false);
+    result.mapProperties.insert(FPART_PROP_INFO, QString("MEW %1").arg(getVersion()));
+
+    return result;
+}
+
+bool XMEW::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    if ((!pState) || (!pState->pContext)) {
+        return false;
+    }
+
+    pState->nCurrentIndex++;
+
+    return (pState->nCurrentIndex < pState->nNumberOfRecords);
+}
+
+bool XMEW::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    if (!pState) {
+        return false;
+    }
+
+    if (pState->pContext) {
+        delete (UNPACK_CONTEXT *)pState->pContext;
+        pState->pContext = nullptr;
+    }
+
+    pState->nCurrentOffset = 0;
+    pState->nCurrentIndex = 0;
+    pState->nNumberOfRecords = 0;
+
+    return true;
+}
+
+bool XMEW::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct)
+{
+    if (!pState || !pState->pContext || !pDevice) {
+        return false;
+    }
+
+    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
+    if ((pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
+        return false;
+    }
+
+    const QByteArray &baData = pContext->baData;
+    qint64 nOffset = 0;
+    const qint64 nChunkSize = 0x100000;
+
+    while ((nOffset < baData.size()) && isPdStructNotCanceled(pPdStruct)) {
+        qint64 nCurrentChunkSize = qMin(nChunkSize, (qint64)baData.size() - nOffset);
+
+        if (pDevice->write(baData.constData() + nOffset, nCurrentChunkSize) != nCurrentChunkSize) {
+            return false;
+        }
+
+        nOffset += nCurrentChunkSize;
+    }
+
+    return isPdStructNotCanceled(pPdStruct) && (nOffset == baData.size());
+}
+
+bool XMEW::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
+{
+    baOut.clear();
 
     DETECT d = _detect(pPdStruct);
     if (!d.bIsValid) return false;
@@ -488,7 +646,6 @@ bool XMEW::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
     const quint32 nVma = nBase + nVadd;
     const quint32 nOff = d.nOffDiff;
 
-    // buffer: [ dest (dsize) | source (ssize) ]
     QByteArray baBuf((int)nSizeSum, (char)0);
     QByteArray baSrc = read_array_process(d.nSrcRaw, d.nSrcRsz, pPdStruct);
     if ((quint32)baSrc.size() != d.nSrcRsz) return false;
@@ -505,7 +662,7 @@ bool XMEW::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
     quint32 nEntryPoint = mewRd32(buf + nSourceOff + 4);
     quint32 nNewEdi = mewRd32(buf + nSourceOff + 8);
     qint64 nLedi = (qint64)nNewEdi - nVma;
-    qint64 nLocDs = (qint64)nSizeSum - ((qint64)nNewEdi - nVma);
+    qint64 nLocDs = (qint64)nDsize - (nNewEdi - nVma);
     qint64 nLocSs = (qint64)nSsize - 12 - nOff;
 
     QList<SECT> listSections;
@@ -524,8 +681,8 @@ bool XMEW::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
         qint64 nProduced = _aplibDepack(buf + nLesi, nLocSs, buf + nLedi, nLocDs, &nConsumed);
         if (nProduced < 0) return false;
 
-        qint64 f1 = nLesi + nConsumed;  // endsrc
-        qint64 f2 = nLedi + nProduced;  // enddst
+        qint64 f1 = nLesi + nConsumed;
+        qint64 f2 = nLedi + nProduced;
         if (!cont(f1, 4)) return false;
 
         nLocSs -= (f1 + 4 - nLesi);
@@ -533,15 +690,12 @@ bool XMEW::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 
         quint32 nNextRva = mewRd32(buf + f1);
         nLedi = (qint64)nNextRva - nVma;
-        nLocDs = (qint64)nSizeSum - ((qint64)nNextRva - nVma);
+        nLocDs = (qint64)nDsize - ((qint64)nNextRva - nVma);
 
-        // On the LZMA path MEW still runs this loader loop to walk the aPLib
-        // blocks (so f1 lands on the container), but builds no sections here.
         if (!d.nUseLzma) {
             quint32 val = mewAlign((quint32)f2, 0x1000);
             if (idx && (val < listSections.at(idx).raw)) return false;
 
-            // ensure section[idx+1] exists
             if (listSections.size() < idx + 2) {
                 SECT s;
                 s.raw = val;
@@ -559,14 +713,10 @@ bool XMEW::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 
         idx++;
         if (!nNextRva) break;
-
-        if (idx > 4096) return false;  // safety
+        if (idx > 4096) return false;
     }
 
     if (d.nUseLzma) {
-        // The aPLib loop above terminated with nLesi == f1 + 4, i.e. the start
-        // of the MEW LZMA container. Decode it in place, then emit MEW's single
-        // output section spanning the whole destination.
         if (!_lzmaDepack(baBuf, nLesi, d.nUseLzma, nDsize, nVma, pPdStruct)) return false;
 
         QList<SECT> lzmaSections;
@@ -579,10 +729,10 @@ bool XMEW::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
         QByteArray baLzmaPE = _buildPE(baBuf, lzmaSections, nBase, nEntryPoint - nBase);
         if (baLzmaPE.isEmpty()) return false;
 
-        return (pDevice->write(baLzmaPE) == baLzmaPE.size());
+        baOut = baLzmaPE;
+        return true;
     }
 
-    // keep only the first idx sections
     while (listSections.size() > idx) {
         listSections.removeLast();
     }
@@ -590,5 +740,8 @@ bool XMEW::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
     QByteArray baPE = _buildPE(baBuf, listSections, nBase, nEntryPoint - nBase);
     if (baPE.isEmpty()) return false;
 
-    return (pDevice->write(baPE) == baPE.size());
+    baOut = baPE;
+
+    return true;
 }
+

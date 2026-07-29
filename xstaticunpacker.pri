@@ -1,6 +1,29 @@
 INCLUDEPATH += $$PWD
 DEPENDPATH += $$PWD
 
+!contains(XCONFIG, xinstallsimple_xemulator) {
+    XCONFIG += xinstallsimple_xemulator
+    INCLUDEPATH += $$PWD/../XEmulator
+    INCLUDEPATH += $$PWD/../XEmulator/arch
+    DEPENDPATH += $$PWD/../XEmulator
+    DEPENDPATH += $$PWD/../XEmulator/arch
+
+    HEADERS += \
+        $$PWD/../XEmulator/xemumemorymanager.h \
+        $$PWD/../XEmulator/xemuregisters.h \
+        $$PWD/../XEmulator/xemutypes.h \
+        $$PWD/../XEmulator/arch/xemuarch.h \
+        $$PWD/../XEmulator/arch/xemuopcache.h \
+        $$PWD/../XEmulator/arch/xemutb.h \
+        $$PWD/../XEmulator/arch/xemux86.h
+
+    SOURCES += \
+        $$PWD/../XEmulator/xemumemorymanager.cpp \
+        $$PWD/../XEmulator/xemuregisters.cpp \
+        $$PWD/../XEmulator/arch/xemuarch.cpp \
+        $$PWD/../XEmulator/arch/xemux86.cpp
+}
+
 !contains(XCONFIG, xformats) {
     XCONFIG += xformats
     include($$PWD/../Formats/xformats.pri)

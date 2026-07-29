@@ -19,7 +19,7 @@ class XPETITE : public XBinary {
     Q_OBJECT
 
 public:
-    struct INTERNAL_INFO {
+    struct INTERNAL_INFO : public XBinary::INTERNAL_INFO {
         bool bIsValid;
         int nVersion;  // 1 or 2
         QString sVersion;
@@ -30,14 +30,28 @@ public:
 
     bool isValid(PDSTRUCT *pPdStruct = nullptr) override;
     static bool isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr);
-    INTERNAL_INFO getInternalInfo(PDSTRUCT *pPdStruct = nullptr);
+    virtual bool handleInternalInfo(PDSTRUCT *pPdStruct) override;
+    virtual void *getInternalInfo(PDSTRUCT *pPdStruct = nullptr) override;
+    virtual void setInternalInfo(void *pInternalInfo) override;
 
     virtual FT getFileType() override;
     virtual QString getVersion() override;
 
-    virtual bool unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
+    virtual QMap<UNPACK_PROP, QVariant> getDefaultUnpackProperties() override;
+    virtual bool initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct = nullptr) override;
+    virtual ARCHIVERECORD infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
+    virtual bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
+    virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
+    virtual bool unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
 
 private:
+    INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
+    INTERNAL_INFO m_internalInfo;
+    struct UNPACK_CONTEXT {
+        QByteArray baData;
+        QString sFileName;
+    };
+    bool _unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct);
     struct USECT {
         quint32 rva;
         quint32 rsz;
@@ -61,3 +75,6 @@ private:
 };
 
 #endif  // XPETITE_H
+
+
+

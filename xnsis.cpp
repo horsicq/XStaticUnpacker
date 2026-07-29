@@ -222,12 +222,45 @@ quint32 XNSIS::ftStringToStructID(const QString &sFtString)
 
 bool XNSIS::isValid(PDSTRUCT *pPdStruct)
 {
-    return getInternalInfo(pPdStruct).bIsValid;
+    return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
-XNSIS::INTERNAL_INFO XNSIS::getInternalInfo(PDSTRUCT *pPdStruct)
+XNSIS::INTERNAL_INFO XNSIS::_getInternalInfo(PDSTRUCT *pPdStruct)
 {
     return _analyse(pPdStruct);
+}
+
+// Cache format-specific parsing together with the XBinary memory map.
+bool XNSIS::handleInternalInfo(PDSTRUCT *pPdStruct)
+{
+    if (!isInternalInfoHandled()) {
+        m_internalInfo = INTERNAL_INFO();
+        setIsInternalInfoHandled(true);
+        m_internalInfo = _getInternalInfo(pPdStruct);
+        m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    }
+
+    return true;
+}
+
+void *XNSIS::getInternalInfo(PDSTRUCT *pPdStruct)
+{
+    handleInternalInfo(pPdStruct);
+    return &m_internalInfo;
+}
+
+void XNSIS::setInternalInfo(void *pInternalInfo)
+{
+    if (pInternalInfo) {
+        m_internalInfo = *static_cast<INTERNAL_INFO *>(pInternalInfo);
+        setIsInternalInfoHandled(true);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    } else {
+        m_internalInfo = INTERNAL_INFO();
+        setIsInternalInfoHandled(false);
+        XBinary::setInternalInfo(nullptr);
+    }
 }
 
 XNSIS::INTERNAL_INFO XNSIS::_analyse(PDSTRUCT *pPdStruct)
@@ -1347,6 +1380,13 @@ bool XNSIS::_open(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
 // streaming API
 // ---------------------------------------------------------------------------
 
+QMap<XBinary::UNPACK_PROP, QVariant> XNSIS::getDefaultUnpackProperties()
+{
+    QMap<XBinary::UNPACK_PROP, QVariant> result = XBinary::getDefaultUnpackProperties();
+
+    return result;
+}
+
 bool XNSIS::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) {
@@ -1360,7 +1400,7 @@ bool XNSIS::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
     pState->pContext = nullptr;
     pState->mapUnpackProperties = mapProperties;
 
-    INTERNAL_INFO info = getInternalInfo(pPdStruct);
+    INTERNAL_INFO info = *static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct));
     if (!info.bIsValid) {
         return false;
     }

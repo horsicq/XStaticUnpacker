@@ -29,7 +29,7 @@ XNSPACK::~XNSPACK()
 
 bool XNSPACK::isValid(PDSTRUCT *pPdStruct)
 {
-    return getInternalInfo(pPdStruct).bIsValid;
+    return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
 bool XNSPACK::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
@@ -43,9 +43,41 @@ XBinary::FT XNSPACK::getFileType()
     return FT_BINARY;
 }
 
-XNSPACK::INTERNAL_INFO XNSPACK::getInternalInfo(PDSTRUCT *pPdStruct)
+XNSPACK::INTERNAL_INFO XNSPACK::_getInternalInfo(PDSTRUCT *pPdStruct)
 {
     return _detect(pPdStruct);
+}
+
+// Cache format-specific parsing together with the XBinary memory map.
+bool XNSPACK::handleInternalInfo(PDSTRUCT *pPdStruct)
+{
+    if (!isInternalInfoHandled()) {
+        m_internalInfo = _getInternalInfo(pPdStruct);
+        setIsInternalInfoHandled(true);
+        m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    }
+
+    return true;
+}
+
+void *XNSPACK::getInternalInfo(PDSTRUCT *pPdStruct)
+{
+    handleInternalInfo(pPdStruct);
+    return &m_internalInfo;
+}
+
+void XNSPACK::setInternalInfo(void *pInternalInfo)
+{
+    if (pInternalInfo) {
+        m_internalInfo = *static_cast<INTERNAL_INFO *>(pInternalInfo);
+        setIsInternalInfoHandled(true);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    } else {
+        m_internalInfo = INTERNAL_INFO();
+        setIsInternalInfoHandled(false);
+        XBinary::setInternalInfo(nullptr);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -813,22 +845,147 @@ XNSPACK::INTERNAL_INFO XNSPACK::_detect(PDSTRUCT *pPdStruct)
 }
 
 // ---------------------------------------------------------------------------
-// unpack
+// streaming API
 // ---------------------------------------------------------------------------
 
-bool XNSPACK::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
+QMap<XBinary::UNPACK_PROP, QVariant> XNSPACK::getDefaultUnpackProperties()
 {
-    if (!pDevice) return false;
+    QMap<XBinary::UNPACK_PROP, QVariant> result = XBinary::getDefaultUnpackProperties();
+
+    return result;
+}
+
+bool XNSPACK::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
+{
+    if (!pState) {
+        return false;
+    }
+
+    pState->nCurrentOffset = 0;
+    pState->nTotalSize = getSize();
+    pState->nCurrentIndex = 0;
+    pState->nNumberOfRecords = 0;
+    pState->pContext = nullptr;
+    pState->mapUnpackProperties = mapProperties;
+
+    INTERNAL_INFO info = _detect(pPdStruct);
+    if (!info.bIsValid) {
+        return false;
+    }
+
+    UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT;
+    pContext->sFileName = getUnpackedFileName(getDevice());
+
+    if (!_unpackToBuffer(pContext->baData, pPdStruct)) {
+        delete pContext;
+        return false;
+    }
+
+    pState->pContext = pContext;
+    pState->nNumberOfRecords = (pContext->baData.size() > 0) ? 1 : 0;
+
+    return (pState->nNumberOfRecords > 0);
+}
+
+XBinary::ARCHIVERECORD XNSPACK::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    ARCHIVERECORD result = {};
+
+    if ((!pState) || (!pState->pContext)) {
+        return result;
+    }
+
+    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
+    if (pState->nCurrentIndex != 0) {
+        return result;
+    }
+
+    result.nStreamOffset = 0;
+    result.nStreamSize = pContext->baData.size();
+    result.mapProperties.insert(FPART_PROP_ORIGINALNAME, pContext->sFileName);
+    result.mapProperties.insert(FPART_PROP_COMPRESSEDSIZE, getSize());
+    result.mapProperties.insert(FPART_PROP_UNCOMPRESSEDSIZE, (qint64)pContext->baData.size());
+    result.mapProperties.insert(FPART_PROP_HANDLEMETHOD, (qint32)HANDLE_METHOD_FILE);
+    result.mapProperties.insert(FPART_PROP_ISFOLDER, false);
+    result.mapProperties.insert(FPART_PROP_INFO, QString("NsPack %1").arg(getVersion()));
+
+    return result;
+}
+
+bool XNSPACK::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    if ((!pState) || (!pState->pContext)) {
+        return false;
+    }
+
+    pState->nCurrentIndex++;
+
+    return (pState->nCurrentIndex < pState->nNumberOfRecords);
+}
+
+bool XNSPACK::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    if (!pState) {
+        return false;
+    }
+
+    if (pState->pContext) {
+        delete (UNPACK_CONTEXT *)pState->pContext;
+        pState->pContext = nullptr;
+    }
+
+    pState->nCurrentOffset = 0;
+    pState->nCurrentIndex = 0;
+    pState->nNumberOfRecords = 0;
+
+    return true;
+}
+
+bool XNSPACK::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct)
+{
+    if (!pState || !pState->pContext || !pDevice) {
+        return false;
+    }
+
+    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
+    if ((pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
+        return false;
+    }
+
+    const QByteArray &baData = pContext->baData;
+    qint64 nOffset = 0;
+    const qint64 nChunkSize = 0x100000;
+
+    while ((nOffset < baData.size()) && isPdStructNotCanceled(pPdStruct)) {
+        qint64 nCurrentChunkSize = qMin(nChunkSize, (qint64)baData.size() - nOffset);
+
+        if (pDevice->write(baData.constData() + nOffset, nCurrentChunkSize) != nCurrentChunkSize) {
+            return false;
+        }
+
+        nOffset += nCurrentChunkSize;
+    }
+
+    return isPdStructNotCanceled(pPdStruct) && (nOffset == baData.size());
+}
+
+bool XNSPACK::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
+{
+    baOut.clear();
+
+    if (!isPdStructNotCanceled(pPdStruct)) {
+        return false;
+    }
 
     INTERNAL_INFO info = _detect(pPdStruct);
     if (!info.bIsValid) return false;
 
-    // The NsPack header's ssize field (sos+5) slightly undercounts the real
-    // compressed stream (its src_end lands a few bytes short of the actual
-    // stream end), so read the whole tail up to EOF and let the range decoder
-    // terminate naturally when it reaches dsize. Reading extra source is safe:
-    // _decompress stops at nDsize on success and is bounded by src_end/nDsize
-    // otherwise.
     qint64 nAvail = getSize() - info.nStartOfStuff;
     if (nAvail <= 13) return false;
     QByteArray baStuff = read_array_process(info.nStartOfStuff, nAvail, pPdStruct);
@@ -851,9 +1008,7 @@ bool XNSPACK::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
     quint32 nTre = c;
 
     quint32 nShift = (nTre + nAllocsz) & 0xff;
-    if (nShift > 12) {
-        return false;  // table would be unreasonably large -> not real NsPack
-    }
+    if (nShift > 12) return false;
     quint32 nTableEntries = (0x300u << nShift) + 0x736;
 
     quint32 nDsize = nspRd32(stuff + 9);
@@ -863,17 +1018,12 @@ bool XNSPACK::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
     std::vector<quint16> table(nTableEntries);
     QByteArray baDest(nDsize, (char)0);
 
-    // Pass the full readable tail length as the source size so src_end sits at
-    // the true end of the compressed stream rather than at the short header ssize.
     if (!_decompress(nTre, nAllocsz, nFirstByte, stuff + 0xd, (quint32)baStuff.size(), (quint8 *)baDest.data(), nDsize, table.data(), nTableEntries)) {
         return false;
     }
 
-    // Reverse NsPack's E8/E9 CALL/JMP operand filter so the rebuilt code is runnable.
     _deFilterCallJmp((quint8 *)baDest.data(), nDsize);
 
-    // Rebuild the original import directory (fills the IAT inside baDest) and place it
-    // in a fresh .idata section right after the decompressed image.
     quint32 nImpRva = nspAlign(info.nRva + (quint32)baDest.size(), 0x1000);
     quint32 nDescSize = 0;
     QByteArray baImports = _reconstructImports(&baDest, info.nRva, nImpRva, &nDescSize, pPdStruct);
@@ -881,5 +1031,7 @@ bool XNSPACK::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
     QByteArray baPE = _buildPE(baDest, info.nRva, info.nImageBase, info.nOEP, baImports, nImpRva, nDescSize);
     if (baPE.isEmpty()) return false;
 
-    return (pDevice->write(baPE) == baPE.size());
+    baOut = baPE;
+
+    return true;
 }

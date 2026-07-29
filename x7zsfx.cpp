@@ -20,7 +20,7 @@ X7ZSFX::~X7ZSFX()
 
 bool X7ZSFX::isValid(PDSTRUCT *pPdStruct)
 {
-    return _detect(pPdStruct).bIsValid;
+    return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
 bool X7ZSFX::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
@@ -29,9 +29,42 @@ bool X7ZSFX::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
     return x.isValid(pPdStruct);
 }
 
-X7ZSFX::INTERNAL_INFO X7ZSFX::getInternalInfo(PDSTRUCT *pPdStruct)
+X7ZSFX::INTERNAL_INFO X7ZSFX::_getInternalInfo(PDSTRUCT *pPdStruct)
 {
     return _detect(pPdStruct);
+}
+
+// Cache format-specific parsing together with the XBinary memory map.
+bool X7ZSFX::handleInternalInfo(PDSTRUCT *pPdStruct)
+{
+    if (!isInternalInfoHandled()) {
+        m_internalInfo = INTERNAL_INFO();
+        setIsInternalInfoHandled(true);
+        m_internalInfo = _getInternalInfo(pPdStruct);
+        m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    }
+
+    return true;
+}
+
+void *X7ZSFX::getInternalInfo(PDSTRUCT *pPdStruct)
+{
+    handleInternalInfo(pPdStruct);
+    return &m_internalInfo;
+}
+
+void X7ZSFX::setInternalInfo(void *pInternalInfo)
+{
+    if (pInternalInfo) {
+        m_internalInfo = *static_cast<INTERNAL_INFO *>(pInternalInfo);
+        setIsInternalInfoHandled(true);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    } else {
+        m_internalInfo = INTERNAL_INFO();
+        setIsInternalInfoHandled(false);
+        XBinary::setInternalInfo(nullptr);
+    }
 }
 
 XBinary::FT X7ZSFX::getFileType()
@@ -69,8 +102,28 @@ X7ZSFX::INTERNAL_INFO X7ZSFX::_detect(PDSTRUCT *pPdStruct)
 
     if (bConfig || bBomConfig) {
         // Config SFX: the 7z archive follows the ";!@InstallEnd@!" text block.
-        result.bIsValid = true;
-        result.nArchiveOffset = find_array(nOverlayOffset, nTotalSize - nOverlayOffset, k7z, 6, pPdStruct);
+        qint64 nSearchOffset = nOverlayOffset;
+        qint32 nCandidates = 0;
+
+        while ((nSearchOffset <= nTotalSize - 6) && (nCandidates < 64) && XBinary::isPdStructNotCanceled(pPdStruct)) {
+            qint64 nArchiveOffset = find_array(nSearchOffset, nTotalSize - nSearchOffset, k7z, 6, pPdStruct);
+            if (nArchiveOffset < 0) break;
+
+            SubDevice archiveDevice(getDevice(), nArchiveOffset, nTotalSize - nArchiveOffset);
+            if (archiveDevice.open(QIODevice::ReadOnly)) {
+                bool bArchiveValid = XSevenZip::isValid(&archiveDevice, pPdStruct);
+                archiveDevice.close();
+
+                if (bArchiveValid) {
+                    result.bIsValid = true;
+                    result.nArchiveOffset = nArchiveOffset;
+                    break;
+                }
+            }
+
+            nCandidates++;
+            nSearchOffset = nArchiveOffset + 6;
+        }
     } else if (bPlain7z) {
         // Plain-magic branch: require a 7-Zip stub attribution to avoid firing on
         // any PE that merely appends a .7z file.
@@ -78,14 +131,17 @@ X7ZSFX::INTERNAL_INFO X7ZSFX::_detect(PDSTRUCT *pPdStruct)
         QString sProduct = pe.getResourcesVersionValue("ProductName").trimmed();
         bool bHarden = (sInternal.startsWith("7z") && sInternal.endsWith(".sfx")) || (sProduct == "7-Zip");
         if (bHarden) {
-            result.bIsValid = true;
-            result.nArchiveOffset = nOverlayOffset;
+            SubDevice archiveDevice(getDevice(), nOverlayOffset, nTotalSize - nOverlayOffset);
+            if (archiveDevice.open(QIODevice::ReadOnly)) {
+                result.bIsValid = XSevenZip::isValid(&archiveDevice, pPdStruct);
+                archiveDevice.close();
+                if (result.bIsValid) result.nArchiveOffset = nOverlayOffset;
+            }
         }
     }
 
     if (!result.bIsValid) return result;
 
-    if (result.nArchiveOffset < 0) result.nArchiveOffset = nOverlayOffset;
     result.nArchiveSize = nTotalSize - result.nArchiveOffset;
 
     QString sVer = pe.getResourcesVersionValue("FileVersion").trimmed();
@@ -96,6 +152,42 @@ X7ZSFX::INTERNAL_INFO X7ZSFX::_detect(PDSTRUCT *pPdStruct)
 }
 
 // --- streaming extraction: delegate to the XArchive 7z handler ---
+
+QMap<XBinary::UNPACK_PROP, QVariant> X7ZSFX::getDefaultUnpackProperties()
+{
+    QMap<XBinary::UNPACK_PROP, QVariant> result = XBinary::getDefaultUnpackProperties();
+
+    QIODevice *pDevice = getDevice();
+
+    if (pDevice) {
+        INTERNAL_INFO info = _detect(nullptr);
+
+        if (info.bIsValid && (info.nArchiveOffset >= 0) && (info.nArchiveSize > 0)) {
+            SubDevice subDevice(pDevice, info.nArchiveOffset, info.nArchiveSize);
+
+            if (subDevice.open(QIODevice::ReadOnly)) {
+                {
+                    XSevenZip archive(&subDevice);
+                    QMap<UNPACK_PROP, QVariant> mapInnerProperties = archive.getDefaultUnpackProperties();
+
+                    if (mapInnerProperties.contains(UNPACK_PROP_PASSWORD)) {
+                        result.insert(UNPACK_PROP_PASSWORD, mapInnerProperties.value(UNPACK_PROP_PASSWORD));
+                    }
+
+                    for (auto it = mapInnerProperties.constBegin(); it != mapInnerProperties.constEnd(); ++it) {
+                        if (XBinary::isUnpackCRCProperty(it.key())) {
+                            result.insert(it.key(), it.value());
+                        }
+                    }
+                }
+
+                subDevice.close();
+            }
+        }
+    }
+
+    return result;
+}
 
 bool X7ZSFX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
@@ -132,6 +224,8 @@ bool X7ZSFX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> 
     }
 
     pState->nNumberOfRecords = pContext->innerState.nNumberOfRecords;
+    pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
+    pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
     pState->pContext = pContext;
     return true;
 }
@@ -163,16 +257,18 @@ bool X7ZSFX::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
     bool bResult = pContext->pArchive->moveToNext(&pContext->innerState, pPdStruct);
     pState->nCurrentIndex = pContext->innerState.nCurrentIndex;
+    pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
     return bResult;
 }
 
 bool X7ZSFX::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
+    bool bResult = true;
     if (pState->pContext) {
         UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
         if (pContext->pArchive) {
-            pContext->pArchive->finishUnpack(&pContext->innerState, pPdStruct);
+            bResult = pContext->pArchive->finishUnpack(&pContext->innerState, pPdStruct);
             delete pContext->pArchive;
         }
         if (pContext->pSubDevice) {
@@ -185,5 +281,5 @@ bool X7ZSFX::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     pState->nCurrentOffset = 0;
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
-    return true;
+    return bResult;
 }

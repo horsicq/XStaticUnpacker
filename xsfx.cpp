@@ -22,7 +22,7 @@ XSFX::~XSFX()
 
 bool XSFX::isValid(PDSTRUCT *pPdStruct)
 {
-    return getInternalInfo(pPdStruct).bIsValid;
+    return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
 bool XSFX::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
@@ -31,9 +31,42 @@ bool XSFX::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
     return sfx.isValid(pPdStruct);
 }
 
-XSFX::INTERNAL_INFO XSFX::getInternalInfo(PDSTRUCT *pPdStruct)
+XSFX::INTERNAL_INFO XSFX::_getInternalInfo(PDSTRUCT *pPdStruct)
 {
     return _detect(pPdStruct);
+}
+
+// Cache format-specific parsing together with the XBinary memory map.
+bool XSFX::handleInternalInfo(PDSTRUCT *pPdStruct)
+{
+    if (!isInternalInfoHandled()) {
+        m_internalInfo = INTERNAL_INFO();
+        setIsInternalInfoHandled(true);
+        m_internalInfo = _getInternalInfo(pPdStruct);
+        m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    }
+
+    return true;
+}
+
+void *XSFX::getInternalInfo(PDSTRUCT *pPdStruct)
+{
+    handleInternalInfo(pPdStruct);
+    return &m_internalInfo;
+}
+
+void XSFX::setInternalInfo(void *pInternalInfo)
+{
+    if (pInternalInfo) {
+        m_internalInfo = *static_cast<INTERNAL_INFO *>(pInternalInfo);
+        setIsInternalInfoHandled(true);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    } else {
+        m_internalInfo = INTERNAL_INFO();
+        setIsInternalInfoHandled(false);
+        XBinary::setInternalInfo(nullptr);
+    }
 }
 
 XBinary::FT XSFX::getFileType()
@@ -78,6 +111,8 @@ bool XSFX::_matchArchiveAt(qint64 nOffset, qint64 nSize, ARCTYPE *pType, PDSTRUC
         candidate = ARC_7Z;  // '7z' BC AF 27 1C
     } else if ((p[0] == 0x52) && (p[1] == 0x61) && (p[2] == 0x72) && (p[3] == 0x21) && (p[4] == 0x1A) && (p[5] == 0x07)) {
         candidate = ARC_RAR;  // 'Rar!' 1A 07 (RAR4/RAR5)
+    } else if ((p[0] == 0x52) && (p[1] == 0x45) && (p[2] == 0x7E) && (p[3] == 0x5E)) {
+        candidate = ARC_RAR;  // 'RE~^' (RAR1.4)
     } else if ((p[0] == 0x4D) && (p[1] == 0x53) && (p[2] == 0x43) && (p[3] == 0x46)) {
         candidate = ARC_CAB;  // 'MSCF'
     } else {
@@ -136,10 +171,10 @@ XSFX::INTERNAL_INFO XSFX::_detect(PDSTRUCT *pPdStruct)
     }
 
     // 2) Fallback: scan for an archive signature past the PE headers.
-    const char *apszSignatures[] = {"377ABCAF271C", "52617221", "4D534346"};  // 7z, Rar!, MSCF
+    const char *apszSignatures[] = {"377ABCAF271C", "52617221", "52457E5E", "4D534346"};  // 7z, Rar!, RE~^, MSCF
     const qint64 nScanStart = 0x40;
 
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
         qint64 nPos = nScanStart;
         while ((nPos = find_signature(nPos, nTotalSize - nPos, apszSignatures[i], nullptr, pPdStruct)) != -1) {
             ARCTYPE type = ARC_UNKNOWN;
@@ -168,6 +203,45 @@ XArchive *XSFX::_createArchive(ARCTYPE arcType, QIODevice *pDevice)
         case ARC_CAB: return new XCab(pDevice);
         default: return nullptr;
     }
+}
+
+QMap<XBinary::UNPACK_PROP, QVariant> XSFX::getDefaultUnpackProperties()
+{
+    QMap<XBinary::UNPACK_PROP, QVariant> result = XBinary::getDefaultUnpackProperties();
+
+    QIODevice *pDevice = getDevice();
+
+    if (pDevice) {
+        INTERNAL_INFO info = _detect(nullptr);
+
+        if (info.bIsValid && (info.nArchiveOffset >= 0) && (info.nArchiveSize > 0)) {
+            SubDevice subDevice(pDevice, info.nArchiveOffset, info.nArchiveSize);
+
+            if (subDevice.open(QIODevice::ReadOnly)) {
+                XArchive *pArchive = _createArchive(info.arcType, &subDevice);
+
+                if (pArchive) {
+                    QMap<UNPACK_PROP, QVariant> mapInnerProperties = pArchive->getDefaultUnpackProperties();
+
+                    if (mapInnerProperties.contains(UNPACK_PROP_PASSWORD)) {
+                        result.insert(UNPACK_PROP_PASSWORD, mapInnerProperties.value(UNPACK_PROP_PASSWORD));
+                    }
+
+                    for (auto it = mapInnerProperties.constBegin(); it != mapInnerProperties.constEnd(); ++it) {
+                        if (XBinary::isUnpackCRCProperty(it.key())) {
+                            result.insert(it.key(), it.value());
+                        }
+                    }
+
+                    delete pArchive;
+                }
+
+                subDevice.close();
+            }
+        }
+    }
+
+    return result;
 }
 
 bool XSFX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)

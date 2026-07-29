@@ -18,7 +18,7 @@ public:
         STRUCTID_UNKNOWN = 0,
         STRUCTID_HEADER,
     };
-    struct INTERNAL_INFO {
+    struct INTERNAL_INFO : public XBinary::INTERNAL_INFO {
         bool bIsValid;
         qint64 nSignatureOffset;
         QString sVersion;
@@ -76,13 +76,16 @@ public:
     ~XInnoSetup() override;
 
     bool isValid(PDSTRUCT *pPdStruct = nullptr) override;
-    INTERNAL_INFO getInternalInfo(PDSTRUCT *pPdStruct = nullptr);
+    virtual bool handleInternalInfo(PDSTRUCT *pPdStruct) override;
+    virtual void *getInternalInfo(PDSTRUCT *pPdStruct = nullptr) override;
+    virtual void setInternalInfo(void *pInternalInfo) override;
 
     virtual QString structIDToString(quint32 nID) override;
     virtual QString structIDToFtString(quint32 nID) override;
     virtual quint32 ftStringToStructID(const QString &sFtString) override;
 
     // Streaming unpacking API
+    virtual QMap<UNPACK_PROP, QVariant> getDefaultUnpackProperties() override;
     virtual bool initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct = nullptr) override;
     virtual ARCHIVERECORD infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
@@ -90,6 +93,8 @@ public:
     virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
 
 private:
+    INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
+    INTERNAL_INFO m_internalInfo;
     INTERNAL_INFO _analyse(PDSTRUCT *pPdStruct);
     QList<ARCHIVERECORD> _parseSyntheticFileEntries(qint64 nSignatureOffset, PDSTRUCT *pPdStruct);
 

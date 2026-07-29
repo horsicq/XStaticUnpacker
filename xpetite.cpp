@@ -85,7 +85,7 @@ XPETITE::~XPETITE()
 
 bool XPETITE::isValid(PDSTRUCT *pPdStruct)
 {
-    return getInternalInfo(pPdStruct).bIsValid;
+    return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
 bool XPETITE::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
@@ -101,13 +101,45 @@ XBinary::FT XPETITE::getFileType()
 
 QString XPETITE::getVersion()
 {
-    INTERNAL_INFO info = getInternalInfo();
+    INTERNAL_INFO info = *static_cast<INTERNAL_INFO *>(getInternalInfo());
     return info.bIsValid ? info.sVersion : QString();
 }
 
-XPETITE::INTERNAL_INFO XPETITE::getInternalInfo(PDSTRUCT *pPdStruct)
+XPETITE::INTERNAL_INFO XPETITE::_getInternalInfo(PDSTRUCT *pPdStruct)
 {
     return _detect(pPdStruct);
+}
+
+// Cache format-specific parsing together with the XBinary memory map.
+bool XPETITE::handleInternalInfo(PDSTRUCT *pPdStruct)
+{
+    if (!isInternalInfoHandled()) {
+        m_internalInfo = _getInternalInfo(pPdStruct);
+        setIsInternalInfoHandled(true);
+        m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    }
+
+    return true;
+}
+
+void *XPETITE::getInternalInfo(PDSTRUCT *pPdStruct)
+{
+    handleInternalInfo(pPdStruct);
+    return &m_internalInfo;
+}
+
+void XPETITE::setInternalInfo(void *pInternalInfo)
+{
+    if (pInternalInfo) {
+        m_internalInfo = *static_cast<INTERNAL_INFO *>(pInternalInfo);
+        setIsInternalInfoHandled(true);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    } else {
+        m_internalInfo = INTERNAL_INFO();
+        setIsInternalInfoHandled(false);
+        XBinary::setInternalInfo(nullptr);
+    }
 }
 
 int XPETITE::_doubledl(const quint8 *buf, qint64 bufsz, qint64 *pSrcOff, quint8 *pMydl)
@@ -575,12 +607,138 @@ XPETITE::INTERNAL_INFO XPETITE::_detect(PDSTRUCT *pPdStruct)
 }
 
 // ---------------------------------------------------------------------------
-// unpack
+// streaming API
 // ---------------------------------------------------------------------------
 
-bool XPETITE::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
+QMap<XBinary::UNPACK_PROP, QVariant> XPETITE::getDefaultUnpackProperties()
 {
-    if (!pDevice) return false;
+    QMap<XBinary::UNPACK_PROP, QVariant> result = XBinary::getDefaultUnpackProperties();
+
+    return result;
+}
+
+bool XPETITE::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
+{
+    if (!pState) {
+        return false;
+    }
+
+    pState->nCurrentOffset = 0;
+    pState->nTotalSize = getSize();
+    pState->nCurrentIndex = 0;
+    pState->nNumberOfRecords = 0;
+    pState->pContext = nullptr;
+    pState->mapUnpackProperties = mapProperties;
+
+    if (!_detect(pPdStruct).bIsValid) {
+        return false;
+    }
+
+    UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT;
+    pContext->sFileName = getUnpackedFileName(getDevice());
+
+    if (!_unpackToBuffer(pContext->baData, pPdStruct)) {
+        delete pContext;
+        return false;
+    }
+
+    pState->pContext = pContext;
+    pState->nNumberOfRecords = (pContext->baData.size() > 0) ? 1 : 0;
+
+    return (pState->nNumberOfRecords > 0);
+}
+
+XBinary::ARCHIVERECORD XPETITE::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    ARCHIVERECORD result = {};
+
+    if ((!pState) || (!pState->pContext)) {
+        return result;
+    }
+
+    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
+    if (pState->nCurrentIndex != 0) {
+        return result;
+    }
+
+    result.nStreamOffset = 0;
+    result.nStreamSize = pContext->baData.size();
+    result.mapProperties.insert(FPART_PROP_ORIGINALNAME, pContext->sFileName);
+    result.mapProperties.insert(FPART_PROP_COMPRESSEDSIZE, getSize());
+    result.mapProperties.insert(FPART_PROP_UNCOMPRESSEDSIZE, (qint64)pContext->baData.size());
+    result.mapProperties.insert(FPART_PROP_HANDLEMETHOD, (qint32)HANDLE_METHOD_FILE);
+    result.mapProperties.insert(FPART_PROP_ISFOLDER, false);
+    result.mapProperties.insert(FPART_PROP_INFO, QString("Petite %1").arg(getVersion()));
+
+    return result;
+}
+
+bool XPETITE::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    if ((!pState) || (!pState->pContext)) {
+        return false;
+    }
+
+    pState->nCurrentIndex++;
+
+    return (pState->nCurrentIndex < pState->nNumberOfRecords);
+}
+
+bool XPETITE::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    if (!pState) {
+        return false;
+    }
+
+    if (pState->pContext) {
+        delete (UNPACK_CONTEXT *)pState->pContext;
+        pState->pContext = nullptr;
+    }
+
+    pState->nCurrentOffset = 0;
+    pState->nCurrentIndex = 0;
+    pState->nNumberOfRecords = 0;
+
+    return true;
+}
+
+bool XPETITE::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct)
+{
+    if (!pState || !pState->pContext || !pDevice) {
+        return false;
+    }
+
+    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
+    if ((pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
+        return false;
+    }
+
+    const QByteArray &baData = pContext->baData;
+    qint64 nOffset = 0;
+    const qint64 nChunkSize = 0x100000;
+
+    while ((nOffset < baData.size()) && isPdStructNotCanceled(pPdStruct)) {
+        qint64 nCurrentChunkSize = qMin(nChunkSize, (qint64)baData.size() - nOffset);
+
+        if (pDevice->write(baData.constData() + nOffset, nCurrentChunkSize) != nCurrentChunkSize) {
+            return false;
+        }
+
+        nOffset += nCurrentChunkSize;
+    }
+
+    return isPdStructNotCanceled(pPdStruct) && (nOffset == baData.size());
+}
+
+bool XPETITE::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
+{
+    baOut.clear();
 
     INTERNAL_INFO info = _detect(pPdStruct);
     if (!info.bIsValid) return false;
@@ -595,10 +753,6 @@ bool XPETITE::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
     const quint32 nImageBase = (quint32)pe.getOptionalHeader_ImageBase();
     const quint32 nVep = pe.getOptionalHeader_AddressOfEntryPoint();
 
-    // image span. Petite's loader section commonly has SizeOfRawData slightly
-    // larger than VirtualSize (the op table + trailing loader bytes sit there),
-    // so the buffer must be sized to hold each section's RAW data or the section
-    // copy below fails its bounds check before _inflate() ever runs.
     quint32 nMin = 0xFFFFFFFF, nMax = 0;
     for (int i = 0; i < n; i++) {
         nMin = qMin(nMin, listSections.at(i).VirtualAddress);
@@ -634,5 +788,7 @@ bool XPETITE::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
     QByteArray baPE = _buildPE(baBuf, listOut, nImageBase, nEncEp, resDir.VirtualAddress, resDir.Size);
     if (baPE.isEmpty()) return false;
 
-    return (pDevice->write(baPE) == baPE.size());
+    baOut = baPE;
+
+    return true;
 }

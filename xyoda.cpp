@@ -34,7 +34,7 @@ XYODA::~XYODA()
 
 bool XYODA::isValid(PDSTRUCT *pPdStruct)
 {
-    return getInternalInfo(pPdStruct).bIsValid;
+    return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
 bool XYODA::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
@@ -50,13 +50,45 @@ XBinary::FT XYODA::getFileType()
 
 QString XYODA::getVersion()
 {
-    INTERNAL_INFO info = getInternalInfo();
+    INTERNAL_INFO info = *static_cast<INTERNAL_INFO *>(getInternalInfo());
     return info.bIsValid ? info.sVersion : QString();
 }
 
-XYODA::INTERNAL_INFO XYODA::getInternalInfo(PDSTRUCT *pPdStruct)
+XYODA::INTERNAL_INFO XYODA::_getInternalInfo(PDSTRUCT *pPdStruct)
 {
     return _detect(pPdStruct);
+}
+
+// Cache format-specific parsing together with the XBinary memory map.
+bool XYODA::handleInternalInfo(PDSTRUCT *pPdStruct)
+{
+    if (!isInternalInfoHandled()) {
+        m_internalInfo = _getInternalInfo(pPdStruct);
+        setIsInternalInfoHandled(true);
+        m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    }
+
+    return true;
+}
+
+void *XYODA::getInternalInfo(PDSTRUCT *pPdStruct)
+{
+    handleInternalInfo(pPdStruct);
+    return &m_internalInfo;
+}
+
+void XYODA::setInternalInfo(void *pInternalInfo)
+{
+    if (pInternalInfo) {
+        m_internalInfo = *static_cast<INTERNAL_INFO *>(pInternalInfo);
+        setIsInternalInfoHandled(true);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    } else {
+        m_internalInfo = INTERNAL_INFO();
+        setIsInternalInfoHandled(false);
+        XBinary::setInternalInfo(nullptr);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -249,12 +281,138 @@ XYODA::INTERNAL_INFO XYODA::_detect(PDSTRUCT *pPdStruct)
 }
 
 // ---------------------------------------------------------------------------
-// unpack
+// streaming API
 // ---------------------------------------------------------------------------
 
-bool XYODA::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
+QMap<XBinary::UNPACK_PROP, QVariant> XYODA::getDefaultUnpackProperties()
 {
-    if (!pDevice) return false;
+    QMap<XBinary::UNPACK_PROP, QVariant> result = XBinary::getDefaultUnpackProperties();
+
+    return result;
+}
+
+bool XYODA::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
+{
+    if (!pState) {
+        return false;
+    }
+
+    pState->nCurrentOffset = 0;
+    pState->nTotalSize = getSize();
+    pState->nCurrentIndex = 0;
+    pState->nNumberOfRecords = 0;
+    pState->pContext = nullptr;
+    pState->mapUnpackProperties = mapProperties;
+
+    if (!_detect(pPdStruct).bIsValid) {
+        return false;
+    }
+
+    UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT;
+    pContext->sFileName = getUnpackedFileName(getDevice());
+
+    if (!_unpackToBuffer(pContext->baData, pPdStruct)) {
+        delete pContext;
+        return false;
+    }
+
+    pState->pContext = pContext;
+    pState->nNumberOfRecords = (pContext->baData.size() > 0) ? 1 : 0;
+
+    return (pState->nNumberOfRecords > 0);
+}
+
+XBinary::ARCHIVERECORD XYODA::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    ARCHIVERECORD result = {};
+
+    if ((!pState) || (!pState->pContext)) {
+        return result;
+    }
+
+    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
+    if (pState->nCurrentIndex != 0) {
+        return result;
+    }
+
+    result.nStreamOffset = 0;
+    result.nStreamSize = pContext->baData.size();
+    result.mapProperties.insert(FPART_PROP_ORIGINALNAME, pContext->sFileName);
+    result.mapProperties.insert(FPART_PROP_COMPRESSEDSIZE, getSize());
+    result.mapProperties.insert(FPART_PROP_UNCOMPRESSEDSIZE, (qint64)pContext->baData.size());
+    result.mapProperties.insert(FPART_PROP_HANDLEMETHOD, (qint32)HANDLE_METHOD_FILE);
+    result.mapProperties.insert(FPART_PROP_ISFOLDER, false);
+    result.mapProperties.insert(FPART_PROP_INFO, QString("Yoda %1").arg(getVersion()));
+
+    return result;
+}
+
+bool XYODA::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    if ((!pState) || (!pState->pContext)) {
+        return false;
+    }
+
+    pState->nCurrentIndex++;
+
+    return (pState->nCurrentIndex < pState->nNumberOfRecords);
+}
+
+bool XYODA::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
+{
+    Q_UNUSED(pPdStruct)
+
+    if (!pState) {
+        return false;
+    }
+
+    if (pState->pContext) {
+        delete (UNPACK_CONTEXT *)pState->pContext;
+        pState->pContext = nullptr;
+    }
+
+    pState->nCurrentOffset = 0;
+    pState->nCurrentIndex = 0;
+    pState->nNumberOfRecords = 0;
+
+    return true;
+}
+
+bool XYODA::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct)
+{
+    if (!pState || !pState->pContext || !pDevice) {
+        return false;
+    }
+
+    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
+    if ((pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
+        return false;
+    }
+
+    const QByteArray &baData = pContext->baData;
+    qint64 nOffset = 0;
+    const qint64 nChunkSize = 0x100000;
+
+    while ((nOffset < baData.size()) && isPdStructNotCanceled(pPdStruct)) {
+        qint64 nCurrentChunkSize = qMin(nChunkSize, (qint64)baData.size() - nOffset);
+
+        if (pDevice->write(baData.constData() + nOffset, nCurrentChunkSize) != nCurrentChunkSize) {
+            return false;
+        }
+
+        nOffset += nCurrentChunkSize;
+    }
+
+    return isPdStructNotCanceled(pPdStruct) && (nOffset == baData.size());
+}
+
+bool XYODA::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
+{
+    baOut.clear();
 
     INTERNAL_INFO info = _detect(pPdStruct);
     if (!info.bIsValid) return false;
@@ -282,6 +440,7 @@ bool XYODA::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 
     const qint64 nCurFileSize = nFileSize - (qint64)listSections.at(nSectCount).SizeOfRawData;
     if (nCurFileSize <= 0) return false;
+    if (nCurFileSize > 0x7fffffff) return false;
 
     // layer 2: decrypt each original section
     const qint64 nDecOff = nYcSect + ((info.nOffset == -0x18) ? 0x3ea : 0x457);
@@ -320,5 +479,9 @@ bool XYODA::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
     quint32 nSizeOfImage = _read_uint32((char *)pBase + nPeOff + 0x18 + 0x38);
     _write_uint32((char *)pBase + nPeOff + 0x18 + 0x38, nSizeOfImage - listSections.at(nSectCount).Misc.VirtualSize);  // SizeOfImage
 
-    return (pDevice->write(baFile.constData(), nCurFileSize) == nCurFileSize);
+    baOut = baFile.left((int)nCurFileSize);
+
+    return true;
 }
+
+

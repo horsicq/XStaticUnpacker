@@ -319,7 +319,7 @@ quint32 XUPX::ftStringToStructID(const QString &sFtString)
 
 bool XUPX::isValid(PDSTRUCT *pPdStruct)
 {
-    return getInternalInfo(pPdStruct).bIsValid;
+    return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
 bool XUPX::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
@@ -738,7 +738,7 @@ XUPX::INTERNAL_INFO XUPX::_read_packheader(char *pInfoData, qint32 nDataSize, bo
     return result;
 }
 
-XUPX::INTERNAL_INFO XUPX::getInternalInfo(PDSTRUCT *pPdStruct)
+XUPX::INTERNAL_INFO XUPX::_getInternalInfo(PDSTRUCT *pPdStruct)
 {
     XUPX::INTERNAL_INFO result = {};
 
@@ -761,6 +761,42 @@ XUPX::INTERNAL_INFO XUPX::getInternalInfo(PDSTRUCT *pPdStruct)
     return result;
 }
 
+// Cache format-specific parsing together with the XBinary memory map.
+bool XUPX::handleInternalInfo(PDSTRUCT *pPdStruct)
+{
+    if (!isInternalInfoHandled()) {
+        // Detection uses virtual format/memory-map helpers which can re-enter
+        // getInternalInfo(). Publish an initialized cache and its guard before
+        // starting detection so recursive queries observe a stable object.
+        m_internalInfo = INTERNAL_INFO();
+        setIsInternalInfoHandled(true);
+        m_internalInfo = _getInternalInfo(pPdStruct);
+        m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    }
+
+    return true;
+}
+
+void *XUPX::getInternalInfo(PDSTRUCT *pPdStruct)
+{
+    handleInternalInfo(pPdStruct);
+    return &m_internalInfo;
+}
+
+void XUPX::setInternalInfo(void *pInternalInfo)
+{
+    if (pInternalInfo) {
+        m_internalInfo = *static_cast<INTERNAL_INFO *>(pInternalInfo);
+        setIsInternalInfoHandled(true);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    } else {
+        m_internalInfo = INTERNAL_INFO();
+        setIsInternalInfoHandled(false);
+        XBinary::setInternalInfo(nullptr);
+    }
+}
+
 XBinary::FT XUPX::getFileType()
 {
     return XBinary::FT_UPX;
@@ -775,7 +811,7 @@ QString XUPX::getArch()
 {
     QString sResult;
 
-    INTERNAL_INFO info = getInternalInfo();
+    INTERNAL_INFO info = *static_cast<INTERNAL_INFO *>(getInternalInfo());
 
     if (info.bIsValid) {
         // Map UPX format to architecture
@@ -838,7 +874,7 @@ qint64 XUPX::getFileFormatSize(PDSTRUCT *pPdStruct)
 
 QString XUPX::getVersion()
 {
-    INTERNAL_INFO info = getInternalInfo();
+    INTERNAL_INFO info = *static_cast<INTERNAL_INFO *>(getInternalInfo());
     if (info.bIsValid) {
         return QString::number(info.version);
     }
@@ -980,7 +1016,7 @@ bool XUPX::_unpackToFile(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
     bool bResult = false;
 
-    INTERNAL_INFO info = getInternalInfo(pPdStruct);
+    INTERNAL_INFO info = *static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct));
 
     if (info.bIsValid) {
         if (_isPEFileType(info.fileType)) {
@@ -1043,6 +1079,13 @@ QString XUPX::_getUnpackedFileName()
     return sResult;
 }
 
+QMap<XBinary::UNPACK_PROP, QVariant> XUPX::getDefaultUnpackProperties()
+{
+    QMap<XBinary::UNPACK_PROP, QVariant> result = XBinary::getDefaultUnpackProperties();
+
+    return result;
+}
+
 bool XUPX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) {
@@ -1056,7 +1099,7 @@ bool XUPX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     pState->mapUnpackProperties = mapProperties;
     pState->pContext = nullptr;
 
-    INTERNAL_INFO info = getInternalInfo(pPdStruct);
+    INTERNAL_INFO info = *static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct));
 
     if (!info.bIsValid) {
         return false;
@@ -1127,12 +1170,12 @@ bool XUPX::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 
 bool XUPX::isPackedFile(PDSTRUCT *pPdStruct)
 {
-    return getInternalInfo(pPdStruct).bIsValid;
+    return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
 QString XUPX::packerVersion(PDSTRUCT *pPdStruct)
 {
-    INTERNAL_INFO info = getInternalInfo(pPdStruct);
+    INTERNAL_INFO info = *static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct));
     if (info.bIsValid) {
         return QString::number(info.version);
     }
@@ -1141,7 +1184,7 @@ QString XUPX::packerVersion(PDSTRUCT *pPdStruct)
 
 QString XUPX::compressionMethod(PDSTRUCT *pPdStruct)
 {
-    INTERNAL_INFO info = getInternalInfo(pPdStruct);
+    INTERNAL_INFO info = *static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct));
     if (info.bIsValid) {
         return upxMethodToString(info.method);
     }
@@ -2764,9 +2807,28 @@ bool XUPX::_runUPXDecompress(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 
 QList<XBinary::FPART> XUPX::getFileParts(quint32 nFileParts, qint32 nLimit, PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(nLimit)
-
     QList<FPART> listResult;
+    QList<FPART> listOverlay;
+    qint64 nDataSize = getSize();
+
+    // Do not call this class's getOverlayOffset(): it obtains the XUPX memory
+    // map and recursively re-enters getFileParts(FILEPART_OVERLAY).  A local
+    // PE parser has independent file-part state and can safely split the
+    // packed image from a real appended overlay.
+    if ((nFileParts & FILEPART_DATA) || (nFileParts & FILEPART_OVERLAY)) {
+        XPE pe(getDevice(), isImage(), getModuleAddress());
+        if (pe.isValid(pPdStruct)) {
+            listOverlay = pe.getFileParts(FILEPART_OVERLAY, nLimit, pPdStruct);
+            if (!listOverlay.isEmpty()) {
+                qint64 nOverlayOffset = listOverlay.first().nFileOffset;
+                if ((nOverlayOffset >= 0) && (nOverlayOffset <= getSize())) {
+                    nDataSize = nOverlayOffset;
+                } else {
+                    listOverlay.clear();
+                }
+            }
+        }
+    }
 
     if (nFileParts & FILEPART_HEADER) {
         FPART record = {};
@@ -2784,8 +2846,8 @@ QList<XBinary::FPART> XUPX::getFileParts(quint32 nFileParts, qint32 nLimit, PDST
         FPART record = {};
 
         record.filePart = FILEPART_DATA;
-        record.nFileOffset = 0;        // TODO
-        record.nFileSize = getSize();  // TODO
+        record.nFileOffset = 0;  // TODO
+        record.nFileSize = nDataSize;
         record.nVirtualAddress = -1;
         record.sName = tr("Data");
 
@@ -2793,19 +2855,7 @@ QList<XBinary::FPART> XUPX::getFileParts(quint32 nFileParts, qint32 nLimit, PDST
     }
 
     if (nFileParts & FILEPART_OVERLAY) {
-        qint64 nOverlayOffset = getOverlayOffset();
-
-        if (nOverlayOffset != -1) {
-            FPART record = {};
-
-            record.filePart = FILEPART_OVERLAY;
-            record.nFileOffset = nOverlayOffset;
-            record.nFileSize = getSize() - nOverlayOffset;
-            record.nVirtualAddress = -1;
-            record.sName = tr("Overlay");
-
-            listResult.append(record);
-        }
+        listResult.append(listOverlay);
     }
 
     return listResult;

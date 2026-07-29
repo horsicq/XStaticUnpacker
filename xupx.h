@@ -18,7 +18,7 @@ public:
         STRUCTID_HEADER,
     };
 
-    struct INTERNAL_INFO {
+    struct INTERNAL_INFO : public XBinary::INTERNAL_INFO {
         bool bIsValid;
         FT fileType;
         char magic[4];
@@ -166,20 +166,24 @@ public:
     virtual quint32 ftStringToStructID(const QString &sFtString) override;
     // virtual QList<DATA_HEADER> getDataHeaders(const DATA_HEADERS_OPTIONS &dataHeadersOptions, PDSTRUCT *pPdStruct) override;
     virtual QList<FPART> getFileParts(quint32 nFileParts, qint32 nLimit = -1, PDSTRUCT *pPdStruct = nullptr) override;
+    virtual QMap<UNPACK_PROP, QVariant> getDefaultUnpackProperties() override;
     virtual bool initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct = nullptr) override;
     virtual ARCHIVERECORD infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
-
-    INTERNAL_INFO getInternalInfo(PDSTRUCT *pPdStruct = nullptr);
-
-    // Unpacking functionality
     virtual bool unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
+
+    virtual bool handleInternalInfo(PDSTRUCT *pPdStruct) override;
+    virtual void *getInternalInfo(PDSTRUCT *pPdStruct = nullptr) override;
+    virtual void setInternalInfo(void *pInternalInfo) override;
+
     bool isPackedFile(PDSTRUCT *pPdStruct = nullptr);
     QString packerVersion(PDSTRUCT *pPdStruct = nullptr);
     QString compressionMethod(PDSTRUCT *pPdStruct = nullptr);
 
 private:
+    INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
+    INTERNAL_INFO m_internalInfo;
     bool _readPackHeader(qint64 nOffset, qint64 nHeaderSize, bool bIsBigEndian, INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct);
     bool _detectELFInfo(INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct);
     bool _detectMachInfo(INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct);

@@ -7,12 +7,15 @@
 
 #include "xbinary.h"
 
-/* Detector for Advanced Installer (Caphyon) output. Two shapes:
+class XMSI;
+
+/* Detector + extractor for Advanced Installer (Caphyon) output. Two shapes:
  *  - the bootstrapper .exe, marked by the 10-byte EOF trailer "ADVINSTSFX";
  *  - the authored .msi, an MSI database carrying the "aicustact.dll" custom
  *    action + the "AI_" property namespace + "Advanced Installer" strings.
- * This is a detect + version class; MSI extraction is available through XMSI,
- * while the self-contained ExeInside bootstrapper uses a proprietary container. */
+ * MSI payload extraction is delegated to XMSI. For an ExeInside bootstrapper,
+ * the embedded MSI and CAB records are decoded first; an external bootstrapper
+ * is resolved only to the exact, safe sibling MSI named by its footer. */
 
 class XAdvancedInstaller : public XBinary {
     Q_OBJECT
@@ -24,10 +27,17 @@ public:
         SUBTYPE_MSI
     };
 
-    struct INTERNAL_INFO {
+    struct INTERNAL_INFO : public XBinary::INTERNAL_INFO {
         bool bIsValid;
         SUBTYPE subType;
         QString sVersion;
+    };
+
+    struct UNPACK_CONTEXT {
+        QIODevice *pOwnedDevice;
+        XMSI *pMSI;
+        UNPACK_STATE innerState;
+        bool bInnerInitialized;
     };
 
     explicit XAdvancedInstaller(QIODevice *pDevice = nullptr, bool bIsImage = false, XADDR nModuleAddress = -1);
@@ -35,12 +45,55 @@ public:
 
     bool isValid(PDSTRUCT *pPdStruct = nullptr) override;
     static bool isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr);
-    INTERNAL_INFO getInternalInfo(PDSTRUCT *pPdStruct = nullptr);
+    virtual bool handleInternalInfo(PDSTRUCT *pPdStruct) override;
+    virtual void *getInternalInfo(PDSTRUCT *pPdStruct = nullptr) override;
+    virtual void setInternalInfo(void *pInternalInfo) override;
 
     virtual FT getFileType() override;
 
+    virtual QMap<UNPACK_PROP, QVariant> getDefaultUnpackProperties() override;
+    virtual bool initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct = nullptr) override;
+    virtual ARCHIVERECORD infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
+    virtual bool unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
+    virtual bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
+    virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
+
 private:
+    struct EXE_FOOTER {
+        bool bIsValid;
+        qint64 nFooterOffset;
+        qint64 nMarkerOffset;
+        quint32 nMode;
+        quint32 nExternalNameOffset;
+        quint32 nNumberOfFiles;
+        quint32 nFormatVersion;
+        quint32 nMetadataEndOffset;
+        quint32 nInfoOffset;
+        quint32 nFileDataOffset;
+    };
+
+    struct EXE_FILE {
+        quint32 nType;
+        quint32 nIndex;
+        quint32 nXorFlag;
+        quint32 nSize;
+        quint32 nDataOffset;
+        QString sName;
+    };
+
+    INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
+    INTERNAL_INFO m_internalInfo;
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);
+    EXE_FOOTER _readExeFooter(PDSTRUCT *pPdStruct);
+    bool _readExeFiles(const EXE_FOOTER &footer, QList<EXE_FILE> *pListFiles, qint64 *pnMetadataEnd, PDSTRUCT *pPdStruct);
+    QString _readUTF16Name(qint64 nOffset, quint32 nNumberOfCharacters, qint64 nLimit, PDSTRUCT *pPdStruct);
+    QByteArray _readExeFile(const EXE_FILE &file, PDSTRUCT *pPdStruct);
+    QString _readExternalMSIName(const EXE_FOOTER &footer, qint64 nMetadataEnd, PDSTRUCT *pPdStruct);
+    QIODevice *_openExternalMSI(const QString &sName);
+    bool _initMSIDelegate(UNPACK_STATE *pState, QIODevice *pSourceDevice, QIODevice *pOwnedDevice,
+                          const QMap<QString, QByteArray> &mapExternalCabinets, const QMap<UNPACK_PROP, QVariant> &mapProperties,
+                          PDSTRUCT *pPdStruct);
+    void _deleteUnpackContext(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
 };
 
 #endif  // XADVANCEDINSTALLER_H

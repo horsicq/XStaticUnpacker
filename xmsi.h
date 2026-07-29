@@ -9,26 +9,44 @@
 
 class SubDevice;
 class XArchive;
+class QIODevice;
 
-/* Detector + extractor for Windows Installer (MSI) databases. An .msi is an
- * OLE2 / CFBF compound file whose root-storage CLSID is the MSI class GUID
- * {000C1084-...} (or {000C1086}=patch / {000C1082}=transform). Extraction
- * delegates to the XArchive CFBF handler, exposing the OLE streams (including
- * the embedded MS-CAB payload, which XCab then expands). */
+/* Detector + extractor for Windows Installer (MSI) databases.  MSI tables are
+ * decoded far enough to map File rows to Media cabinets, so the streaming
+ * archive API exposes installed files rather than implementation-only OLE
+ * streams. */
 
 class XMSI : public XBinary {
     Q_OBJECT
 
 public:
-    struct INTERNAL_INFO {
+    struct INTERNAL_INFO : public XBinary::INTERNAL_INFO {
         bool bIsValid;
         QString sVersion;  // "database" / "patch" / "transform"
     };
 
+    struct CAB_CONTEXT {
+        QIODevice *pDevice;
+        XArchive *pArchive;
+        UNPACK_STATE state;
+    };
+
+    struct PAYLOAD_ENTRY {
+        qint32 nCabinetIndex;
+        qint32 nCabinetRecordIndex;
+        qint32 nSequence;
+        qint64 nSize;
+        QString sName;
+        QString sExternalPath;
+    };
+
     struct UNPACK_CONTEXT {
+        bool bPayloadMode;
         SubDevice *pSubDevice;
         XArchive *pArchive;
         UNPACK_STATE innerState;
+        QList<CAB_CONTEXT *> listCabinets;
+        QList<PAYLOAD_ENTRY> listEntries;
     };
 
     explicit XMSI(QIODevice *pDevice = nullptr, bool bIsImage = false, XADDR nModuleAddress = -1);
@@ -36,18 +54,29 @@ public:
 
     bool isValid(PDSTRUCT *pPdStruct = nullptr) override;
     static bool isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr);
-    INTERNAL_INFO getInternalInfo(PDSTRUCT *pPdStruct = nullptr);
+    virtual bool handleInternalInfo(PDSTRUCT *pPdStruct) override;
+    virtual void *getInternalInfo(PDSTRUCT *pPdStruct = nullptr) override;
+    virtual void setInternalInfo(void *pInternalInfo) override;
 
     virtual FT getFileType() override;
 
+    virtual QMap<UNPACK_PROP, QVariant> getDefaultUnpackProperties() override;
     virtual bool initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct = nullptr) override;
     virtual ARCHIVERECORD infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
 
+    // Advanced Installer bootstrappers can carry a CAB next to the embedded
+    // MSI inside their own container.  Supplying it here avoids temporary files
+    // and keeps normal external-CAB resolution restricted to the MSI directory.
+    void setExternalCabinetData(const QMap<QString, QByteArray> &mapData);
+
 private:
+    INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
+    INTERNAL_INFO m_internalInfo;
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);
+    QMap<QString, QByteArray> m_mapExternalCabinetData;
 };
 
 #endif  // XMSI_H

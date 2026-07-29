@@ -5,11 +5,107 @@
 
 #include "xinstallforge.h"
 
+#include <QDir>
+#include <QSet>
+
 #include "xpe.h"
 #include "subdevice.h"
 #include "../XArchive/xsevenzip.h"
-#include "../XArchive/xbzip2.h"
-#include "../XArchive/xgzip.h"
+#include "../XArchive/xtar_bzip2.h"
+#include "../XArchive/xtar_gz.h"
+
+namespace {
+
+class XInstallForgeTarBzip2 : public XTAR_BZIP2 {
+public:
+    explicit XInstallForgeTarBzip2(QIODevice *pDevice) : XTAR_BZIP2(pDevice) {}
+
+protected:
+    bool getOuterStreamInfo(qint64 &nOuterStreamOffset, qint64 &nOuterStreamSize, HANDLE_METHOD &handleMethod) override
+    {
+        nOuterStreamOffset = 0;
+        nOuterStreamSize = getSize();
+        handleMethod = HANDLE_METHOD_BZIP2;
+        return nOuterStreamSize > 0;
+    }
+};
+
+bool decodeInstallForgeName(const QString &sEncodedName, QString *pResult)
+{
+    if (!pResult || sEncodedName.isEmpty() || (sEncodedName.size() > 0x20000)) return false;
+
+    const QByteArray baEncoded = sEncodedName.toLatin1();
+    const QByteArray baDecoded = QByteArray::fromBase64(baEncoded);
+
+    // InstallForge stores entry names as canonical base64(UTF-16LE(name)).
+    if (baDecoded.isEmpty() || (baDecoded.size() > 0x10000) ||
+        ((baDecoded.size() & 1) != 0) || (baDecoded.toBase64() != baEncoded)) return false;
+
+    QString sResult;
+    sResult.reserve(baDecoded.size() / 2);
+
+    for (qint32 i = 0; i < baDecoded.size(); i += 2) {
+        const quint16 nCodeUnit = static_cast<quint8>(baDecoded.at(i)) |
+                                  (static_cast<quint16>(static_cast<quint8>(baDecoded.at(i + 1))) << 8);
+        if (nCodeUnit == 0) {
+            if (i != (baDecoded.size() - 2)) return false;
+            break;
+        }
+
+        if ((nCodeUnit >= 0xD800) && (nCodeUnit <= 0xDBFF)) {
+            if (i + 3 >= baDecoded.size()) return false;
+            const quint16 nLow = static_cast<quint8>(baDecoded.at(i + 2)) |
+                                 (static_cast<quint16>(static_cast<quint8>(baDecoded.at(i + 3))) << 8);
+            if ((nLow < 0xDC00) || (nLow > 0xDFFF)) return false;
+            sResult.append(QChar(nCodeUnit));
+            sResult.append(QChar(nLow));
+            i += 2;
+            continue;
+        }
+        if ((nCodeUnit >= 0xDC00) && (nCodeUnit <= 0xDFFF)) return false;
+        sResult.append(QChar(nCodeUnit));
+    }
+
+    if (sResult.isEmpty()) return false;
+
+    sResult.replace('\\', '/');
+    sResult = sResult.normalized(QString::NormalizationForm_C);
+    if (QDir::isAbsolutePath(sResult) || sResult.startsWith('/') || sResult.contains(':')) return false;
+
+    static const QString sForbidden = QStringLiteral("<>:\"\\|?*");
+    static const QSet<QString> setReserved = {
+        QStringLiteral("CON"),  QStringLiteral("PRN"),  QStringLiteral("AUX"),  QStringLiteral("NUL"),  QStringLiteral("COM1"),
+        QStringLiteral("COM2"), QStringLiteral("COM3"), QStringLiteral("COM4"), QStringLiteral("COM5"), QStringLiteral("COM6"),
+        QStringLiteral("COM7"), QStringLiteral("COM8"), QStringLiteral("COM9"), QStringLiteral("LPT1"), QStringLiteral("LPT2"),
+        QStringLiteral("LPT3"), QStringLiteral("LPT4"), QStringLiteral("LPT5"), QStringLiteral("LPT6"), QStringLiteral("LPT7"),
+        QStringLiteral("LPT8"), QStringLiteral("LPT9")};
+    const QStringList listParts = sResult.split('/');
+    for (const QString &sPart : listParts) {
+        if (sPart.isEmpty() || (sPart == ".") || (sPart == "..") || (sPart.size() > 255) || sPart.endsWith(' ') || sPart.endsWith('.')) {
+            return false;
+        }
+        for (QChar character : sPart) {
+            const ushort nCodeUnit = character.unicode();
+            const bool bSurrogate = (nCodeUnit >= 0xD800) && (nCodeUnit <= 0xDFFF);
+            if ((!bSurrogate && !character.isPrint()) || (character == QChar::ReplacementCharacter) || sForbidden.contains(character)) return false;
+        }
+        QString sDeviceName = sPart.section('.', 0, 0).toUpper();
+        bool bReservedDigit = (sDeviceName.size() == 4) &&
+                              (((sDeviceName.at(3) >= QChar('1')) && (sDeviceName.at(3) <= QChar('9'))) ||
+                               (sDeviceName.at(3) == QChar(0x00B9)) || (sDeviceName.at(3) == QChar(0x00B2)) ||
+                               (sDeviceName.at(3) == QChar(0x00B3)));
+        bool bNumberedDevice = (sDeviceName.startsWith("COM") || sDeviceName.startsWith("LPT")) && bReservedDigit;
+        if (setReserved.contains(sDeviceName) || (sDeviceName == "CLOCK$") || (sDeviceName == "CONIN$") ||
+            (sDeviceName == "CONOUT$") || bNumberedDevice) {
+            return false;
+        }
+    }
+
+    *pResult = sResult;
+    return true;
+}
+
+}  // namespace
 
 XInstallForge::XInstallForge(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : XBinary(pDevice, bIsImage, nModuleAddress)
 {
@@ -22,7 +118,7 @@ XInstallForge::~XInstallForge()
 
 bool XInstallForge::isValid(PDSTRUCT *pPdStruct)
 {
-    return _detect(pPdStruct).bIsValid;
+    return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
 bool XInstallForge::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
@@ -31,9 +127,42 @@ bool XInstallForge::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
     return x.isValid(pPdStruct);
 }
 
-XInstallForge::INTERNAL_INFO XInstallForge::getInternalInfo(PDSTRUCT *pPdStruct)
+XInstallForge::INTERNAL_INFO XInstallForge::_getInternalInfo(PDSTRUCT *pPdStruct)
 {
     return _detect(pPdStruct);
+}
+
+// Cache format-specific parsing together with the XBinary memory map.
+bool XInstallForge::handleInternalInfo(PDSTRUCT *pPdStruct)
+{
+    if (!isInternalInfoHandled()) {
+        m_internalInfo = INTERNAL_INFO();
+        setIsInternalInfoHandled(true);
+        m_internalInfo = _getInternalInfo(pPdStruct);
+        m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    }
+
+    return true;
+}
+
+void *XInstallForge::getInternalInfo(PDSTRUCT *pPdStruct)
+{
+    handleInternalInfo(pPdStruct);
+    return &m_internalInfo;
+}
+
+void XInstallForge::setInternalInfo(void *pInternalInfo)
+{
+    if (pInternalInfo) {
+        m_internalInfo = *static_cast<INTERNAL_INFO *>(pInternalInfo);
+        setIsInternalInfoHandled(true);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    } else {
+        m_internalInfo = INTERNAL_INFO();
+        setIsInternalInfoHandled(false);
+        XBinary::setInternalInfo(nullptr);
+    }
 }
 
 XBinary::FT XInstallForge::getFileType()
@@ -69,17 +198,19 @@ XInstallForge::INTERNAL_INFO XInstallForge::_detect(PDSTRUCT *pPdStruct)
     result.payload = PAYLOAD_UNKNOWN;
     if ((pPayload[0] == 0x37) && (pPayload[1] == 0x7A) && (pPayload[2] == 0xBC) && (pPayload[3] == 0xAF) && (pPayload[4] == 0x27) && (pPayload[5] == 0x1C)) {
         result.payload = PAYLOAD_7Z;
-    } else if ((pPayload[0] == 0x42) && (pPayload[1] == 0x5A) && (pPayload[2] == 0x68)) {
+    } else if ((pPayload[0] == 0x42) && (pPayload[1] == 0x5A) && (pPayload[2] == 0x68) &&
+               (pPayload[3] >= '1') && (pPayload[3] <= '9')) {
         result.payload = PAYLOAD_BZIP2;  // "BZh"
-    } else if ((pPayload[0] == 0x1F) && (pPayload[1] == 0x8B)) {
+    } else if ((pPayload[0] == 0x1F) && (pPayload[1] == 0x8B) && (pPayload[2] == 8) && ((pPayload[3] & 0xE0) == 0)) {
         result.payload = PAYLOAD_GZIP;
     }
+    if (result.payload == PAYLOAD_UNKNOWN) return result;
 
     qint64 nArcOff = nOverlayOffset + 21;
-    if ((nLen == 0) || ((qint64)(nArcOff + nLen) > nTotalSize)) {
-        // Fall back to the rest of the overlay if the length field looks off.
-        nLen = (quint64)(nTotalSize - nArcOff);
-    }
+    quint64 nAvailableSize = (nArcOff <= nTotalSize) ? (quint64)(nTotalSize - nArcOff) : 0;
+
+    quint64 nMinimumSize = (result.payload == PAYLOAD_7Z) ? 32 : ((result.payload == PAYLOAD_GZIP) ? 18 : 14);
+    if ((nLen < nMinimumSize) || (nLen > nAvailableSize)) return result;
 
     result.bIsValid = true;
     result.nArchiveOffset = nArcOff;
@@ -97,6 +228,49 @@ XInstallForge::INTERNAL_INFO XInstallForge::_detect(PDSTRUCT *pPdStruct)
 }
 
 // --- streaming extraction: delegate to the XArchive 7z handler ---
+
+QMap<XBinary::UNPACK_PROP, QVariant> XInstallForge::getDefaultUnpackProperties()
+{
+    QMap<XBinary::UNPACK_PROP, QVariant> result = XBinary::getDefaultUnpackProperties();
+
+    QIODevice *pDevice = getDevice();
+
+    if (pDevice) {
+        INTERNAL_INFO info = _detect(nullptr);
+
+        if (info.bIsValid && (info.nArchiveOffset >= 0) && (info.nArchiveSize > 0)) {
+            SubDevice subDevice(pDevice, info.nArchiveOffset, info.nArchiveSize);
+
+            if (subDevice.open(QIODevice::ReadOnly)) {
+                XArchive *pArchive = nullptr;
+
+                switch (info.payload) {
+                    case PAYLOAD_BZIP2: pArchive = new XInstallForgeTarBzip2(&subDevice); break;
+                    case PAYLOAD_GZIP: pArchive = new XTAR_GZ(&subDevice); break;
+                    case PAYLOAD_7Z:
+                    default: pArchive = new XSevenZip(&subDevice); break;
+                }
+
+                QMap<UNPACK_PROP, QVariant> mapInnerProperties = pArchive->getDefaultUnpackProperties();
+
+                if (mapInnerProperties.contains(UNPACK_PROP_PASSWORD)) {
+                    result.insert(UNPACK_PROP_PASSWORD, mapInnerProperties.value(UNPACK_PROP_PASSWORD));
+                }
+
+                for (auto it = mapInnerProperties.constBegin(); it != mapInnerProperties.constEnd(); ++it) {
+                    if (XBinary::isUnpackCRCProperty(it.key())) {
+                        result.insert(it.key(), it.value());
+                    }
+                }
+
+                delete pArchive;
+                subDevice.close();
+            }
+        }
+    }
+
+    return result;
+}
 
 bool XInstallForge::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
@@ -124,8 +298,8 @@ bool XInstallForge::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVa
     }
 
     switch (info.payload) {
-        case PAYLOAD_BZIP2: pContext->pArchive = new XBZIP2(pContext->pSubDevice); break;
-        case PAYLOAD_GZIP: pContext->pArchive = new XGzip(pContext->pSubDevice); break;
+        case PAYLOAD_BZIP2: pContext->pArchive = new XInstallForgeTarBzip2(pContext->pSubDevice); break;
+        case PAYLOAD_GZIP: pContext->pArchive = new XTAR_GZ(pContext->pSubDevice); break;
         case PAYLOAD_7Z:
         default: pContext->pArchive = new XSevenZip(pContext->pSubDevice); break;
     }
@@ -136,6 +310,37 @@ bool XInstallForge::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVa
         delete pContext;
         return false;
     }
+
+    const qint32 nRecords = pContext->innerState.nNumberOfRecords;
+    bool bNamesValid = (nRecords >= 0) && (nRecords <= 0x10000) && XBinary::isPdStructNotCanceled(pPdStruct);
+    QSet<QString> setNames;
+    if (bNamesValid) pContext->listDecodedNames.reserve(nRecords);
+    for (qint32 i = 0; bNamesValid && (i < nRecords); i++) {
+        pContext->innerState.nCurrentIndex = i;
+        ARCHIVERECORD record = pContext->pArchive->infoCurrent(&pContext->innerState, pPdStruct);
+        QString sDecodedName;
+        if (!decodeInstallForgeName(record.mapProperties.value(FPART_PROP_ORIGINALNAME).toString(), &sDecodedName)) {
+            bNamesValid = false;
+            break;
+        }
+        QString sNameKey = sDecodedName.toCaseFolded();
+        if (setNames.contains(sNameKey)) {
+            bNamesValid = false;
+            break;
+        }
+        setNames.insert(sNameKey);
+        pContext->listDecodedNames.append(sDecodedName);
+    }
+    if (!bNamesValid || !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        pContext->pArchive->finishUnpack(&pContext->innerState, pPdStruct);
+        delete pContext->pArchive;
+        pContext->pSubDevice->close();
+        delete pContext->pSubDevice;
+        delete pContext;
+        return false;
+    }
+    pContext->innerState.nCurrentIndex = 0;
+    pContext->innerState.nCurrentOffset = 0;
 
     pState->nNumberOfRecords = pContext->innerState.nNumberOfRecords;
     pState->pContext = pContext;
@@ -149,16 +354,25 @@ XBinary::ARCHIVERECORD XInstallForge::infoCurrent(UNPACK_STATE *pState, PDSTRUCT
     UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
     if (!pContext->pArchive) return result;
     pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
-    return pContext->pArchive->infoCurrent(&pContext->innerState, pPdStruct);
+    result = pContext->pArchive->infoCurrent(&pContext->innerState, pPdStruct);
+    if ((pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pContext->listDecodedNames.size())) return ARCHIVERECORD();
+    result.mapProperties.insert(FPART_PROP_ORIGINALNAME, pContext->listDecodedNames.at(pState->nCurrentIndex));
+    return result;
 }
 
 bool XInstallForge::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
-    if (!pState || !pState->pContext || !pDevice) return false;
+    if (!pState || !pState->pContext || !pDevice || !pDevice->isWritable() ||
+        !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+        (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
+        return false;
+    }
     UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
     if (!pContext->pArchive) return false;
     pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
-    return pContext->pArchive->unpackCurrent(&pContext->innerState, pDevice, pPdStruct);
+    bool bResult = pContext->pArchive->unpackCurrent(&pContext->innerState, pDevice, pPdStruct);
+    pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
+    return bResult;
 }
 
 bool XInstallForge::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
@@ -169,16 +383,18 @@ bool XInstallForge::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
     bool bResult = pContext->pArchive->moveToNext(&pContext->innerState, pPdStruct);
     pState->nCurrentIndex = pContext->innerState.nCurrentIndex;
+    pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
     return bResult;
 }
 
 bool XInstallForge::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
+    bool bResult = true;
     if (pState->pContext) {
         UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
         if (pContext->pArchive) {
-            pContext->pArchive->finishUnpack(&pContext->innerState, pPdStruct);
+            bResult = pContext->pArchive->finishUnpack(&pContext->innerState, pPdStruct);
             delete pContext->pArchive;
         }
         if (pContext->pSubDevice) {
@@ -191,5 +407,5 @@ bool XInstallForge::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     pState->nCurrentOffset = 0;
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
-    return true;
+    return bResult;
 }

@@ -19,7 +19,7 @@ class XNSPACK : public XBinary {
     Q_OBJECT
 
 public:
-    struct INTERNAL_INFO {
+    struct INTERNAL_INFO : public XBinary::INTERNAL_INFO {
         bool bIsValid;
         qint64 nStartOfStuff;  // file offset of the compressed blob header
         quint32 nSsize;        // packed size
@@ -34,13 +34,26 @@ public:
 
     bool isValid(PDSTRUCT *pPdStruct = nullptr) override;
     static bool isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr);
-    INTERNAL_INFO getInternalInfo(PDSTRUCT *pPdStruct = nullptr);
+    virtual bool handleInternalInfo(PDSTRUCT *pPdStruct) override;
+    virtual void *getInternalInfo(PDSTRUCT *pPdStruct = nullptr) override;
+    virtual void setInternalInfo(void *pInternalInfo) override;
 
     virtual FT getFileType() override;
 
-    virtual bool unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
+    virtual QMap<UNPACK_PROP, QVariant> getDefaultUnpackProperties() override;
+    virtual bool initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct = nullptr) override;
+    virtual ARCHIVERECORD infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
+    virtual bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
+    virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
+    virtual bool unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
 
 private:
+    INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
+    INTERNAL_INFO m_internalInfo;
+    struct UNPACK_CONTEXT {
+        QByteArray baData;
+        QString sFileName;
+    };
     struct NSP_STATE {
         const quint8 *pSrcCurr;
         const quint8 *pSrcEnd;
@@ -71,6 +84,7 @@ private:
     static QByteArray _buildPE(const QByteArray &baBlob, quint32 nRva, quint32 nImageBase, quint32 nOEP, const QByteArray &baImportSection = QByteArray(),
                                quint32 nImpRva = 0, quint32 nDescSize = 0);
 
+    bool _unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct);
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);
     // Locate the nsp0 compressed-block header (start-of-stuff) by scanning for the
     // highest self-consistent header whose dsize field equals nSec0Vsize. Used for

@@ -47,12 +47,45 @@ quint32 XInnoSetup::ftStringToStructID(const QString &sFtString)
 
 bool XInnoSetup::isValid(PDSTRUCT *pPdStruct)
 {
-    return getInternalInfo(pPdStruct).bIsValid;
+    return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
-XInnoSetup::INTERNAL_INFO XInnoSetup::getInternalInfo(PDSTRUCT *pPdStruct)
+XInnoSetup::INTERNAL_INFO XInnoSetup::_getInternalInfo(PDSTRUCT *pPdStruct)
 {
     return _analyse(pPdStruct);
+}
+
+// Cache format-specific parsing together with the XBinary memory map.
+bool XInnoSetup::handleInternalInfo(PDSTRUCT *pPdStruct)
+{
+    if (!isInternalInfoHandled()) {
+        m_internalInfo = INTERNAL_INFO();
+        setIsInternalInfoHandled(true);
+        m_internalInfo = _getInternalInfo(pPdStruct);
+        m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    }
+
+    return true;
+}
+
+void *XInnoSetup::getInternalInfo(PDSTRUCT *pPdStruct)
+{
+    handleInternalInfo(pPdStruct);
+    return &m_internalInfo;
+}
+
+void XInnoSetup::setInternalInfo(void *pInternalInfo)
+{
+    if (pInternalInfo) {
+        m_internalInfo = *static_cast<INTERNAL_INFO *>(pInternalInfo);
+        setIsInternalInfoHandled(true);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    } else {
+        m_internalInfo = INTERNAL_INFO();
+        setIsInternalInfoHandled(false);
+        XBinary::setInternalInfo(nullptr);
+    }
 }
 
 XInnoSetup::INTERNAL_INFO XInnoSetup::_analyse(PDSTRUCT *pPdStruct)
@@ -231,6 +264,7 @@ QList<XBinary::ARCHIVERECORD> XInnoSetup::_parseSyntheticFileEntries(qint64 nSig
         record.mapProperties.insert(FPART_PROP_UNCOMPRESSEDSIZE, (qint64)nDataSize);
         record.mapProperties.insert(FPART_PROP_COMPRESSEDSIZE, (qint64)nDataSize);
         record.mapProperties.insert(FPART_PROP_RESULTCRC, nCRC32);
+        record.mapProperties.insert(FPART_PROP_CRC_TYPE, CRC_TYPE_FFFFFFFF_EDB88320_FFFFFFFFF);
         record.mapProperties.insert(FPART_PROP_ISFOLDER, false);
         record.mapProperties.insert(FPART_PROP_STREAMOFFSET, (qint64)nDataOffset);
         record.mapProperties.insert(FPART_PROP_STREAMSIZE, (qint64)nDataSize);
@@ -241,10 +275,15 @@ QList<XBinary::ARCHIVERECORD> XInnoSetup::_parseSyntheticFileEntries(qint64 nSig
     return listResult;
 }
 
+QMap<XBinary::UNPACK_PROP, QVariant> XInnoSetup::getDefaultUnpackProperties()
+{
+    QMap<XBinary::UNPACK_PROP, QVariant> result = XBinary::getDefaultUnpackProperties();
+
+    return result;
+}
+
 bool XInnoSetup::initUnpack(XBinary::UNPACK_STATE *pState, const QMap<XBinary::UNPACK_PROP, QVariant> &mapProperties, XBinary::PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(mapProperties)
-
     if (!pState) {
         return false;
     }
@@ -271,6 +310,7 @@ bool XInnoSetup::initUnpack(XBinary::UNPACK_STATE *pState, const QMap<XBinary::U
     }
 
     pState->pContext = pContext;
+    pState->mapUnpackProperties = mapProperties;
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = pContext->listAllRecords.count();
 
@@ -298,8 +338,6 @@ XBinary::ARCHIVERECORD XInnoSetup::infoCurrent(XBinary::UNPACK_STATE *pState, XB
 
 bool XInnoSetup::unpackCurrent(XBinary::UNPACK_STATE *pState, QIODevice *pDevice, XBinary::PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(pPdStruct)
-
     if (!pState || !pState->pContext) {
         return false;
     }
@@ -312,11 +350,33 @@ bool XInnoSetup::unpackCurrent(XBinary::UNPACK_STATE *pState, QIODevice *pDevice
 
     ARCHIVERECORD record = pContext->listAllRecords.at(pState->nCurrentIndex);
 
+    auto verifyCRC = [&]() -> bool {
+        CRC_TYPE crcType = (CRC_TYPE)record.mapProperties.value(FPART_PROP_CRC_TYPE, CRC_TYPE_UNKNOWN).toUInt();
+
+        if (!XBinary::isUnpackCRCEnabled(pState->mapUnpackProperties, crcType) || (crcType == CRC_TYPE_UNKNOWN) ||
+            !record.mapProperties.contains(FPART_PROP_RESULTCRC)) {
+            return true;
+        }
+
+        if (!pDevice || !pDevice->isReadable() || !pDevice->seek(0)) {
+            XBinary::setPdStructErrorString(pPdStruct, tr("CRC check requires a readable output device"));
+            return false;
+        }
+
+        bool bCRCOk = XBinary::checkCRC(pDevice, crcType, record.mapProperties.value(FPART_PROP_RESULTCRC), pPdStruct);
+
+        if (!bCRCOk) {
+            XBinary::setPdStructErrorString(pPdStruct, tr("Invalid CRC"));
+        }
+
+        return bCRCOk;
+    };
+
     qint64 nUncompressedSize = record.mapProperties.value(FPART_PROP_UNCOMPRESSEDSIZE).toLongLong();
 
     // Empty file — nothing to write
     if (nUncompressedSize == 0) {
-        return true;
+        return verifyCRC();
     }
 
     if (!pDevice) {
@@ -354,14 +414,14 @@ bool XInnoSetup::unpackCurrent(XBinary::UNPACK_STATE *pState, QIODevice *pDevice
 
         qint64 nWritten = pDevice->write(baChunk.constData() + nDecompressedOffset, nUncompressedSize);
 
-        return (nWritten == nUncompressedSize);
+        return (nWritten == nUncompressedSize) && verifyCRC();
     } else {
         // Synthetic ISDF: stored data — direct copy using XStoreDecoder
         qint64 nStreamOffset = record.mapProperties.value(FPART_PROP_STREAMOFFSET).toLongLong();
         qint64 nStreamSize = record.mapProperties.value(FPART_PROP_STREAMSIZE).toLongLong();
 
         if (nStreamSize == 0) {
-            return true;
+            return verifyCRC();
         }
 
         // Clamp to file size
@@ -385,7 +445,7 @@ bool XInnoSetup::unpackCurrent(XBinary::UNPACK_STATE *pState, QIODevice *pDevice
         decompressState.nProcessedOffset = 0;
         decompressState.nProcessedLimit = -1;
 
-        return XStoreDecoder::decompress(&decompressState, pPdStruct);
+        return XStoreDecoder::decompress(&decompressState, pPdStruct) && verifyCRC();
     }
 }
 

@@ -20,7 +20,7 @@ XWinRarSfx::~XWinRarSfx()
 
 bool XWinRarSfx::isValid(PDSTRUCT *pPdStruct)
 {
-    return _detect(pPdStruct).bIsValid;
+    return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
 bool XWinRarSfx::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
@@ -29,9 +29,42 @@ bool XWinRarSfx::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
     return x.isValid(pPdStruct);
 }
 
-XWinRarSfx::INTERNAL_INFO XWinRarSfx::getInternalInfo(PDSTRUCT *pPdStruct)
+XWinRarSfx::INTERNAL_INFO XWinRarSfx::_getInternalInfo(PDSTRUCT *pPdStruct)
 {
     return _detect(pPdStruct);
+}
+
+// Cache format-specific parsing together with the XBinary memory map.
+bool XWinRarSfx::handleInternalInfo(PDSTRUCT *pPdStruct)
+{
+    if (!isInternalInfoHandled()) {
+        m_internalInfo = INTERNAL_INFO();
+        setIsInternalInfoHandled(true);
+        m_internalInfo = _getInternalInfo(pPdStruct);
+        m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    }
+
+    return true;
+}
+
+void *XWinRarSfx::getInternalInfo(PDSTRUCT *pPdStruct)
+{
+    handleInternalInfo(pPdStruct);
+    return &m_internalInfo;
+}
+
+void XWinRarSfx::setInternalInfo(void *pInternalInfo)
+{
+    if (pInternalInfo) {
+        m_internalInfo = *static_cast<INTERNAL_INFO *>(pInternalInfo);
+        setIsInternalInfoHandled(true);
+        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    } else {
+        m_internalInfo = INTERNAL_INFO();
+        setIsInternalInfoHandled(false);
+        XBinary::setInternalInfo(nullptr);
+    }
 }
 
 XBinary::FT XWinRarSfx::getFileType()
@@ -60,14 +93,26 @@ XWinRarSfx::INTERNAL_INFO XWinRarSfx::_detect(PDSTRUCT *pPdStruct)
     bool bRar4 = (p[0] == 0x52) && (p[1] == 0x61) && (p[2] == 0x72) && (p[3] == 0x21) && (p[4] == 0x1A) && (p[5] == 0x07) && (p[6] == 0x00);
     if (!bRar5 && !bRar4) return result;
 
-    // Attribution to WinRAR (separates from an arbitrary RAR-appended PE).
-    bool bWinRar = (find_ansiString(0, nTotalSize, "name=\"WinRAR", pPdStruct) != -1) || (find_ansiString(0, nTotalSize, "sfxrar", pPdStruct) != -1) ||
-                   (find_ansiString(0, nTotalSize, "sfxcon", pPdStruct) != -1);
+    // Attribution must come from the PE stub, not from an arbitrary file in
+    // the appended archive that happens to contain a WinRAR marker string.
+    bool bWinRar = (find_ansiString(0, nOverlayOffset, "name=\"WinRAR", pPdStruct) != -1) ||
+                   (find_ansiString(0, nOverlayOffset, "sfxrar", pPdStruct) != -1) ||
+                   (find_ansiString(0, nOverlayOffset, "sfxcon", pPdStruct) != -1);
     if (!bWinRar) return result;
+
+    qint64 nArchiveSize = nTotalSize - nOverlayOffset;
+    SubDevice subDevice(getDevice(), nOverlayOffset, nArchiveSize);
+    if (!subDevice.open(QIODevice::ReadOnly)) return result;
+
+    XRar archive(&subDevice);
+    XBinary::FILEFORMATINFO archiveInfo = archive.getFileFormatInfo(pPdStruct);
+    qint64 nLogicalArchiveSize = archiveInfo.nSize;
+    subDevice.close();
+    if (!archiveInfo.bIsValid || (nLogicalArchiveSize <= 0) || (nLogicalArchiveSize > nArchiveSize)) return result;
 
     result.bIsValid = true;
     result.nArchiveOffset = nOverlayOffset;
-    result.nArchiveSize = nTotalSize - nOverlayOffset;
+    result.nArchiveSize = nLogicalArchiveSize;
 
     QString sVer = pe.getResourcesVersionValue("FileVersion").trimmed();  // console modules only
     if (sVer.isEmpty()) sVer = pe.getFileVersion().trimmed();
@@ -77,6 +122,42 @@ XWinRarSfx::INTERNAL_INFO XWinRarSfx::_detect(PDSTRUCT *pPdStruct)
 }
 
 // --- streaming extraction: delegate to the XArchive RAR handler ---
+
+QMap<XBinary::UNPACK_PROP, QVariant> XWinRarSfx::getDefaultUnpackProperties()
+{
+    QMap<XBinary::UNPACK_PROP, QVariant> result = XBinary::getDefaultUnpackProperties();
+
+    QIODevice *pDevice = getDevice();
+
+    if (pDevice) {
+        INTERNAL_INFO info = _detect(nullptr);
+
+        if (info.bIsValid && (info.nArchiveOffset >= 0) && (info.nArchiveSize > 0)) {
+            SubDevice subDevice(pDevice, info.nArchiveOffset, info.nArchiveSize);
+
+            if (subDevice.open(QIODevice::ReadOnly)) {
+                {
+                    XRar archive(&subDevice);
+                    QMap<UNPACK_PROP, QVariant> mapInnerProperties = archive.getDefaultUnpackProperties();
+
+                    if (mapInnerProperties.contains(UNPACK_PROP_PASSWORD)) {
+                        result.insert(UNPACK_PROP_PASSWORD, mapInnerProperties.value(UNPACK_PROP_PASSWORD));
+                    }
+
+                    for (auto it = mapInnerProperties.constBegin(); it != mapInnerProperties.constEnd(); ++it) {
+                        if (XBinary::isUnpackCRCProperty(it.key())) {
+                            result.insert(it.key(), it.value());
+                        }
+                    }
+                }
+
+                subDevice.close();
+            }
+        }
+    }
+
+    return result;
+}
 
 bool XWinRarSfx::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
@@ -150,10 +231,12 @@ bool XWinRarSfx::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 bool XWinRarSfx::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
+    bool bResult = true;
+
     if (pState->pContext) {
         UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
         if (pContext->pArchive) {
-            pContext->pArchive->finishUnpack(&pContext->innerState, pPdStruct);
+            bResult = pContext->pArchive->finishUnpack(&pContext->innerState, pPdStruct) && bResult;
             delete pContext->pArchive;
         }
         if (pContext->pSubDevice) {
@@ -166,5 +249,5 @@ bool XWinRarSfx::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     pState->nCurrentOffset = 0;
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
-    return true;
+    return bResult;
 }
