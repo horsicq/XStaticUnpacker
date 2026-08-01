@@ -1,22 +1,28 @@
 include_directories(${CMAKE_CURRENT_LIST_DIR})
 
-set(XINSTALLSIMPLE_XEMULATOR_DIR ${CMAKE_CURRENT_LIST_DIR}/../XEmulator)
-include_directories(${XINSTALLSIMPLE_XEMULATOR_DIR})
-include_directories(${XINSTALLSIMPLE_XEMULATOR_DIR}/arch)
+if (WITH_XEMULATOR)
+    add_definitions(-DUSE_XEMULATOR)
 
-set(XINSTALLSIMPLE_XEMULATOR_SOURCES
-    ${XINSTALLSIMPLE_XEMULATOR_DIR}/xemumemorymanager.cpp
-    ${XINSTALLSIMPLE_XEMULATOR_DIR}/xemumemorymanager.h
-    ${XINSTALLSIMPLE_XEMULATOR_DIR}/xemuregisters.cpp
-    ${XINSTALLSIMPLE_XEMULATOR_DIR}/xemuregisters.h
-    ${XINSTALLSIMPLE_XEMULATOR_DIR}/xemutypes.h
-    ${XINSTALLSIMPLE_XEMULATOR_DIR}/arch/xemuarch.cpp
-    ${XINSTALLSIMPLE_XEMULATOR_DIR}/arch/xemuarch.h
-    ${XINSTALLSIMPLE_XEMULATOR_DIR}/arch/xemuopcache.h
-    ${XINSTALLSIMPLE_XEMULATOR_DIR}/arch/xemutb.h
-    ${XINSTALLSIMPLE_XEMULATOR_DIR}/arch/xemux86.cpp
-    ${XINSTALLSIMPLE_XEMULATOR_DIR}/arch/xemux86.h
-)
+    set(XINSTALLSIMPLE_XEMULATOR_DIR ${CMAKE_CURRENT_LIST_DIR}/../XEmulator)
+    include_directories(${XINSTALLSIMPLE_XEMULATOR_DIR})
+    include_directories(${XINSTALLSIMPLE_XEMULATOR_DIR}/arch)
+
+    set(XINSTALLSIMPLE_XEMULATOR_SOURCES
+        ${XINSTALLSIMPLE_XEMULATOR_DIR}/xemumemorymanager.cpp
+        ${XINSTALLSIMPLE_XEMULATOR_DIR}/xemumemorymanager.h
+        ${XINSTALLSIMPLE_XEMULATOR_DIR}/xemuregisters.cpp
+        ${XINSTALLSIMPLE_XEMULATOR_DIR}/xemuregisters.h
+        ${XINSTALLSIMPLE_XEMULATOR_DIR}/xemutypes.h
+        ${XINSTALLSIMPLE_XEMULATOR_DIR}/arch/xemuarch.cpp
+        ${XINSTALLSIMPLE_XEMULATOR_DIR}/arch/xemuarch.h
+        ${XINSTALLSIMPLE_XEMULATOR_DIR}/arch/xemuopcache.h
+        ${XINSTALLSIMPLE_XEMULATOR_DIR}/arch/xemutb.h
+        ${XINSTALLSIMPLE_XEMULATOR_DIR}/arch/xemux86.cpp
+        ${XINSTALLSIMPLE_XEMULATOR_DIR}/arch/xemux86.h
+        ${CMAKE_CURRENT_LIST_DIR}/xinstallsimple.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/xinstallsimple.h
+    )
+endif()
 
 if (NOT DEFINED XFORMATS_SOURCES)
     include(${CMAKE_CURRENT_LIST_DIR}/../Formats/xformats.cmake)
@@ -76,8 +82,6 @@ set(XSTATICUNPACKER_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/xboxedapp.h
     ${CMAKE_CURRENT_LIST_DIR}/xinstallforge.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xinstallforge.h
-    ${CMAKE_CURRENT_LIST_DIR}/xinstallsimple.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xinstallsimple.h
     ${CMAKE_CURRENT_LIST_DIR}/xsmartinstall.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xsmartinstall.h
     ${CMAKE_CURRENT_LIST_DIR}/xtarma.cpp

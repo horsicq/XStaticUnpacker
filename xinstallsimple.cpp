@@ -5,6 +5,8 @@
 
 #include "xinstallsimple.h"
 
+#ifdef USE_XEMULATOR
+
 #include <QBuffer>
 #include <QSet>
 
@@ -598,3 +600,5 @@ bool XInstallSimple::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     pState->nNumberOfRecords = 0;
     return true;
 }
+
+#endif  // USE_XEMULATOR

@@ -5,6 +5,8 @@
 #ifndef XINSTALLSIMPLE_H
 #define XINSTALLSIMPLE_H
 
+#ifdef USE_XEMULATOR
+
 #include "xbinary.h"
 
 /* Detector + extractor for Install Simple (InstallSimple) installers. The
@@ -52,5 +54,7 @@ private:
     INTERNAL_INFO m_internalInfo;
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);
 };
+
+#endif  // USE_XEMULATOR
 
 #endif  // XINSTALLSIMPLE_H

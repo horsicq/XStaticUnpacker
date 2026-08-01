@@ -1,7 +1,8 @@
 INCLUDEPATH += $$PWD
 DEPENDPATH += $$PWD
 
-!contains(XCONFIG, xinstallsimple_xemulator) {
+contains(XCONFIG, use_xemulator) {
+    DEFINES += USE_XEMULATOR
     XCONFIG += xinstallsimple_xemulator
     INCLUDEPATH += $$PWD/../XEmulator
     INCLUDEPATH += $$PWD/../XEmulator/arch
@@ -15,13 +16,15 @@ DEPENDPATH += $$PWD
         $$PWD/../XEmulator/arch/xemuarch.h \
         $$PWD/../XEmulator/arch/xemuopcache.h \
         $$PWD/../XEmulator/arch/xemutb.h \
-        $$PWD/../XEmulator/arch/xemux86.h
+        $$PWD/../XEmulator/arch/xemux86.h \
+        $$PWD/xinstallsimple.h
 
     SOURCES += \
         $$PWD/../XEmulator/xemumemorymanager.cpp \
         $$PWD/../XEmulator/xemuregisters.cpp \
         $$PWD/../XEmulator/arch/xemuarch.cpp \
-        $$PWD/../XEmulator/arch/xemux86.cpp
+        $$PWD/../XEmulator/arch/xemux86.cpp \
+        $$PWD/xinstallsimple.cpp
 }
 
 !contains(XCONFIG, xformats) {
@@ -58,7 +61,6 @@ HEADERS += \
     $$PWD/xenigmavb.h \
     $$PWD/xboxedapp.h \
     $$PWD/xinstallforge.h \
-    $$PWD/xinstallsimple.h \
     $$PWD/xsmartinstall.h \
     $$PWD/xtarma.h \
 
@@ -86,6 +88,5 @@ SOURCES += \
     $$PWD/xenigmavb.cpp \
     $$PWD/xboxedapp.cpp \
     $$PWD/xinstallforge.cpp \
-    $$PWD/xinstallsimple.cpp \
     $$PWD/xsmartinstall.cpp \
     $$PWD/xtarma.cpp \
