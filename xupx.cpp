@@ -1375,6 +1375,12 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
         XBinary::_copyMemory((char *)&ih32, pExtraInfo, sizeof(XPE_DEF::IMAGE_NT_HEADERS32));
         nFileAlignment = ih32.OptionalHeader.FileAlignment;
         nSectionAlignment = ih32.OptionalHeader.SectionAlignment;
+        if (nFileAlignment == 0) {
+            nFileAlignment = 0x200;
+        }
+        if (nSectionAlignment == 0) {
+            nSectionAlignment = 0x1000;
+        }
         nRVAmin = XBinary::align_up(ih32.OptionalHeader.SizeOfHeaders, nSectionAlignment);
         nNumberOfSections = ih32.FileHeader.NumberOfSections;
         nBaseOfCode = ih32.OptionalHeader.BaseOfCode;
@@ -1384,6 +1390,12 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
         XBinary::_copyMemory((char *)&ih64, pExtraInfo, sizeof(XPE_DEF::IMAGE_NT_HEADERS64));
         nFileAlignment = ih64.OptionalHeader.FileAlignment;
         nSectionAlignment = ih64.OptionalHeader.SectionAlignment;
+        if (nFileAlignment == 0) {
+            nFileAlignment = 0x200;
+        }
+        if (nSectionAlignment == 0) {
+            nSectionAlignment = 0x1000;
+        }
         nRVAmin = XBinary::align_up(ih64.OptionalHeader.SizeOfHeaders, nSectionAlignment);
         nNumberOfSections = ih64.FileHeader.NumberOfSections;
         nBaseOfCode = ih64.OptionalHeader.BaseOfCode;
@@ -1771,9 +1783,9 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
     }
 
     if (!bIs64) {
-        nFileSize = XBinary::align_up(nFileSize, ih32.OptionalHeader.FileAlignment);
+        nFileSize = XBinary::align_up(nFileSize, nFileAlignment);
     } else {
-        nFileSize = XBinary::align_up(nFileSize, ih64.OptionalHeader.FileAlignment);
+        nFileSize = XBinary::align_up(nFileSize, nFileAlignment);
     }
 
     QByteArray baResultFile(nFileSize, 0);
