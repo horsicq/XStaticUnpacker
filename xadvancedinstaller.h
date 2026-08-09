@@ -86,6 +86,7 @@ private:
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);
     EXE_FOOTER _readExeFooter(PDSTRUCT *pPdStruct);
     bool _readExeFiles(const EXE_FOOTER &footer, QList<EXE_FILE> *pListFiles, qint64 *pnMetadataEnd, PDSTRUCT *pPdStruct);
+    bool _validateExeFooter(const EXE_FOOTER &footer, QList<EXE_FILE> *pListFiles, qint64 *pnMetadataEnd, PDSTRUCT *pPdStruct);
     QString _readUTF16Name(qint64 nOffset, quint32 nNumberOfCharacters, qint64 nLimit, PDSTRUCT *pPdStruct);
     QByteArray _readExeFile(const EXE_FILE &file, PDSTRUCT *pPdStruct);
     QString _readExternalMSIName(const EXE_FOOTER &footer, qint64 nMetadataEnd, PDSTRUCT *pPdStruct);
@@ -93,7 +94,7 @@ private:
     bool _initMSIDelegate(UNPACK_STATE *pState, QIODevice *pSourceDevice, QIODevice *pOwnedDevice,
                           const QMap<QString, QByteArray> &mapExternalCabinets, const QMap<UNPACK_PROP, QVariant> &mapProperties,
                           PDSTRUCT *pPdStruct);
-    void _deleteUnpackContext(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
+    bool _deleteUnpackContext(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
 };
 
 #endif  // XADVANCEDINSTALLER_H

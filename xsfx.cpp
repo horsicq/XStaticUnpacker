@@ -13,6 +13,7 @@
 
 XSFX::XSFX(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : XBinary(pDevice, bIsImage, nModuleAddress)
 {
+    m_internalInfo = INTERNAL_INFO();
     setIsArchive(true);
 }
 
@@ -22,6 +23,7 @@ XSFX::~XSFX()
 
 bool XSFX::isValid(PDSTRUCT *pPdStruct)
 {
+    if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
     return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
@@ -40,10 +42,12 @@ XSFX::INTERNAL_INFO XSFX::_getInternalInfo(PDSTRUCT *pPdStruct)
 bool XSFX::handleInternalInfo(PDSTRUCT *pPdStruct)
 {
     if (!isInternalInfoHandled()) {
-        m_internalInfo = INTERNAL_INFO();
+        INTERNAL_INFO info = _getInternalInfo(pPdStruct);
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+        info.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+        m_internalInfo = info;
         setIsInternalInfoHandled(true);
-        m_internalInfo = _getInternalInfo(pPdStruct);
-        m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
     }
 
@@ -93,9 +97,11 @@ QString XSFX::getMIMEString()
     return "application/x-sfx";
 }
 
-bool XSFX::_matchArchiveAt(qint64 nOffset, qint64 nSize, ARCTYPE *pType, PDSTRUCT *pPdStruct)
+bool XSFX::_matchArchiveAt(qint64 nOffset, qint64 nSize, ARCTYPE *pType, qint64 *pArchiveSize, PDSTRUCT *pPdStruct)
 {
-    if ((nOffset < 0) || (nSize < 8) || (nOffset + nSize > getSize())) {
+    const qint64 nTotalSize = getSize();
+    if (!pType || !pArchiveSize || (nOffset < 0) || (nSize < 8) || (nOffset > nTotalSize) ||
+        (nSize > nTotalSize - nOffset) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
         return false;
     }
 
@@ -126,15 +132,28 @@ bool XSFX::_matchArchiveAt(qint64 nOffset, qint64 nSize, ARCTYPE *pType, PDSTRUC
     }
 
     bool bValid = false;
+    qint64 nLogicalSize = 0;
     XArchive *pArc = _createArchive(candidate, &sub);
     if (pArc) {
-        bValid = pArc->isValid(pPdStruct);
+        UNPACK_STATE state = {};
+        QMap<UNPACK_PROP, QVariant> properties;
+        bValid = pArc->initUnpack(&state, properties, pPdStruct);
+        if (bValid) {
+            bValid = pArc->finishUnpack(&state, pPdStruct);
+        } else if ((candidate == ARC_7Z) && XBinary::isPdStructNotCanceled(pPdStruct)) {
+            // Preserve detection of password-protected encoded headers while
+            // still requiring a structurally parsed encrypted stream map.
+            XSevenZip *pSevenZip = static_cast<XSevenZip *>(pArc);
+            bValid = pSevenZip->isValid(pPdStruct) && pSevenZip->isEncrypted();
+        }
+        if (bValid) nLogicalSize = pArc->getFileFormatSize(pPdStruct);
         delete pArc;
     }
     sub.close();
 
-    if (bValid) {
+    if (bValid && (nLogicalSize > 0) && (nLogicalSize <= nSize) && XBinary::isPdStructNotCanceled(pPdStruct)) {
         *pType = candidate;
+        *pArchiveSize = nLogicalSize;
         return true;
     }
 
@@ -161,34 +180,39 @@ XSFX::INTERNAL_INFO XSFX::_detect(PDSTRUCT *pPdStruct)
     qint64 nOverlayOffset = getOverlayOffset(pPdStruct);
     if ((nOverlayOffset > 0) && (nOverlayOffset < nTotalSize)) {
         ARCTYPE type = ARC_UNKNOWN;
-        if (_matchArchiveAt(nOverlayOffset, nTotalSize - nOverlayOffset, &type, pPdStruct)) {
+        qint64 nArchiveSize = 0;
+        if (_matchArchiveAt(nOverlayOffset, nTotalSize - nOverlayOffset, &type, &nArchiveSize, pPdStruct)) {
             result.bIsValid = true;
             result.arcType = type;
             result.nArchiveOffset = nOverlayOffset;
-            result.nArchiveSize = nTotalSize - nOverlayOffset;
+            result.nArchiveSize = nArchiveSize;
             return result;
         }
     }
 
-    // 2) Fallback: scan for an archive signature past the PE headers.
-    const char *apszSignatures[] = {"377ABCAF271C", "52617221", "52457E5E", "4D534346"};  // 7z, Rar!, RE~^, MSCF
-    const qint64 nScanStart = 0x40;
+    // 2) Fallback: scan only the executable overlay. Searching mapped PE
+    // sections classified ordinary programs containing CAB resources as SFXs.
+    if ((nOverlayOffset <= 0) || (nOverlayOffset >= nTotalSize)) return result;
 
-    for (int i = 0; i < 4; i++) {
+    const char *apszSignatures[] = {"377ABCAF271C", "52617221", "52457E5E", "4D534346"};  // 7z, Rar!, RE~^, MSCF
+    const qint64 nScanStart = nOverlayOffset;
+    qint32 nCandidates = 0;
+
+    for (int i = 0; (i < 4) && (nCandidates < 256) && isPdStructNotCanceled(pPdStruct); i++) {
         qint64 nPos = nScanStart;
-        while ((nPos = find_signature(nPos, nTotalSize - nPos, apszSignatures[i], nullptr, pPdStruct)) != -1) {
+        while ((nCandidates < 256) && isPdStructNotCanceled(pPdStruct) &&
+               ((nPos = find_signature(nPos, nTotalSize - nPos, apszSignatures[i], nullptr, pPdStruct)) != -1)) {
             ARCTYPE type = ARC_UNKNOWN;
-            if (_matchArchiveAt(nPos, nTotalSize - nPos, &type, pPdStruct)) {
+            qint64 nArchiveSize = 0;
+            nCandidates++;
+            if (_matchArchiveAt(nPos, nTotalSize - nPos, &type, &nArchiveSize, pPdStruct)) {
                 result.bIsValid = true;
                 result.arcType = type;
                 result.nArchiveOffset = nPos;
-                result.nArchiveSize = nTotalSize - nPos;
+                result.nArchiveSize = nArchiveSize;
                 return result;
             }
             nPos++;
-            if (!isPdStructNotCanceled(pPdStruct)) {
-                break;
-            }
         }
     }
 
@@ -246,15 +270,11 @@ QMap<XBinary::UNPACK_PROP, QVariant> XSFX::getDefaultUnpackProperties()
 
 bool XSFX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
-    if (!pState) {
-        return false;
-    }
+    if (!pState) return false;
+    if (pState->pContext && !finishUnpack(pState, pPdStruct)) return false;
+    if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
-    pState->nCurrentOffset = 0;
-    pState->nTotalSize = getSize();
-    pState->nCurrentIndex = 0;
-    pState->nNumberOfRecords = 0;
-    pState->pContext = nullptr;
+    *pState = UNPACK_STATE();
     pState->mapUnpackProperties = mapProperties;
 
     INTERNAL_INFO info = _detect(pPdStruct);
@@ -292,6 +312,9 @@ bool XSFX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     }
 
     pState->nNumberOfRecords = pContext->innerState.nNumberOfRecords;
+    pState->nTotalSize = getSize();
+    pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
+    pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
     pState->pContext = pContext;
 
     return true;
@@ -301,7 +324,8 @@ XBinary::ARCHIVERECORD XSFX::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStru
 {
     ARCHIVERECORD result = {};
 
-    if (!pState || !pState->pContext) {
+    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) ||
+        (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
         return result;
     }
 
@@ -316,7 +340,8 @@ XBinary::ARCHIVERECORD XSFX::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStru
 
 bool XSFX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
-    if (!pState || !pState->pContext || !pDevice) {
+    if (!pState || !pState->pContext || !pDevice || !pDevice->isWritable() || !XBinary::isPdStructNotCanceled(pPdStruct) ||
+        (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
         return false;
     }
 
@@ -326,12 +351,16 @@ bool XSFX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
     }
 
     pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
-    return pContext->pArchive->unpackCurrent(&pContext->innerState, pDevice, pPdStruct);
+    bool bResult = pContext->pArchive->unpackCurrent(&pContext->innerState, pDevice, pPdStruct);
+    pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
+    pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
+    return bResult;
 }
 
 bool XSFX::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
-    if (!pState || !pState->pContext) {
+    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) ||
+        (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
         return false;
     }
 
@@ -343,6 +372,8 @@ bool XSFX::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
     bool bResult = pContext->pArchive->moveToNext(&pContext->innerState, pPdStruct);
     pState->nCurrentIndex = pContext->innerState.nCurrentIndex;
+    pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
+    pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
 
     return bResult;
 }
@@ -353,11 +384,12 @@ bool XSFX::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         return false;
     }
 
+    bool bResult = true;
     if (pState->pContext) {
         UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
 
         if (pContext->pArchive) {
-            pContext->pArchive->finishUnpack(&pContext->innerState, pPdStruct);
+            bResult = pContext->pArchive->finishUnpack(&pContext->innerState, pPdStruct);
             delete pContext->pArchive;
             pContext->pArchive = nullptr;
         }
@@ -372,8 +404,11 @@ bool XSFX::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     }
 
     pState->nCurrentOffset = 0;
+    pState->nTotalSize = 0;
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
+    pState->mapUnpackProperties.clear();
+    pState->mapArchiveProperties.clear();
 
-    return true;
+    return bResult;
 }

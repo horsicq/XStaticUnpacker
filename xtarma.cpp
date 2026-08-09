@@ -24,10 +24,12 @@ namespace {
 const qint64 TARMA_MAX_CONTAINER_SIZE = Q_INT64_C(256) * 1024 * 1024;
 const qint64 TARMA_MAX_INNER_SIZE = Q_INT64_C(256) * 1024 * 1024;
 const quint64 TARMA_MAX_TOTAL_SOURCE_SIZE = Q_UINT64_C(512) * 1024 * 1024;
+const quint64 TARMA_MAX_TOTAL_DECODED_SIZE = Q_UINT64_C(512) * 1024 * 1024;
 const quint64 TARMA_MAX_TOTAL_PAYLOAD_SIZE = Q_UINT64_C(256) * 1024 * 1024;
 const int TARMA_MAX_VOLUME_COUNT = 1024;
 const int TARMA_MAX_BLOCK_COUNT = 8192;
 const int TARMA_MAX_FILE_COUNT = 4096;
+const int TARMA_MAX_DIRECTORY_ENTRIES = 100000;
 }
 
 XTarma::XTarma(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : XBinary(pDevice, bIsImage, nModuleAddress)
@@ -41,6 +43,7 @@ XTarma::~XTarma()
 
 bool XTarma::isValid(PDSTRUCT *pPdStruct)
 {
+    if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
     return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
@@ -60,9 +63,17 @@ bool XTarma::handleInternalInfo(PDSTRUCT *pPdStruct)
 {
     if (!isInternalInfoHandled()) {
         m_internalInfo = INTERNAL_INFO();
-        setIsInternalInfoHandled(true);
         m_internalInfo = _getInternalInfo(pPdStruct);
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
+            m_internalInfo = INTERNAL_INFO();
+            return false;
+        }
         m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
+            m_internalInfo = INTERNAL_INFO();
+            return false;
+        }
+        setIsInternalInfoHandled(true);
         XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
     }
 
@@ -96,15 +107,17 @@ XBinary::FT XTarma::getFileType()
 // Match a PE section by exact name (8-byte COFF field, NUL-padded).
 static qint64 tarmaSectionRaw(const QList<XPE_DEF::IMAGE_SECTION_HEADER> &listSections, const char *pszName)
 {
+    qint64 nResult = -1;
     for (int i = 0; i < listSections.size(); i++) {
         QByteArray baName((const char *)listSections.at(i).Name, 8);
         int nZero = baName.indexOf('\0');
         if (nZero >= 0) baName.truncate(nZero);
         if (baName == pszName) {
-            return (qint64)listSections.at(i).PointerToRawData;
+            if (nResult >= 0) return -2;  // duplicate authoritative section
+            nResult = (qint64)listSections.at(i).PointerToRawData;
         }
     }
-    return -1;
+    return nResult;
 }
 
 XTarma::INTERNAL_INFO XTarma::_detect(PDSTRUCT *pPdStruct)
@@ -119,6 +132,7 @@ XTarma::INTERNAL_INFO XTarma::_detect(PDSTRUCT *pPdStruct)
 
     qint64 nStubRaw = tarmaSectionRaw(listSections, ".tsustub");
     qint64 nArchRaw = tarmaSectionRaw(listSections, ".tsuarch");
+    if ((nStubRaw == -2) || (nArchRaw == -2)) return result;
 
     // Primary (v9): both .tsu* sections + the "tiz" container magic at raw+0x10.
     if ((nStubRaw >= 0) && (nArchRaw >= 0)) {
@@ -170,9 +184,13 @@ static void tarmaFree(ISzAllocPtr, void *p)
 }
 
 // Raw LZMA1 decode to the end-of-stream marker (output size not known in advance).
-static bool tarmaLzmaToEnd(const quint8 *pProps, const quint8 *pSrc, qint64 nSrcSize, QByteArray *pOut, XBinary::PDSTRUCT *pPdStruct)
+static bool tarmaLzmaToEnd(const quint8 *pProps, const quint8 *pSrc, qint64 nSrcSize, qint64 nMaxOutput, QByteArray *pOut,
+                           XBinary::PDSTRUCT *pPdStruct)
 {
-    if (!pProps || !pSrc || !pOut || (nSrcSize <= 0) || (nSrcSize > TARMA_MAX_CONTAINER_SIZE)) return false;
+    if (!pProps || !pSrc || !pOut || (nSrcSize <= 0) || (nSrcSize > TARMA_MAX_CONTAINER_SIZE) ||
+        (nMaxOutput < 0) || (nMaxOutput > TARMA_MAX_INNER_SIZE)) {
+        return false;
+    }
 
     static const ISzAlloc g_alloc = {tarmaAlloc, tarmaFree};
 
@@ -196,7 +214,7 @@ static bool tarmaLzmaToEnd(const quint8 *pProps, const quint8 *pSrc, qint64 nSrc
         SRes res = LzmaDec_DecodeToBuf(&dec, (Byte *)baChunk.data(), &nDestLen, (const Byte *)pSrc + nSrcPos, &nSrcRemain, LZMA_FINISH_ANY, &status);
         if (res != SZ_OK) break;
 
-        if ((qint64)nDestLen > TARMA_MAX_INNER_SIZE - pOut->size()) break;
+        if ((qint64)nDestLen > nMaxOutput - pOut->size()) break;
         pOut->append(baChunk.constData(), (int)nDestLen);
         nSrcPos += (qint64)nSrcRemain;
 
@@ -230,9 +248,12 @@ static inline quint64 tarmaRd64(const quint8 *p)
     return (quint64)tarmaRd32(p) | ((quint64)tarmaRd32(p + 4) << 32);
 }
 
-static bool tarmaInflate(const quint8 *pSrc, qint64 nSrcSize, QByteArray *pOut, XBinary::PDSTRUCT *pPdStruct)
+static bool tarmaInflate(const quint8 *pSrc, qint64 nSrcSize, qint64 nMaxOutput, QByteArray *pOut, XBinary::PDSTRUCT *pPdStruct)
 {
-    if (!pSrc || !pOut || (nSrcSize <= 0) || (nSrcSize > TARMA_MAX_CONTAINER_SIZE)) return false;
+    if (!pSrc || !pOut || (nSrcSize <= 0) || (nSrcSize > TARMA_MAX_CONTAINER_SIZE) ||
+        (nMaxOutput < 0) || (nMaxOutput > TARMA_MAX_INNER_SIZE)) {
+        return false;
+    }
     z_stream stream;
     memset(&stream, 0, sizeof(stream));
     if (inflateInit2(&stream, 15) != Z_OK) return false;
@@ -250,7 +271,7 @@ static bool tarmaInflate(const quint8 *pSrc, qint64 nSrcSize, QByteArray *pOut, 
         stream.avail_out = sizeof(aBuffer);
         int nResult = inflate(&stream, Z_NO_FLUSH);
         qint64 nProduced = sizeof(aBuffer) - stream.avail_out;
-        if (nProduced > TARMA_MAX_INNER_SIZE - pOut->size()) break;
+        if (nProduced > nMaxOutput - pOut->size()) break;
         pOut->append(aBuffer, (int)nProduced);
         if (nResult == Z_STREAM_END) {
             bOk = true;
@@ -271,10 +292,10 @@ static bool tarmaInflate(const quint8 *pSrc, qint64 nSrcSize, QByteArray *pOut, 
     return XBinary::isPdStructNotCanceled(pPdStruct);
 }
 
-static bool tarmaDecodeContainer(const QByteArray &baContainer, QByteArray *pInner, XBinary::PDSTRUCT *pPdStruct)
+static bool tarmaDecodeContainer(const QByteArray &baContainer, qint64 nMaxOutput, QByteArray *pInner, XBinary::PDSTRUCT *pPdStruct)
 {
     if (!pInner || (baContainer.size() <= 0) || (baContainer.size() > TARMA_MAX_CONTAINER_SIZE) ||
-        !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        (nMaxOutput < 0) || (nMaxOutput > TARMA_MAX_INNER_SIZE) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
         return false;
     }
 
@@ -282,17 +303,17 @@ static bool tarmaDecodeContainer(const QByteArray &baContainer, QByteArray *pInn
     const qint64 n = baContainer.size();
 
     if ((n >= 10) && (memcmp(p, "tiz1", 4) == 0) && (p[8] == 0x78)) {
-        return tarmaInflate(p + 8, n - 8, pInner, pPdStruct);
+        return tarmaInflate(p + 8, n - 8, nMaxOutput, pInner, pPdStruct);
     }
 
     if ((n < 0x4D) || (memcmp(p + 0x10, "tiz", 3) != 0) || (p[0x14] != 'z')) return false;
     if (p[0x13] == '2') {
         // "Deflate (fast)" in InstallMate's compressor selector. The eight
         // bytes at +0x40 are framing/checksum data.
-        return tarmaInflate(p + 0x48, n - 0x48, pInner, pPdStruct);
+        return tarmaInflate(p + 0x48, n - 0x48, nMaxOutput, pInner, pPdStruct);
     }
     if (p[0x13] == '3') {
-        return tarmaLzmaToEnd(p + 0x48, p + 0x4D, n - 0x4D, pInner, pPdStruct);
+        return tarmaLzmaToEnd(p + 0x48, p + 0x4D, n - 0x4D, nMaxOutput, pInner, pPdStruct);
     }
 
     return false;
@@ -392,8 +413,41 @@ static bool tarmaIsSafePathPart(const QString &sValue)
         QStringLiteral("COM2"), QStringLiteral("COM3"), QStringLiteral("COM4"), QStringLiteral("COM5"), QStringLiteral("COM6"),
         QStringLiteral("COM7"), QStringLiteral("COM8"), QStringLiteral("COM9"), QStringLiteral("LPT1"), QStringLiteral("LPT2"),
         QStringLiteral("LPT3"), QStringLiteral("LPT4"), QStringLiteral("LPT5"), QStringLiteral("LPT6"), QStringLiteral("LPT7"),
-        QStringLiteral("LPT8"), QStringLiteral("LPT9")};
-    return !setReserved.contains(sValue.section('.', 0, 0).toUpper());
+        QStringLiteral("LPT8"), QStringLiteral("LPT9"), QStringLiteral("CONIN$"), QStringLiteral("CONOUT$"), QStringLiteral("CLOCK$")};
+    QString sStem = sValue.section('.', 0, 0).toUpper();
+    sStem.replace(QChar(0x00B9), QLatin1Char('1'));
+    sStem.replace(QChar(0x00B2), QLatin1Char('2'));
+    sStem.replace(QChar(0x00B3), QLatin1Char('3'));
+    return !setReserved.contains(sStem);
+}
+
+static QString tarmaNameKey(const QString &sName)
+{
+    return sName.toCaseFolded().normalized(QString::NormalizationForm_C);
+}
+
+static QString tarmaUniqueOutputName(const QString &sPreferred, qint32 nRecordIndex, const QSet<QString> &setDeclaredNames,
+                                     QSet<QString> *pSetAssignedNames)
+{
+    if (!pSetAssignedNames || sPreferred.isEmpty() || (nRecordIndex < 0)) return QString();
+
+    const QString sPreferredKey = tarmaNameKey(sPreferred);
+    if (!pSetAssignedNames->contains(sPreferredKey)) {
+        pSetAssignedNames->insert(sPreferredKey);
+        return sPreferred;
+    }
+
+    const QString sBase = QString("file_%1").arg(nRecordIndex, 4, 10, QChar('0'));
+    for (qint32 i = 0; i <= TARMA_MAX_FILE_COUNT; i++) {
+        const QString sCandidate = (i == 0) ? sBase : QString("%1_%2").arg(sBase).arg(i);
+        const QString sCandidateKey = tarmaNameKey(sCandidate);
+        if (!setDeclaredNames.contains(sCandidateKey) && !pSetAssignedNames->contains(sCandidateKey)) {
+            pSetAssignedNames->insert(sCandidateKey);
+            return sCandidate;
+        }
+    }
+
+    return QString();
 }
 
 static QString tarmaBuildLoosePath(const QByteArray &baFolderId, const QString &sName, const QHash<QByteArray, TARMA_FOLDER> &mapFolders)
@@ -415,7 +469,10 @@ static QString tarmaBuildLoosePath(const QByteArray &baFolderId, const QString &
         baCurrentId = folder.baParentId;
     }
 
-    if (listParts.isEmpty()) return QString();
+    // A null folder id denotes the installer directory itself. The caller
+    // still canonicalizes the resolved companion and proves that it remains
+    // inside that directory before opening it.
+    if (listParts.isEmpty()) return sName;
     listParts.append(sName);
     return listParts.join('/');
 }
@@ -449,7 +506,7 @@ static bool tarmaReadFileBounded(QFile *pFile, qint64 nExpectedSize, QByteArray 
         }
         qint64 nToRead = qMin(nChunkSize, nExpectedSize - pData->size());
         QByteArray baChunk = pFile->read(nToRead);
-        if (baChunk.size() != nToRead) {
+        if (baChunk.isEmpty() || (baChunk.size() > nToRead)) {
             pData->clear();
             return false;
         }
@@ -507,7 +564,6 @@ static QList<TARMA_NAME> tarmaReadNames(const QList<TARMA_BLOCK> &listBlocks, XB
         }
     }
 
-    QSet<QString> setFileNames;
     for (qint64 i = 0; i + 88 <= n; i++) {
         if (((i & 0xFFFF) == 0) && !XBinary::isPdStructNotCanceled(pPdStruct)) {
             result.clear();
@@ -523,13 +579,6 @@ static QList<TARMA_NAME> tarmaReadNames(const QList<TARMA_BLOCK> &listBlocks, XB
         if (!tarmaIsSafePathPart(sName) || (nFileSize > (256U << 20))) {
             continue;
         }
-        QString sNameKey = sName.toCaseFolded();
-        if (setFileNames.contains(sNameKey)) {
-            result.clear();
-            return result;
-        }
-        setFileNames.insert(sNameKey);
-
         TARMA_NAME entry;
         entry.sName = sName;
         entry.sLoosePath = tarmaBuildLoosePath(QByteArray((const char *)p + i + 44, 8), entry.sName, mapFolders);
@@ -539,6 +588,18 @@ static QList<TARMA_NAME> tarmaReadNames(const QList<TARMA_BLOCK> &listBlocks, XB
             result.clear();
             return result;
         }
+    }
+
+    QSet<QString> setDeclaredNames;
+    for (const TARMA_NAME &entry : result) setDeclaredNames.insert(tarmaNameKey(entry.sName));
+    QSet<QString> setAssignedNames;
+    for (qint32 i = 0; i < result.size(); i++) {
+        const QString sUniqueName = tarmaUniqueOutputName(result.at(i).sName, i, setDeclaredNames, &setAssignedNames);
+        if (sUniqueName.isEmpty()) {
+            result.clear();
+            return result;
+        }
+        result[i].sName = sUniqueName;
     }
 
     return result;
@@ -582,11 +643,20 @@ bool XTarma::_buildEntries(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
     if ((baPrimaryContainer.size() != nPrimarySize) || !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
     QByteArray baPrimaryInner;
-    if (!tarmaDecodeContainer(baPrimaryContainer, &baPrimaryInner, pPdStruct)) return false;
+    if (!tarmaDecodeContainer(baPrimaryContainer, TARMA_MAX_INNER_SIZE, &baPrimaryInner, pPdStruct)) return false;
 
     QList<TARMA_BLOCK> listBlocks = tarmaReadBlocks(baPrimaryInner, pPdStruct);
     QList<TARMA_NAME> listNames = tarmaReadNames(listBlocks, pPdStruct);
     if (listBlocks.isEmpty() || listNames.isEmpty() || !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+
+    quint64 nDeclaredPayloadSize = 0;
+    for (const TARMA_NAME &name : listNames) {
+        if ((name.nSize > TARMA_MAX_TOTAL_PAYLOAD_SIZE - nDeclaredPayloadSize) ||
+            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+            return false;
+        }
+        nDeclaredPayloadSize += name.nSize;
+    }
 
     if (!listBlocks.isEmpty()) {
         // The first primary tzf3 block is the tin9 metadata database. It is
@@ -597,6 +667,7 @@ bool XTarma::_buildEntries(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
     QFile *pInputFile = qobject_cast<QFile *>(getDevice());
     QString sInputDirectory;
     quint64 nTotalSourceSize = (quint64)nPrimarySize;
+    quint64 nTotalDecodedSize = (quint64)baPrimaryInner.size();
     if (pInputFile) {
         QFileInfo inputInfo(pInputFile->fileName());
         sInputDirectory = inputInfo.absolutePath();
@@ -606,10 +677,18 @@ bool XTarma::_buildEntries(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
         if (!info.bIsLegacy && (baPrimaryContainer.size() >= 0x40)) {
             QDir inputDir(sInputDirectory);
             const QFileInfoList listCandidates =
-                inputDir.entryInfoList(QStringList() << "Disk*.tiz", QDir::Files | QDir::System | QDir::Hidden, QDir::Name | QDir::IgnoreCase);
+                inputDir.entryInfoList(QDir::Files | QDir::System | QDir::Hidden | QDir::NoDotAndDotDot, QDir::Name | QDir::IgnoreCase);
+            if (listCandidates.size() > TARMA_MAX_DIRECTORY_ENTRIES) return false;
             static const QRegularExpression reVolume(QStringLiteral("^Disk([0-9]{4})\\.tiz$"), QRegularExpression::CaseInsensitiveOption);
             QMap<int, QFileInfo> mapVolumes;
             QByteArray baGuid = baPrimaryContainer.mid(0x30, 16);
+            QString sCanonicalDirectory = QFileInfo(inputDir.absolutePath()).canonicalFilePath();
+            if (sCanonicalDirectory.isEmpty()) return false;
+#if defined(Q_OS_WIN) || defined(Q_OS_MAC)
+            const Qt::CaseSensitivity pathCaseSensitivity = Qt::CaseInsensitive;
+#else
+            const Qt::CaseSensitivity pathCaseSensitivity = Qt::CaseSensitive;
+#endif
             for (int i = 0; i < listCandidates.size(); i++) {
                 if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
@@ -621,12 +700,15 @@ bool XTarma::_buildEntries(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
                 // Files that only resemble a Tarma volume must not poison a
                 // valid package in the same directory. Authenticate the
                 // package GUID before applying strict volume constraints.
+                QString sCanonicalCandidate = candidate.canonicalFilePath();
                 if (!bNumberOK || (nVolume <= 0) || (nVolume > TARMA_MAX_VOLUME_COUNT) || candidate.isSymLink() ||
+                    sCanonicalCandidate.isEmpty() ||
+                    (QFileInfo(sCanonicalCandidate).absolutePath().compare(sCanonicalDirectory, pathCaseSensitivity) != 0) ||
                     (candidate.size() < 0x40)) {
                     continue;
                 }
 
-                QFile headerFile(candidate.absoluteFilePath());
+                QFile headerFile(sCanonicalCandidate);
                 if (!headerFile.open(QIODevice::ReadOnly)) continue;
                 QByteArray baHeader = headerFile.read(0x40);
                 headerFile.close();
@@ -648,7 +730,12 @@ bool XTarma::_buildEntries(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
                     return false;
                 }
 
-                QFile volumeFile(volumeInfo.absoluteFilePath());
+                QString sCanonicalVolume = volumeInfo.canonicalFilePath();
+                if (sCanonicalVolume.isEmpty() ||
+                    (QFileInfo(sCanonicalVolume).absolutePath().compare(sCanonicalDirectory, pathCaseSensitivity) != 0)) {
+                    return false;
+                }
+                QFile volumeFile(sCanonicalVolume);
                 if (!volumeFile.open(QIODevice::ReadOnly)) return false;
                 QByteArray baVolume;
                 bool bReadOK = tarmaReadFileBounded(&volumeFile, nVolumeSize, &baVolume, pPdStruct);
@@ -664,7 +751,14 @@ bool XTarma::_buildEntries(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
                     nTotalSourceSize += (quint64)nVolumeSize;
 
                     QByteArray baVolumeInner;
-                    if (!tarmaDecodeContainer(baVolume, &baVolumeInner, pPdStruct)) return false;
+                    if (nTotalDecodedSize > TARMA_MAX_TOTAL_DECODED_SIZE) return false;
+                    qint64 nRemainingDecoded = (qint64)qMin<quint64>(TARMA_MAX_INNER_SIZE,
+                                                                     TARMA_MAX_TOTAL_DECODED_SIZE - nTotalDecodedSize);
+                    if (!tarmaDecodeContainer(baVolume, nRemainingDecoded, &baVolumeInner, pPdStruct) ||
+                        ((quint64)baVolumeInner.size() > TARMA_MAX_TOTAL_DECODED_SIZE - nTotalDecodedSize)) {
+                        return false;
+                    }
+                    nTotalDecodedSize += (quint64)baVolumeInner.size();
                     QList<TARMA_BLOCK> listVolumeBlocks = tarmaReadBlocks(baVolumeInner, pPdStruct);
                     if (listVolumeBlocks.isEmpty() || (listVolumeBlocks.size() > TARMA_MAX_BLOCK_COUNT - listBlocks.size())) return false;
                     listBlocks.append(listVolumeBlocks);
@@ -734,6 +828,7 @@ bool XTarma::_buildEntries(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
 bool XTarma::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
+    if (pState->pContext && !finishUnpack(pState, pPdStruct)) return false;
 
     pState->nCurrentOffset = 0;
     pState->nTotalSize = getSize();
@@ -741,6 +836,7 @@ bool XTarma::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> 
     pState->nNumberOfRecords = 0;
     pState->pContext = nullptr;
     pState->mapUnpackProperties = mapProperties;
+    pState->mapArchiveProperties.clear();
 
     UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT;
     if (!_buildEntries(pContext, pPdStruct)) {
@@ -755,9 +851,8 @@ bool XTarma::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> 
 
 XBinary::ARCHIVERECORD XTarma::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(pPdStruct)
     ARCHIVERECORD result = {};
-    if (!pState || !pState->pContext) return result;
+    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct)) return result;
     UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
     qint32 nIndex = pState->nCurrentIndex;
     if ((nIndex < 0) || (nIndex >= pContext->listEntries.size())) return result;
@@ -778,6 +873,7 @@ bool XTarma::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *p
     if ((nIndex < 0) || (nIndex >= pContext->listEntries.size())) return false;
 
     const FILE_ENTRY &e = pContext->listEntries.at(nIndex);
+    if (!pDevice->isSequential() && (!pDevice->seek(0) || ((pDevice->size() != 0) && !XBinary::resize(pDevice, 0)))) return false;
     qint64 nWritten = 0;
     pState->nCurrentOffset = 0;
     while (nWritten < e.baData.size()) {
@@ -810,7 +906,10 @@ bool XTarma::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         pState->pContext = nullptr;
     }
     pState->nCurrentOffset = 0;
+    pState->nTotalSize = 0;
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
+    pState->mapUnpackProperties.clear();
+    pState->mapArchiveProperties.clear();
     return true;
 }

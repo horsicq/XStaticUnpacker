@@ -38,6 +38,7 @@ XCreateInstall::~XCreateInstall()
 
 bool XCreateInstall::isValid(PDSTRUCT *pPdStruct)
 {
+    if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
     return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
@@ -57,9 +58,17 @@ bool XCreateInstall::handleInternalInfo(PDSTRUCT *pPdStruct)
 {
     if (!isInternalInfoHandled()) {
         m_internalInfo = INTERNAL_INFO();
-        setIsInternalInfoHandled(true);
         m_internalInfo = _getInternalInfo(pPdStruct);
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
+            m_internalInfo = INTERNAL_INFO();
+            return false;
+        }
         m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
+            m_internalInfo = INTERNAL_INFO();
+            return false;
+        }
+        setIsInternalInfoHandled(true);
         XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
     }
 
@@ -115,7 +124,7 @@ static QString ciDeviceFileName(QIODevice *pDevice)
 
 static Qt::CaseSensitivity ciFileSystemCaseSensitivity()
 {
-#ifdef Q_OS_WIN
+#if defined(Q_OS_WIN) || defined(Q_OS_MAC)
     return Qt::CaseInsensitive;
 #else
     return Qt::CaseSensitive;
@@ -125,10 +134,25 @@ static Qt::CaseSensitivity ciFileSystemCaseSensitivity()
 static bool ciIsSafeBaseName(const QString &sName)
 {
     if (sName.isEmpty() || (sName.size() > CI_MAX_VOLUME_PATTERN_LENGTH) || (sName == ".") || (sName == "..") ||
-        sName.contains('/') || sName.contains('\\') || sName.contains(':') || sName.contains(QChar('\0'))) {
+        sName.endsWith('.') || sName.endsWith(' ') || sName.contains('/') || sName.contains('\\') || sName.contains(':') ||
+        sName.contains('<') || sName.contains('>') || sName.contains('"') || sName.contains('|') || sName.contains('?') ||
+        sName.contains('*') || sName.contains(QChar('\0'))) {
         return false;
     }
-    return QFileInfo(sName).fileName() == sName;
+    for (QChar character : sName) {
+        if (!character.isPrint() || (character == QChar::ReplacementCharacter)) return false;
+    }
+    QString sStem = sName.section('.', 0, 0).toUpper();
+    sStem.replace(QChar(0x00B9), QLatin1Char('1'));
+    sStem.replace(QChar(0x00B2), QLatin1Char('2'));
+    sStem.replace(QChar(0x00B3), QLatin1Char('3'));
+    static const QSet<QString> setReserved = {
+        QStringLiteral("CON"), QStringLiteral("PRN"), QStringLiteral("AUX"), QStringLiteral("NUL"), QStringLiteral("COM1"),
+        QStringLiteral("COM2"), QStringLiteral("COM3"), QStringLiteral("COM4"), QStringLiteral("COM5"), QStringLiteral("COM6"),
+        QStringLiteral("COM7"), QStringLiteral("COM8"), QStringLiteral("COM9"), QStringLiteral("LPT1"), QStringLiteral("LPT2"),
+        QStringLiteral("LPT3"), QStringLiteral("LPT4"), QStringLiteral("LPT5"), QStringLiteral("LPT6"), QStringLiteral("LPT7"),
+        QStringLiteral("LPT8"), QStringLiteral("LPT9"), QStringLiteral("CONIN$"), QStringLiteral("CONOUT$"), QStringLiteral("CLOCK$")};
+    return (QFileInfo(sName).fileName() == sName) && !setReserved.contains(sStem);
 }
 
 static bool ciNormalizeOutputName(const QString &sInput, QString *pResult)
@@ -194,6 +218,26 @@ static bool ciIsDirectRegularFile(const QFileInfo &fileInfo, const QString &sCan
     return canonicalInfo.absolutePath().compare(sCanonicalDirectory, ciFileSystemCaseSensitivity()) == 0;
 }
 
+static bool ciReadOpenFileExact(QFile *pFile, qint64 nSize, QByteArray *pResult, XBinary::PDSTRUCT *pPdStruct)
+{
+    if (!pFile || !pFile->isOpen() || !pResult || (nSize < 0) || (nSize > CI_MAX_VOLUME_SIZE) ||
+        !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        return false;
+    }
+
+    QByteArray baResult;
+    baResult.reserve((int)nSize);
+    while ((qint64)baResult.size() < nSize) {
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+        qint64 nToRead = qMin(CI_IO_CHUNK_SIZE, nSize - (qint64)baResult.size());
+        QByteArray baChunk = pFile->read(nToRead);
+        if (baChunk.isEmpty() || (baChunk.size() > nToRead)) return false;
+        baResult.append(baChunk);
+    }
+    *pResult = baResult;
+    return true;
+}
+
 static bool ciReadFileExact(const QString &sFileName, qint64 nExpectedSize, QByteArray *pResult, XBinary::PDSTRUCT *pPdStruct)
 {
     if (!pResult || (nExpectedSize < 0) || (nExpectedSize > CI_MAX_VOLUME_SIZE) || (nExpectedSize > INT_MAX) ||
@@ -205,17 +249,9 @@ static bool ciReadFileExact(const QString &sFileName, qint64 nExpectedSize, QByt
     if (!file.open(QIODevice::ReadOnly) || (file.size() != nExpectedSize)) return false;
 
     QByteArray baResult;
-    baResult.reserve((int)nExpectedSize);
-    while ((qint64)baResult.size() < nExpectedSize) {
-        if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+    if (!ciReadOpenFileExact(&file, nExpectedSize, &baResult, pPdStruct)) return false;
 
-        qint64 nToRead = qMin(CI_IO_CHUNK_SIZE, nExpectedSize - (qint64)baResult.size());
-        QByteArray baChunk = file.read(nToRead);
-        if (baChunk.size() != nToRead) return false;
-        baResult.append(baChunk);
-    }
-
-    if ((file.size() != nExpectedSize) || !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+    if ((file.size() != nExpectedSize) || !file.atEnd() || !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
     *pResult = baResult;
     return true;
 }
@@ -233,8 +269,8 @@ static bool ciIsMainGeaFile(const QString &sFileName, QByteArray *pHeader = null
     QFile file(sFileName);
     if (!file.open(QIODevice::ReadOnly) || (file.size() != fileInfo.size())) return false;
 
-    QByteArray baHeader = file.read(73);
-    if (baHeader.size() != 73) return false;
+    QByteArray baHeader;
+    if (!ciReadOpenFileExact(&file, 73, &baHeader, pPdStruct)) return false;
     const quint8 *p = (const quint8 *)baHeader.constData();
 
     if ((p[0] != 'G') || (p[1] != 'E') || (p[2] != 'A') || (p[3] != 0) || (ciRd16(p + 4) != 0)) return false;
@@ -248,8 +284,8 @@ static bool ciIsMainGeaFile(const QString &sFileName, QByteArray *pHeader = null
 
     qint64 nPrefixSize = qMin((qint64)nHeaderSize, Q_INT64_C(73) + CI_MAX_VOLUME_PATTERN_LENGTH + 1);
     if (!file.seek(0)) return false;
-    QByteArray baPrefix = file.read(nPrefixSize);
-    if (baPrefix.size() != nPrefixSize) return false;
+    QByteArray baPrefix;
+    if (!ciReadOpenFileExact(&file, nPrefixSize, &baPrefix, pPdStruct)) return false;
 
     qint64 nPatternEnd = baPrefix.indexOf('\0', 73);
     if ((nPatternEnd < 73) || (nPatternEnd >= nHeaderSize) || (nPatternEnd - 73 > CI_MAX_VOLUME_PATTERN_LENGTH)) return false;
@@ -311,17 +347,16 @@ XCreateInstall::INTERNAL_INFO XCreateInstall::_detect(PDSTRUCT *pPdStruct)
 
     QList<XPE_DEF::IMAGE_SECTION_HEADER> listSections = pe.getSectionHeaders(pPdStruct);
 
-    bool bGentee = false;
+    qint32 nGenteeSections = 0;
     for (int i = 0; i < listSections.size(); i++) {
         QByteArray baName((const char *)listSections.at(i).Name, 8);
         int nZero = baName.indexOf('\0');
         if (nZero >= 0) baName.truncate(nZero);
         if (baName == ".gentee") {
-            bGentee = true;
-            break;
+            nGenteeSections++;
         }
     }
-    if (!bGentee) return result;
+    if (nGenteeSections != 1) return result;
 
     // Corroborate with the Gentee runtime strings (unique to the engine).
     const qint64 nSize = getSize();
@@ -912,8 +947,8 @@ static bool ciBuildLogicalData(const QByteArray &baPrimary, const QString &sPrim
         QFile file(volumeInfo.canonicalFilePath());
         if (!file.open(QIODevice::ReadOnly) || ((quint64)file.size() != nExpectedSize)) return false;
 
-        QByteArray baVolumeHeader = file.read(10);
-        if (baVolumeHeader.size() != 10) return false;
+        QByteArray baVolumeHeader;
+        if (!ciReadOpenFileExact(&file, 10, &baVolumeHeader, pPdStruct)) return false;
         const quint8 *p = (const quint8 *)baVolumeHeader.constData();
         if ((p[0] != 'G') || (p[1] != 'E') || (p[2] != 'A') || (p[3] != 0) || (ciRd16(p + 4) != i) ||
             (ciRd32(p + 6) != h.nUnique)) {
@@ -925,9 +960,9 @@ static bool ciBuildLogicalData(const QByteArray &baPrimary, const QString &sPrim
             if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
             qint64 nToRead = (qint64)qMin((quint64)CI_IO_CHUNK_SIZE, nVolumeDataSize - nReadVolumeData);
             QByteArray baChunk = file.read(nToRead);
-            if (baChunk.size() != nToRead) return false;
+            if (baChunk.isEmpty() || (baChunk.size() > nToRead)) return false;
             baData.append(baChunk);
-            nReadVolumeData += (quint64)nToRead;
+            nReadVolumeData += (quint64)baChunk.size();
         }
         if (((quint64)file.size() != nExpectedSize) || !file.atEnd()) return false;
     }
@@ -1011,7 +1046,9 @@ private:
 
 bool XCreateInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
-    if (!pState || !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+    if (!pState) return false;
+    if (pState->pContext && !finishUnpack(pState, pPdStruct)) return false;
+    if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
     pState->nCurrentOffset = 0;
     pState->nTotalSize = getSize();
@@ -1019,6 +1056,7 @@ bool XCreateInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
     pState->nNumberOfRecords = 0;
     pState->pContext = nullptr;
     pState->mapUnpackProperties = mapProperties;
+    pState->mapArchiveProperties.clear();
 
     const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(getInternalInfo(pPdStruct));
     if (!pInfo || !pInfo->bIsValid) return false;
@@ -1341,9 +1379,8 @@ bool XCreateInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
 
 XBinary::ARCHIVERECORD XCreateInstall::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(pPdStruct)
     ARCHIVERECORD result = {};
-    if (!pState || !pState->pContext) return result;
+    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct)) return result;
     UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
     qint32 nIndex = pState->nCurrentIndex;
     if ((nIndex < 0) || (nIndex >= pContext->listEntries.size())) return result;
@@ -1364,6 +1401,7 @@ bool XCreateInstall::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDS
     if ((nIndex < 0) || (nIndex >= pContext->listEntries.size())) return false;
 
     const QByteArray &baData = pContext->listEntries.at(nIndex).baData;
+    if (!pDevice->isSequential() && (!pDevice->seek(0) || ((pDevice->size() != 0) && !XBinary::resize(pDevice, 0)))) return false;
     qint64 nWritten = 0;
     pState->nCurrentOffset = 0;
     while (nWritten < baData.size()) {
@@ -1398,7 +1436,10 @@ bool XCreateInstall::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         pState->pContext = nullptr;
     }
     pState->nCurrentOffset = 0;
+    pState->nTotalSize = 0;
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
+    pState->mapUnpackProperties.clear();
+    pState->mapArchiveProperties.clear();
     return true;
 }

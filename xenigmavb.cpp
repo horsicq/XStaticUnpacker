@@ -402,12 +402,15 @@ static bool evbAplibDepack(const quint8 *pSrc, qint64 nSrcLen, qint64 nExpectedO
 
 bool XEnigmaVB::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
-    if (!pState || pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+    if (!pState) return false;
+    if (pState->pContext && !finishUnpack(pState, pPdStruct)) return false;
+    if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
     pState->nCurrentOffset = 0;
     pState->nTotalSize = getSize();
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
+    pState->mapArchiveProperties.clear();
 
     try {
         pState->mapUnpackProperties = mapProperties;
@@ -425,7 +428,6 @@ bool XEnigmaVB::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
         if (!XBinary::isPdStructNotCanceled(pPdStruct) || ((qint64)baBuf.size() != info.nBaseSize)) return false;
 
         const quint8 *p = reinterpret_cast<const quint8 *>(baBuf.constData());
-        const qint64 n = baBuf.size();
         const qint64 nTreeLimit = info.nTreeSize;
         const qint64 nMagicIdx = info.nMagicOffset - info.nBaseOffset;
         if ((nMagicIdx < 0) || (nMagicIdx > nTreeLimit - 0x53) || (memcmp(p + nMagicIdx, "EVB\0", 4) != 0)) return false;
@@ -446,6 +448,7 @@ bool XEnigmaVB::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
         qint64 nCursor = nMagicIdx + 0x53;
         qint32 nScheduledNodes = (qint32)nTopCount;
         qint32 nParsedNodes = 0;
+        QSet<quint32> setNodeIds;
 
         while (!stackRemaining.isEmpty()) {
             if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
@@ -461,8 +464,11 @@ bool XEnigmaVB::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
             }
             nParsedNodes++;
 
+            const quint32 nNodeId = evbRd32(p + nCursor);
             const quint32 nType = evbRd32(p + nCursor + 4);
             const quint32 nChildren = evbRd32(p + nCursor + 8);
+            if (setNodeIds.contains(nNodeId)) return false;
+            setNodeIds.insert(nNodeId);
             nCursor += 12;
 
             // UTF-16LE NUL-terminated node name.
@@ -527,8 +533,8 @@ bool XEnigmaVB::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
             if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
             const TmpRec &record = listTmp.at(i);
-            if ((record.nOrig > (quint64)EVB_MAX_FILE_SIZE) || (nRunning < 0) || (nRunning > n) ||
-                (record.nStored > (quint64)(n - nRunning)) ||
+            if ((record.nOrig > (quint64)EVB_MAX_FILE_SIZE) || (nRunning < 0) || (nRunning > nTreeLimit) ||
+                (record.nStored > (quint64)(nTreeLimit - nRunning)) ||
                 (record.nOrig > (quint64)(EVB_MAX_TOTAL_OUTPUT - nTotalOutput))) {
                 return false;
             }
@@ -558,6 +564,24 @@ bool XEnigmaVB::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
             nTotalOutput += entry.baData.size();
             pContext->listEntries.append(entry);
             nRunning += (qint64)record.nStored;
+        }
+
+        // The VFS and every declared blob live wholly inside .enigma1.  EVB
+        // terminates a non-empty blob stream with 0x16 and zero-fills the rest
+        // of the physical section; an empty VFS has zero padding directly.
+        // Authenticating that tail prevents a shortened/extended stored-size
+        // field from silently re-partitioning adjacent blobs or consuming the
+        // .enigma2 loader as file content.
+        if (!listTmp.isEmpty()) {
+            if ((nRunning >= nTreeLimit) || (p[nRunning] != 0x16)) return false;
+            nRunning++;
+        }
+        while (nRunning < nTreeLimit) {
+            if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+            const qint64 nChunkEnd = qMin<qint64>(nTreeLimit, nRunning + (1ll << 20));
+            for (; nRunning < nChunkEnd; nRunning++) {
+                if (p[nRunning] != 0) return false;
+            }
         }
 
         if (!XBinary::isPdStructNotCanceled(pPdStruct) || (pContext->listEntries.size() != listTmp.size())) return false;
@@ -594,13 +618,16 @@ bool XEnigmaVB::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT
     if ((nIndex < 0) || (nIndex >= pContext->listEntries.size())) return false;
 
     const QByteArray &baData = pContext->listEntries.at(nIndex).baData;
+    if (!pDevice->isSequential() && (!pDevice->seek(0) || ((pDevice->size() != 0) && !XBinary::resize(pDevice, 0)))) return false;
     qint64 nWritten = 0;
+    pState->nCurrentOffset = 0;
     while (nWritten < baData.size()) {
         if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
         const qint64 nChunk = qMin<qint64>(1ll << 20, baData.size() - nWritten);
         const qint64 nResult = pDevice->write(baData.constData() + nWritten, nChunk);
         if ((nResult <= 0) || (nResult > nChunk)) return false;
         nWritten += nResult;
+        pState->nCurrentOffset = nWritten;
     }
 
     return XBinary::isPdStructNotCanceled(pPdStruct);
@@ -612,6 +639,7 @@ bool XEnigmaVB::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
     if ((pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pContext->listEntries.size() - 1)) return false;
     pState->nCurrentIndex++;
+    pState->nCurrentOffset = 0;
     return true;
 }
 
@@ -624,7 +652,10 @@ bool XEnigmaVB::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         pState->pContext = nullptr;
     }
     pState->nCurrentOffset = 0;
+    pState->nTotalSize = 0;
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
+    pState->mapUnpackProperties.clear();
+    pState->mapArchiveProperties.clear();
     return true;
 }

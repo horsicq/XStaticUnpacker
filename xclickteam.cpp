@@ -30,6 +30,7 @@ XClickteam::~XClickteam()
 
 bool XClickteam::isValid(PDSTRUCT *pPdStruct)
 {
+    if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
     return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
@@ -49,9 +50,17 @@ bool XClickteam::handleInternalInfo(PDSTRUCT *pPdStruct)
 {
     if (!isInternalInfoHandled()) {
         m_internalInfo = INTERNAL_INFO();
-        setIsInternalInfoHandled(true);
         m_internalInfo = _getInternalInfo(pPdStruct);
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
+            m_internalInfo = INTERNAL_INFO();
+            return false;
+        }
         m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
+            m_internalInfo = INTERNAL_INFO();
+            return false;
+        }
+        setIsInternalInfoHandled(true);
         XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
     }
 
@@ -83,6 +92,11 @@ XBinary::FT XClickteam::getFileType()
 }
 
 static inline quint32 ctRd32(const quint8 *p);
+static const qint64 CT_MAX_CONTAINER_SIZE = 512ll << 20;
+static const qint64 CT_MAX_FILE_SIZE = 256ll << 20;
+static const qint64 CT_MAX_TOTAL_OUTPUT = 512ll << 20;
+static const qint32 CT_MAX_FILE_COUNT = 65536;
+static const qint32 CT_MAX_DIRECTORY_ENTRIES = 100000;
 
 XClickteam::INTERNAL_INFO XClickteam::_detect(PDSTRUCT *pPdStruct)
 {
@@ -105,7 +119,7 @@ XClickteam::INTERNAL_INFO XClickteam::_detect(PDSTRUCT *pPdStruct)
         nContainerEnd = osSignature.nOffset;
     }
     const qint64 nContainerSize = nContainerEnd - nOverlayOffset;
-    if (nContainerSize < 18) return result;
+    if ((nContainerSize < 18) || (nContainerSize > CT_MAX_CONTAINER_SIZE)) return result;
 
     // "wwgT)" tag at the overlay start (Install Creator 2 payload container).
     QByteArray baHead = read_array_process(nOverlayOffset, qMin<qint64>(19, nContainerSize), pPdStruct);
@@ -139,11 +153,6 @@ XClickteam::INTERNAL_INFO XClickteam::_detect(PDSTRUCT *pPdStruct)
 // extraction (zlib chunks; installed files live in the last "compound" chunk)
 // ---------------------------------------------------------------------------
 
-static const qint64 CT_MAX_CONTAINER_SIZE = 512ll << 20;
-static const qint64 CT_MAX_FILE_SIZE = 256ll << 20;
-static const qint64 CT_MAX_TOTAL_OUTPUT = 512ll << 20;
-static const qint32 CT_MAX_FILE_COUNT = 65536;
-
 static inline quint32 ctRd32(const quint8 *p)
 {
     return (quint32)(p[0] | ((quint32)p[1] << 8) | ((quint32)p[2] << 16) | ((quint32)p[3] << 24));
@@ -160,13 +169,16 @@ static bool ctIsSafeBaseName(const QString &sName)
         if (sForbidden.contains(character) || !character.isPrint()) return false;
     }
 
-    const QString sStem = sName.section('.', 0, 0).toUpper();
+    QString sStem = sName.section('.', 0, 0).toUpper();
+    sStem.replace(QChar(0x00B9), QLatin1Char('1'));
+    sStem.replace(QChar(0x00B2), QLatin1Char('2'));
+    sStem.replace(QChar(0x00B3), QLatin1Char('3'));
     static const QSet<QString> setReserved = {
         QStringLiteral("CON"),  QStringLiteral("PRN"),  QStringLiteral("AUX"),  QStringLiteral("NUL"),  QStringLiteral("COM1"),
         QStringLiteral("COM2"), QStringLiteral("COM3"), QStringLiteral("COM4"), QStringLiteral("COM5"), QStringLiteral("COM6"),
         QStringLiteral("COM7"), QStringLiteral("COM8"), QStringLiteral("COM9"), QStringLiteral("LPT1"), QStringLiteral("LPT2"),
         QStringLiteral("LPT3"), QStringLiteral("LPT4"), QStringLiteral("LPT5"), QStringLiteral("LPT6"), QStringLiteral("LPT7"),
-        QStringLiteral("LPT8"), QStringLiteral("LPT9")};
+        QStringLiteral("LPT8"), QStringLiteral("LPT9"), QStringLiteral("CONIN$"), QStringLiteral("CONOUT$"), QStringLiteral("CLOCK$")};
     return !setReserved.contains(sStem);
 }
 
@@ -336,7 +348,7 @@ static bool ctApplyTocNames(XClickteam::UNPACK_CONTEXT *pContext, const QByteArr
 }
 
 static bool ctReadSeparateVolume(QIODevice *pDevice, qint64 nDeclaredRegionSize, XClickteam::UNPACK_CONTEXT *pContext,
-                                 XBinary::PDSTRUCT *pPdStruct)
+                                  XBinary::PDSTRUCT *pPdStruct)
 {
     if (!pContext || (nDeclaredRegionSize <= 0) || (nDeclaredRegionSize > CT_MAX_CONTAINER_SIZE - 4) ||
         !XBinary::isPdStructNotCanceled(pPdStruct)) {
@@ -349,26 +361,62 @@ static bool ctReadSeparateVolume(QIODevice *pDevice, qint64 nDeclaredRegionSize,
     QFileInfo inputInfo(pInputFile->fileName());
     if (inputInfo.fileName().isEmpty()) return false;
 
-    QString sVolumeName = inputInfo.absolutePath() + QDir::separator() + inputInfo.completeBaseName() + ".D01";
-    QFileInfo volumeInfo(sVolumeName);
-    if (!volumeInfo.exists() || !volumeInfo.isFile() || volumeInfo.isSymLink()) return false;
-
     QString sCanonicalDirectory = QFileInfo(inputInfo.absolutePath()).canonicalFilePath();
-    QString sCanonicalVolume = volumeInfo.canonicalFilePath();
-    if (sCanonicalDirectory.isEmpty() || sCanonicalVolume.isEmpty()) return false;
+    if (sCanonicalDirectory.isEmpty()) return false;
 #if defined(Q_OS_WIN) || defined(Q_OS_MAC)
     const Qt::CaseSensitivity pathCaseSensitivity = Qt::CaseInsensitive;
 #else
     const Qt::CaseSensitivity pathCaseSensitivity = Qt::CaseSensitive;
 #endif
-    if (QFileInfo(sCanonicalVolume).absolutePath().compare(sCanonicalDirectory, pathCaseSensitivity) != 0) return false;
+
+    // Resolve the declared sibling through a bounded directory enumeration.
+    // This makes case-folding deterministic and rejects ambiguous aliases
+    // instead of letting QFile choose an arbitrary directory entry.
+    const QString sExpectedName = inputInfo.completeBaseName() + ".D01";
+    QDir inputDirectory(inputInfo.absolutePath());
+    const QFileInfoList listDirectoryEntries =
+        inputDirectory.entryInfoList(QDir::Files | QDir::System | QDir::Hidden | QDir::NoDotAndDotDot, QDir::Name);
+    if (listDirectoryEntries.size() > CT_MAX_DIRECTORY_ENTRIES) return false;
+
+    QFileInfo volumeInfo;
+    qint32 nMatchingEntries = 0;
+    for (const QFileInfo &candidate : listDirectoryEntries) {
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+        if (candidate.fileName().compare(sExpectedName, pathCaseSensitivity) != 0) continue;
+        nMatchingEntries++;
+        if (nMatchingEntries > 1) return false;
+        volumeInfo = candidate;
+    }
+    if ((nMatchingEntries != 1) || !volumeInfo.exists() || !volumeInfo.isFile() || !volumeInfo.isReadable() || volumeInfo.isSymLink()) return false;
+
+    QString sCanonicalVolume = volumeInfo.canonicalFilePath();
+    QString sCanonicalInput = inputInfo.canonicalFilePath();
+    if (sCanonicalVolume.isEmpty() ||
+        (QFileInfo(sCanonicalVolume).absolutePath().compare(sCanonicalDirectory, pathCaseSensitivity) != 0) ||
+        (!sCanonicalInput.isEmpty() && (sCanonicalVolume.compare(sCanonicalInput, pathCaseSensitivity) == 0))) {
+        return false;
+    }
 
     qint64 nVolumeSize = volumeInfo.size();
     if ((nVolumeSize != nDeclaredRegionSize + 4) || (nVolumeSize < 5) || (nVolumeSize > CT_MAX_CONTAINER_SIZE)) return false;
 
-    QFile volumeFile(sVolumeName);
+    QFile volumeFile(sCanonicalVolume);
     if (!volumeFile.open(QIODevice::ReadOnly) || (volumeFile.size() != nVolumeSize)) return false;
-    QByteArray baVolume = volumeFile.read(nVolumeSize);
+    QByteArray baVolume;
+    baVolume.reserve((int)nVolumeSize);
+    while ((qint64)baVolume.size() < nVolumeSize) {
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
+            volumeFile.close();
+            return false;
+        }
+        qint64 nToRead = qMin(Q_INT64_C(1024) * 1024, nVolumeSize - (qint64)baVolume.size());
+        QByteArray baChunk = volumeFile.read(nToRead);
+        if (baChunk.isEmpty() || (baChunk.size() > nToRead)) {
+            volumeFile.close();
+            return false;
+        }
+        baVolume.append(baChunk);
+    }
     bool bExactRead = (baVolume.size() == nVolumeSize) && volumeFile.atEnd() && (volumeFile.size() == nVolumeSize);
     volumeFile.close();
     if (!bExactRead || !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
@@ -388,7 +436,10 @@ static bool ctReadSeparateVolume(QIODevice *pDevice, qint64 nDeclaredRegionSize,
         if (nMethod != 1) return false;
         QByteArray baFile;
         qint64 nConsumed = 0;
-        if (!ctInflate(p + q + 1, nEnd - (q + 1), CT_MAX_FILE_SIZE, &baFile, &nConsumed, pPdStruct) || (nConsumed <= 0) ||
+        qint64 nRemainingOutput = CT_MAX_TOTAL_OUTPUT - pContext->nTotalOutput;
+        if ((nRemainingOutput < 0) ||
+            !ctInflate(p + q + 1, nEnd - (q + 1), qMin(CT_MAX_FILE_SIZE, nRemainingOutput), &baFile, &nConsumed, pPdStruct) ||
+            (nConsumed <= 0) ||
             (nConsumed > nEnd - (q + 1))) {
             return false;
         }
@@ -478,7 +529,9 @@ bool XClickteam::_buildEntries(UNPACK_CONTEXT *pContext, qint64 nContainerOffset
                     QByteArray baFile;
                     qint64 nFileConsumed = 0;
                     qint64 nAvailable = nRegionEnd - (q + 1);
-                    if (!ctInflate(p + q + 1, nAvailable, CT_MAX_FILE_SIZE, &baFile, &nFileConsumed, pPdStruct) ||
+                    qint64 nRemainingOutput = CT_MAX_TOTAL_OUTPUT - compoundContext.nTotalOutput;
+                    if ((nRemainingOutput < 0) ||
+                        !ctInflate(p + q + 1, nAvailable, qMin(CT_MAX_FILE_SIZE, nRemainingOutput), &baFile, &nFileConsumed, pPdStruct) ||
                         (nFileConsumed <= 0) || (nFileConsumed > nAvailable) || !ctAppendFile(&compoundContext, baFile)) {
                         return false;
                     }
@@ -526,6 +579,7 @@ bool XClickteam::_buildEntries(UNPACK_CONTEXT *pContext, qint64 nContainerOffset
 bool XClickteam::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
+    if (pState->pContext && !finishUnpack(pState, pPdStruct)) return false;
 
     pState->nCurrentOffset = 0;
     pState->nTotalSize = getSize();
@@ -533,6 +587,7 @@ bool XClickteam::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVaria
     pState->nNumberOfRecords = 0;
     pState->pContext = nullptr;
     pState->mapUnpackProperties = mapProperties;
+    pState->mapArchiveProperties.clear();
 
     INTERNAL_INFO info = _detect(pPdStruct);
     if (!info.bIsValid || (info.nContainerOffset < 0)) return false;
@@ -550,9 +605,8 @@ bool XClickteam::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVaria
 
 XBinary::ARCHIVERECORD XClickteam::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(pPdStruct)
     ARCHIVERECORD result = {};
-    if (!pState || !pState->pContext) return result;
+    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct)) return result;
     UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
     qint32 nIndex = pState->nCurrentIndex;
     if ((nIndex < 0) || (nIndex >= pContext->listEntries.size())) return result;
@@ -573,6 +627,7 @@ bool XClickteam::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUC
     if ((nIndex < 0) || (nIndex >= pContext->listEntries.size())) return false;
 
     const QByteArray &baData = pContext->listEntries.at(nIndex).baData;
+    if (!pDevice->isSequential() && (!pDevice->seek(0) || ((pDevice->size() != 0) && !XBinary::resize(pDevice, 0)))) return false;
     qint64 nWritten = 0;
     pState->nCurrentOffset = 0;
     while (nWritten < baData.size()) {
@@ -606,7 +661,10 @@ bool XClickteam::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         pState->pContext = nullptr;
     }
     pState->nCurrentOffset = 0;
+    pState->nTotalSize = 0;
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
+    pState->mapUnpackProperties.clear();
+    pState->mapArchiveProperties.clear();
     return true;
 }

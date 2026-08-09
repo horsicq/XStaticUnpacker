@@ -40,6 +40,7 @@ const quint64 IS_MAX_TOTAL_DECODED_SIZE = Q_UINT64_C(256) * 1024 * 1024;
 const qint64 IS_MAX_PACKED_STUB_SIZE = Q_INT64_C(64) * 1024 * 1024;
 const qint64 IS_MAX_UNPACKED_STUB_SIZE = Q_INT64_C(32) * 1024 * 1024;
 const qint64 IS_MAX_ENCODED_ARCHIVE_SIZE = Q_INT64_C(256) * 1024 * 1024;
+const qint64 IS_MAX_ENCODED_RECORD_SIZE = (qint64)IS_OUTPUT - IS_INPUT;
 
 class ISBoundedBuffer : public QBuffer {
 public:
@@ -59,6 +60,18 @@ private:
 static quint32 isRd32(const quint8 *p)
 {
     return (quint32)p[0] | ((quint32)p[1] << 8) | ((quint32)p[2] << 16) | ((quint32)p[3] << 24);
+}
+
+static qint64 isInstallerDataEnd(XPE *pPe, qint64 nFileSize)
+{
+    if (!pPe || (nFileSize <= 0)) return -1;
+    qint64 nResult = nFileSize;
+    XBinary::OFFSETSIZE osSignature = pPe->getSignOffsetSize();
+    if ((osSignature.nOffset > 0) && (osSignature.nSize > 0) &&
+        (osSignature.nOffset <= nFileSize) && (osSignature.nSize == nFileSize - osSignature.nOffset)) {
+        nResult = osSignature.nOffset;
+    }
+    return nResult;
 }
 
 static bool isMap(XEmuMemoryManager *pMemory, quint32 nAddress, quint64 nSize, bool bExec, const QString &sName)
@@ -273,7 +286,7 @@ static bool isParseManifest(const QByteArray &baData, int nPayloadCount, QString
         QStringLiteral("COM2"), QStringLiteral("COM3"), QStringLiteral("COM4"), QStringLiteral("COM5"), QStringLiteral("COM6"),
         QStringLiteral("COM7"), QStringLiteral("COM8"), QStringLiteral("COM9"), QStringLiteral("LPT1"), QStringLiteral("LPT2"),
         QStringLiteral("LPT3"), QStringLiteral("LPT4"), QStringLiteral("LPT5"), QStringLiteral("LPT6"), QStringLiteral("LPT7"),
-        QStringLiteral("LPT8"), QStringLiteral("LPT9")};
+        QStringLiteral("LPT8"), QStringLiteral("LPT9"), QStringLiteral("CONIN$"), QStringLiteral("CONOUT$"), QStringLiteral("CLOCK$")};
 
     for (int i = 0; i < nPayloadCount; i++) {
         int nEnd = baData.indexOf('\0', nPosition);
@@ -290,6 +303,9 @@ static bool isParseManifest(const QByteArray &baData, int nPayloadCount, QString
             if (sForbidden.contains(character)) return false;
         }
         QString sStem = sName.section('.', 0, 0).toUpper();
+        sStem.replace(QChar(0x00B9), QLatin1Char('1'));
+        sStem.replace(QChar(0x00B2), QLatin1Char('2'));
+        sStem.replace(QChar(0x00B3), QLatin1Char('3'));
         QString sNameKey = sName.toCaseFolded();
         if (setReserved.contains(sStem) || setNames.contains(sNameKey)) return false;
         setNames.insert(sNameKey);
@@ -317,6 +333,7 @@ XInstallSimple::~XInstallSimple()
 
 bool XInstallSimple::isValid(PDSTRUCT *pPdStruct)
 {
+    if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
     return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
@@ -340,7 +357,19 @@ bool XInstallSimple::handleInternalInfo(PDSTRUCT *pPdStruct)
         m_internalInfo = INTERNAL_INFO();
         setIsInternalInfoHandled(true);
         m_internalInfo = _getInternalInfo(pPdStruct);
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
+            m_internalInfo = INTERNAL_INFO();
+            setIsInternalInfoHandled(false);
+            XBinary::setInternalInfo(nullptr);
+            return false;
+        }
         m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
+            m_internalInfo = INTERNAL_INFO();
+            setIsInternalInfoHandled(false);
+            XBinary::setInternalInfo(nullptr);
+            return false;
+        }
         XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
     }
 
@@ -379,7 +408,8 @@ XInstallSimple::INTERNAL_INFO XInstallSimple::_detect(PDSTRUCT *pPdStruct)
     if (!pe.isValid(pPdStruct)) return result;
 
     qint64 nOverlayOffset = pe.getOverlayOffset(pPdStruct);
-    if ((nOverlayOffset <= 0) || (nOverlayOffset >= getSize())) return result;
+    qint64 nDataEnd = isInstallerDataEnd(&pe, getSize());
+    if ((nOverlayOffset <= 0) || (nOverlayOffset >= nDataEnd)) return result;
 
     // The pre-built engine stub is fixed per builder revision -> AEP identifies it.
     quint32 nAEP = (quint32)pe.getOptionalHeader_AddressOfEntryPoint();
@@ -406,17 +436,23 @@ XInstallSimple::INTERNAL_INFO XInstallSimple::_detect(PDSTRUCT *pPdStruct)
     // Validate two independently-coded records. Every valid package contains
     // at least one payload record followed by its manifest (or another payload
     // and then the manifest).
-    QByteArray baFirst = read_array_process(nOverlayOffset, qMin<qint64>(getSize() - nOverlayOffset, 12), pPdStruct);
+    QByteArray baFirst = read_array_process(nOverlayOffset, qMin<qint64>(nDataEnd - nOverlayOffset, 12), pPdStruct);
     if (baFirst.size() != 12) return result;
     quint32 nFirstLength = isRd32((const quint8 *)baFirst.constData());
-    if ((isRd32((const quint8 *)baFirst.constData() + 4) != 0xFFFFFFFF) || (nFirstLength < 12)) return result;
+    if ((isRd32((const quint8 *)baFirst.constData() + 4) != 0xFFFFFFFF) || (nFirstLength < 12) ||
+        ((qint64)nFirstLength - 6 > IS_MAX_ENCODED_RECORD_SIZE - 6)) {
+        return result;
+    }
 
     qint64 nSecondOffset = nOverlayOffset + (qint64)nFirstLength - 6;
-    if ((nSecondOffset + 12 > getSize()) || (nSecondOffset <= nOverlayOffset)) return result;
+    if ((nSecondOffset > nDataEnd - 12) || (nSecondOffset <= nOverlayOffset)) return result;
     QByteArray baSecond = read_array_process(nSecondOffset, 12, pPdStruct);
     if ((baSecond.size() != 12) || (isRd32((const quint8 *)baSecond.constData() + 4) != 0xFFFFFFFF)) return result;
     quint32 nSecondLength = isRd32((const quint8 *)baSecond.constData());
-    if ((nSecondLength < 12) || (nSecondOffset + (qint64)nSecondLength - 6 > getSize())) return result;
+    if ((nSecondLength < 12) || ((qint64)nSecondLength - 6 > IS_MAX_ENCODED_RECORD_SIZE - 6) ||
+        ((qint64)nSecondLength - 6 > nDataEnd - nSecondOffset)) {
+        return result;
+    }
 
     result.bIsValid = true;
     return result;
@@ -425,6 +461,7 @@ XInstallSimple::INTERNAL_INFO XInstallSimple::_detect(PDSTRUCT *pPdStruct)
 bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
+    if (pState->pContext && !finishUnpack(pState, pPdStruct)) return false;
 
     pState->nCurrentOffset = 0;
     pState->nTotalSize = getSize();
@@ -432,6 +469,7 @@ bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
     pState->nNumberOfRecords = 0;
     pState->pContext = nullptr;
     pState->mapUnpackProperties = mapProperties;
+    pState->mapArchiveProperties.clear();
 
     INTERNAL_INFO *pInfo = static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct));
     if ((!pInfo) || (!pInfo->bIsValid) || pInfo->sVersion.isEmpty()) return false;
@@ -439,7 +477,8 @@ bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
     XPE pe(getDevice(), isImage(), getModuleAddress());
     if (!pe.isValid(pPdStruct)) return false;
     qint64 nOverlayOffset = pe.getOverlayOffset(pPdStruct);
-    qint64 nOverlaySize = getSize() - nOverlayOffset;
+    qint64 nDataEnd = isInstallerDataEnd(&pe, getSize());
+    qint64 nOverlaySize = nDataEnd - nOverlayOffset;
     if ((nOverlayOffset <= 0) || (nOverlayOffset > IS_MAX_PACKED_STUB_SIZE) || (nOverlaySize < 12) ||
         (nOverlaySize > IS_MAX_ENCODED_ARCHIVE_SIZE)) {
         return false;
@@ -471,7 +510,7 @@ bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
     if (!bStubUnpacked || (baStub.size() <= 0) || (baStub.size() > IS_MAX_UNPACKED_STUB_SIZE)) return false;
 
     QByteArray baOverlay = read_array_process(nOverlayOffset, nOverlaySize, pPdStruct);
-    if (baOverlay.size() != nOverlaySize) return false;
+    if ((baOverlay.size() != nOverlaySize) || !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
     QList<QByteArray> listPayloads;
     QStringList listNames;
@@ -490,7 +529,10 @@ bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
         if (nLength < 12) return false;
 
         qint64 nBodySize = (qint64)nLength - 6;
-        if ((nBodySize <= 0) || (nPosition + nBodySize > baOverlay.size())) return false;
+        if ((nBodySize <= 0) || (nBodySize > IS_MAX_ENCODED_RECORD_SIZE - 6) ||
+            (nBodySize > baOverlay.size() - nPosition)) {
+            return false;
+        }
 
         // The loader allocates a zeroed buffer and reads the on-disk record at
         // +6. The length dword is therefore part of the coded stream.
@@ -534,9 +576,8 @@ bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
 
 XBinary::ARCHIVERECORD XInstallSimple::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(pPdStruct)
     ARCHIVERECORD result = {};
-    if ((!pState) || (!pState->pContext)) return result;
+    if ((!pState) || (!pState->pContext) || !XBinary::isPdStructNotCanceled(pPdStruct)) return result;
 
     UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
     qint32 nIndex = pState->nCurrentIndex;
@@ -562,6 +603,7 @@ bool XInstallSimple::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDS
     if ((nIndex < 0) || (nIndex >= pContext->listEntries.size())) return false;
 
     const QByteArray &baData = pContext->listEntries.at(nIndex).baData;
+    if (!pDevice->isSequential() && (!pDevice->seek(0) || ((pDevice->size() != 0) && !XBinary::resize(pDevice, 0)))) return false;
     qint64 nWritten = 0;
     pState->nCurrentOffset = 0;
     while (nWritten < baData.size()) {
@@ -596,8 +638,11 @@ bool XInstallSimple::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         pState->pContext = nullptr;
     }
     pState->nCurrentOffset = 0;
+    pState->nTotalSize = 0;
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
+    pState->mapUnpackProperties.clear();
+    pState->mapArchiveProperties.clear();
     return true;
 }
 

@@ -64,7 +64,8 @@ private:
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
     INTERNAL_INFO m_internalInfo;
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);
-    bool _scanRecords(const QByteArray &baRegion, UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
+    bool _scanRecords(const QByteArray &baRegion, const QSet<QString> &setDeclaredNames, UNPACK_CONTEXT *pContext,
+                      PDSTRUCT *pPdStruct);
 };
 
 #endif  // XBOXEDAPP_H

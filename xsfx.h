@@ -64,7 +64,7 @@ private:
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
     INTERNAL_INFO m_internalInfo;
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);
-    bool _matchArchiveAt(qint64 nOffset, qint64 nSize, ARCTYPE *pType, PDSTRUCT *pPdStruct);
+    bool _matchArchiveAt(qint64 nOffset, qint64 nSize, ARCTYPE *pType, qint64 *pArchiveSize, PDSTRUCT *pPdStruct);
     XArchive *_createArchive(ARCTYPE arcType, QIODevice *pDevice);
 };
 

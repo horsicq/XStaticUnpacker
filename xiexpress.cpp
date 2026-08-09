@@ -14,6 +14,7 @@
 
 XIExpress::XIExpress(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : XBinary(pDevice, bIsImage, nModuleAddress)
 {
+    m_internalInfo = INTERNAL_INFO();
     setIsArchive(true);
 }
 
@@ -23,6 +24,7 @@ XIExpress::~XIExpress()
 
 bool XIExpress::isValid(PDSTRUCT *pPdStruct)
 {
+    if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
     return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
@@ -41,10 +43,12 @@ XIExpress::INTERNAL_INFO XIExpress::_getInternalInfo(PDSTRUCT *pPdStruct)
 bool XIExpress::handleInternalInfo(PDSTRUCT *pPdStruct)
 {
     if (!isInternalInfoHandled()) {
-        m_internalInfo = INTERNAL_INFO();
+        INTERNAL_INFO info = _getInternalInfo(pPdStruct);
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+        info.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+        m_internalInfo = info;
         setIsInternalInfoHandled(true);
-        m_internalInfo = _getInternalInfo(pPdStruct);
-        m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
     }
 
@@ -84,9 +88,21 @@ XIExpress::INTERNAL_INFO XIExpress::_detect(PDSTRUCT *pPdStruct)
     if (!pe.isValid(pPdStruct)) return result;
 
     QList<XPE::RESOURCE_RECORD> listResources = pe.getResources(10000, pPdStruct);
+    if ((listResources.size() >= 10000) || !XBinary::isPdStructNotCanceled(pPdStruct)) return result;
 
     // The MSCF cabinet lives in RT_RCDATA "CABINET".
-    XPE::RESOURCE_RECORD rrCab = XPE::getResourceRecord(IEXPRESS_RT_RCDATA, "CABINET", &listResources);
+    XPE::RESOURCE_RECORD rrCab = {};
+    rrCab.nOffset = -1;
+    for (const XPE::RESOURCE_RECORD &record : listResources) {
+        if (record.irin[0].bIsName || !record.irin[1].bIsName ||
+            (record.irin[0].nID != IEXPRESS_RT_RCDATA) || (record.irin[1].sName != QStringLiteral("CABINET"))) continue;
+        if (rrCab.nOffset < 0) {
+            rrCab = record;
+        } else if ((rrCab.nOffset != record.nOffset) || (rrCab.nSize != record.nSize)) {
+            // Different language entries must not select ambiguous payloads.
+            return result;
+        }
+    }
     qint64 nTotalSize = getSize();
     if ((rrCab.nOffset <= 0) || (rrCab.nSize < (qint64)sizeof(XCab::CFHEADER)) || (rrCab.nOffset > nTotalSize) ||
         (rrCab.nSize > nTotalSize - rrCab.nOffset)) {
@@ -97,9 +113,28 @@ XIExpress::INTERNAL_INFO XIExpress::_detect(PDSTRUCT *pPdStruct)
     if (baMagic != QByteArray("MSCF", 4)) return result;
 
     // Harden: a Wextract-only sibling resource / marker (kills generic cab-in-resource).
-    XPE::RESOURCE_RECORD rrRun = XPE::getResourceRecord(IEXPRESS_RT_RCDATA, "RUNPROGRAM", &listResources);
-    bool bWextract = (rrRun.nOffset > 0) || (find_ansiStringI(0, getSize(), "wextract", pPdStruct) != -1) ||
-                     (find_ansiString(0, getSize(), "IExpress extraction tool", pPdStruct) != -1);
+    const qint64 nCabinetEnd = rrCab.nOffset + rrCab.nSize;
+    bool bRunResource = false;
+    for (const XPE::RESOURCE_RECORD &record : listResources) {
+        if (!record.irin[0].bIsName && record.irin[1].bIsName &&
+            (record.irin[0].nID == IEXPRESS_RT_RCDATA) && (record.irin[1].sName == QStringLiteral("RUNPROGRAM")) &&
+            (record.nOffset > 0) && (record.nSize > 0) && (record.nSize <= (1 << 20)) && (record.nOffset <= nTotalSize) &&
+            (record.nSize <= nTotalSize - record.nOffset) &&
+            (((record.nOffset + record.nSize) <= rrCab.nOffset) || (record.nOffset >= nCabinetEnd))) {
+            bRunResource = true;
+            break;
+        }
+    }
+    auto findStubString = [&](const QString &sString, bool bCaseInsensitive) -> bool {
+        qint64 nFound = bCaseInsensitive ? find_ansiStringI(0, rrCab.nOffset, sString, pPdStruct)
+                                         : find_ansiString(0, rrCab.nOffset, sString, pPdStruct);
+        if (nFound != -1) return true;
+        nFound = bCaseInsensitive ? find_ansiStringI(nCabinetEnd, nTotalSize - nCabinetEnd, sString, pPdStruct)
+                                  : find_ansiString(nCabinetEnd, nTotalSize - nCabinetEnd, sString, pPdStruct);
+        return nFound != -1;
+    };
+    bool bWextract = bRunResource || findStubString(QStringLiteral("wextract"), true) ||
+                     findStubString(QStringLiteral("IExpress extraction tool"), false);
     if (!bWextract) return result;
 
     // Authenticate the complete cabinet table during detection.  A resource
@@ -111,20 +146,25 @@ XIExpress::INTERNAL_INFO XIExpress::_detect(PDSTRUCT *pPdStruct)
     UNPACK_STATE state = {};
     QMap<UNPACK_PROP, QVariant> mapProperties;
     bool bCabinetValid = cabinet.initUnpack(&state, mapProperties, pPdStruct);
+    qint64 nLogicalCabinetSize = 0;
     if (bCabinetValid) {
-        cabinet.finishUnpack(&state, pPdStruct);
+        nLogicalCabinetSize = cabinet.getFileFormatSize(pPdStruct);
+        bCabinetValid = cabinet.finishUnpack(&state, pPdStruct);
     }
     cabinetDevice.close();
 
-    if (!bCabinetValid || !XBinary::isPdStructNotCanceled(pPdStruct)) return result;
+    if (!bCabinetValid || (nLogicalCabinetSize < (qint64)sizeof(XCab::CFHEADER)) ||
+        (nLogicalCabinetSize > rrCab.nSize) || !XBinary::isPdStructNotCanceled(pPdStruct)) return result;
 
     result.bIsValid = true;
     result.nArchiveOffset = rrCab.nOffset;
-    result.nArchiveSize = rrCab.nSize;
+    result.nArchiveSize = nLogicalCabinetSize;
 
     QString sVer = pe.getResourcesVersionValue("FileVersion").trimmed();
     if (sVer.isEmpty()) sVer = pe.getFileVersion().trimmed();
     result.sVersion = sVer;
+
+    if (!XBinary::isPdStructNotCanceled(pPdStruct)) result.bIsValid = false;
 
     return result;
 }
@@ -141,12 +181,10 @@ QMap<XBinary::UNPACK_PROP, QVariant> XIExpress::getDefaultUnpackProperties()
 bool XIExpress::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
+    if (pState->pContext && !finishUnpack(pState, pPdStruct)) return false;
+    if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
-    pState->nCurrentOffset = 0;
-    pState->nTotalSize = getSize();
-    pState->nCurrentIndex = 0;
-    pState->nNumberOfRecords = 0;
-    pState->pContext = nullptr;
+    *pState = UNPACK_STATE();
     pState->mapUnpackProperties = mapProperties;
 
     INTERNAL_INFO info = _detect(pPdStruct);
@@ -173,6 +211,7 @@ bool XIExpress::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
     }
 
     pState->nNumberOfRecords = pContext->innerState.nNumberOfRecords;
+    pState->nTotalSize = getSize();
     pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
     pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
     pState->pContext = pContext;
@@ -182,7 +221,8 @@ bool XIExpress::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
 XBinary::ARCHIVERECORD XIExpress::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
     ARCHIVERECORD result = {};
-    if (!pState || !pState->pContext) return result;
+    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) ||
+        (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) return result;
     UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
     if (!pContext->pArchive) return result;
     pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
@@ -191,22 +231,28 @@ XBinary::ARCHIVERECORD XIExpress::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pP
 
 bool XIExpress::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
-    if (!pState || !pState->pContext || !pDevice) return false;
+    if (!pState || !pState->pContext || !pDevice || !pDevice->isWritable() || !XBinary::isPdStructNotCanceled(pPdStruct) ||
+        (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) return false;
     UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
     if (!pContext->pArchive) return false;
     pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
-    return pContext->pArchive->unpackCurrent(&pContext->innerState, pDevice, pPdStruct);
+    bool bResult = pContext->pArchive->unpackCurrent(&pContext->innerState, pDevice, pPdStruct);
+    pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
+    pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
+    return bResult;
 }
 
 bool XIExpress::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
-    if (!pState || !pState->pContext) return false;
+    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) ||
+        (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) return false;
     UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
     if (!pContext->pArchive) return false;
     pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
     bool bResult = pContext->pArchive->moveToNext(&pContext->innerState, pPdStruct);
     pState->nCurrentIndex = pContext->innerState.nCurrentIndex;
     pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
+    pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
     return bResult;
 }
 
@@ -228,7 +274,10 @@ bool XIExpress::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         pState->pContext = nullptr;
     }
     pState->nCurrentOffset = 0;
+    pState->nTotalSize = 0;
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
+    pState->mapUnpackProperties.clear();
+    pState->mapArchiveProperties.clear();
     return bResult;
 }

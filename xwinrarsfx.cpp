@@ -11,6 +11,7 @@
 
 XWinRarSfx::XWinRarSfx(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : XBinary(pDevice, bIsImage, nModuleAddress)
 {
+    m_internalInfo = INTERNAL_INFO();
     setIsArchive(true);
 }
 
@@ -20,6 +21,7 @@ XWinRarSfx::~XWinRarSfx()
 
 bool XWinRarSfx::isValid(PDSTRUCT *pPdStruct)
 {
+    if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
     return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
@@ -38,10 +40,12 @@ XWinRarSfx::INTERNAL_INFO XWinRarSfx::_getInternalInfo(PDSTRUCT *pPdStruct)
 bool XWinRarSfx::handleInternalInfo(PDSTRUCT *pPdStruct)
 {
     if (!isInternalInfoHandled()) {
-        m_internalInfo = INTERNAL_INFO();
+        INTERNAL_INFO info = _getInternalInfo(pPdStruct);
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+        info.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+        m_internalInfo = info;
         setIsInternalInfoHandled(true);
-        m_internalInfo = _getInternalInfo(pPdStruct);
-        m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
     }
 
@@ -110,6 +114,8 @@ XWinRarSfx::INTERNAL_INFO XWinRarSfx::_detect(PDSTRUCT *pPdStruct)
     subDevice.close();
     if (!archiveInfo.bIsValid || (nLogicalArchiveSize <= 0) || (nLogicalArchiveSize > nArchiveSize)) return result;
 
+    if (!XBinary::isPdStructNotCanceled(pPdStruct)) return result;
+
     result.bIsValid = true;
     result.nArchiveOffset = nOverlayOffset;
     result.nArchiveSize = nLogicalArchiveSize;
@@ -117,6 +123,8 @@ XWinRarSfx::INTERNAL_INFO XWinRarSfx::_detect(PDSTRUCT *pPdStruct)
     QString sVer = pe.getResourcesVersionValue("FileVersion").trimmed();  // console modules only
     if (sVer.isEmpty()) sVer = pe.getFileVersion().trimmed();
     result.sVersion = sVer;
+
+    if (!XBinary::isPdStructNotCanceled(pPdStruct)) result.bIsValid = false;
 
     return result;
 }
@@ -162,12 +170,10 @@ QMap<XBinary::UNPACK_PROP, QVariant> XWinRarSfx::getDefaultUnpackProperties()
 bool XWinRarSfx::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
+    if (pState->pContext && !finishUnpack(pState, pPdStruct)) return false;
+    if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
-    pState->nCurrentOffset = 0;
-    pState->nTotalSize = getSize();
-    pState->nCurrentIndex = 0;
-    pState->nNumberOfRecords = 0;
-    pState->pContext = nullptr;
+    *pState = UNPACK_STATE();
     pState->mapUnpackProperties = mapProperties;
 
     INTERNAL_INFO info = _detect(pPdStruct);
@@ -194,6 +200,9 @@ bool XWinRarSfx::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVaria
     }
 
     pState->nNumberOfRecords = pContext->innerState.nNumberOfRecords;
+    pState->nTotalSize = getSize();
+    pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
+    pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
     pState->pContext = pContext;
     return true;
 }
@@ -201,7 +210,8 @@ bool XWinRarSfx::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVaria
 XBinary::ARCHIVERECORD XWinRarSfx::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
     ARCHIVERECORD result = {};
-    if (!pState || !pState->pContext) return result;
+    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) ||
+        (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) return result;
     UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
     if (!pContext->pArchive) return result;
     pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
@@ -210,21 +220,28 @@ XBinary::ARCHIVERECORD XWinRarSfx::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *p
 
 bool XWinRarSfx::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
-    if (!pState || !pState->pContext || !pDevice) return false;
+    if (!pState || !pState->pContext || !pDevice || !pDevice->isWritable() || !XBinary::isPdStructNotCanceled(pPdStruct) ||
+        (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) return false;
     UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
     if (!pContext->pArchive) return false;
     pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
-    return pContext->pArchive->unpackCurrent(&pContext->innerState, pDevice, pPdStruct);
+    bool bResult = pContext->pArchive->unpackCurrent(&pContext->innerState, pDevice, pPdStruct);
+    pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
+    pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
+    return bResult;
 }
 
 bool XWinRarSfx::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
-    if (!pState || !pState->pContext) return false;
+    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) ||
+        (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) return false;
     UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
     if (!pContext->pArchive) return false;
     pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
     bool bResult = pContext->pArchive->moveToNext(&pContext->innerState, pPdStruct);
     pState->nCurrentIndex = pContext->innerState.nCurrentIndex;
+    pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
+    pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
     return bResult;
 }
 
@@ -247,7 +264,10 @@ bool XWinRarSfx::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         pState->pContext = nullptr;
     }
     pState->nCurrentOffset = 0;
+    pState->nTotalSize = 0;
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
+    pState->mapUnpackProperties.clear();
+    pState->mapArchiveProperties.clear();
     return bResult;
 }

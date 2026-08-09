@@ -35,6 +35,7 @@ public:
         qint32 nCabinetIndex;
         qint32 nCabinetRecordIndex;
         qint32 nSequence;
+        qint32 nTableOrder;
         qint64 nSize;
         QString sName;
         QString sExternalPath;

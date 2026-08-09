@@ -21,6 +21,7 @@ static const qint64 SI_MAX_ARCHIVE_SIZE = 256ll << 20;
 static const qint32 SI_MAX_COMPANION_VOLUMES = 256;
 static const qint32 SI_MAX_CONFIG_FIELDS = 0x40000;
 static const qint32 SI_MAX_FILE_COUNT = 0x10000;
+static const qint32 SI_MAX_DIRECTORY_ENTRIES = 100000;
 
 XSmartInstall::XSmartInstall(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : XBinary(pDevice, bIsImage, nModuleAddress)
 {
@@ -33,6 +34,7 @@ XSmartInstall::~XSmartInstall()
 
 bool XSmartInstall::isValid(PDSTRUCT *pPdStruct)
 {
+    if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
     return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
 }
 
@@ -52,9 +54,17 @@ bool XSmartInstall::handleInternalInfo(PDSTRUCT *pPdStruct)
 {
     if (!isInternalInfoHandled()) {
         m_internalInfo = INTERNAL_INFO();
-        setIsInternalInfoHandled(true);
         m_internalInfo = _getInternalInfo(pPdStruct);
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
+            m_internalInfo = INTERNAL_INFO();
+            return false;
+        }
         m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
+            m_internalInfo = INTERNAL_INFO();
+            return false;
+        }
+        setIsInternalInfoHandled(true);
         XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
     }
 
@@ -198,7 +208,7 @@ static QString siManifestPath(const QByteArray &baValue)
         QStringLiteral("COM2"), QStringLiteral("COM3"), QStringLiteral("COM4"), QStringLiteral("COM5"), QStringLiteral("COM6"),
         QStringLiteral("COM7"), QStringLiteral("COM8"), QStringLiteral("COM9"), QStringLiteral("LPT1"), QStringLiteral("LPT2"),
         QStringLiteral("LPT3"), QStringLiteral("LPT4"), QStringLiteral("LPT5"), QStringLiteral("LPT6"), QStringLiteral("LPT7"),
-        QStringLiteral("LPT8"), QStringLiteral("LPT9")};
+        QStringLiteral("LPT8"), QStringLiteral("LPT9"), QStringLiteral("CONIN$"), QStringLiteral("CONOUT$"), QStringLiteral("CLOCK$")};
     const QStringList listComponents = sPath.split('/');
     for (const QString &sComponent : listComponents) {
         if (sComponent.isEmpty() || (sComponent == ".") || (sComponent == "..") || (sComponent.size() > 255) ||
@@ -208,7 +218,11 @@ static QString siManifestPath(const QByteArray &baValue)
         for (QChar character : sComponent) {
             if (sForbidden.contains(character) || !character.isPrint()) return QString();
         }
-        if (setReserved.contains(sComponent.section('.', 0, 0).toUpper())) return QString();
+        QString sStem = sComponent.section('.', 0, 0).toUpper();
+        sStem.replace(QChar(0x00B9), QLatin1Char('1'));
+        sStem.replace(QChar(0x00B2), QLatin1Char('2'));
+        sStem.replace(QChar(0x00B3), QLatin1Char('3'));
+        if (setReserved.contains(sStem)) return QString();
     }
 
     return sPath;
@@ -373,7 +387,7 @@ static bool siCompanionCabRegions(QIODevice *pDevice, const QByteArray &baConfig
                                   XBinary::PDSTRUCT *pPdStruct)
 {
     if (!pListRegions || (nDeclaredSize <= 0) || (nDeclaredSize > SI_MAX_ARCHIVE_SIZE) || !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
-    pListRegions->clear();
+    QList<QByteArray> listRegions;
 
     QFile *pInputFile = qobject_cast<QFile *>(pDevice);
     if (!pInputFile) return false;
@@ -384,7 +398,18 @@ static bool siCompanionCabRegions(QIODevice *pDevice, const QByteArray &baConfig
 
     QFileInfo inputInfo(pInputFile->fileName());
     QDir inputDir(inputInfo.absolutePath());
-    QFileInfoList listFiles = inputDir.entryInfoList(QDir::Files | QDir::Readable, QDir::Name | QDir::IgnoreCase);
+    QString sCanonicalDirectory = QFileInfo(inputDir.absolutePath()).canonicalFilePath();
+    QString sCanonicalInput = inputInfo.canonicalFilePath();
+    if (sCanonicalDirectory.isEmpty()) return false;
+#if defined(Q_OS_WIN) || defined(Q_OS_MAC)
+    const Qt::CaseSensitivity pathCaseSensitivity = Qt::CaseInsensitive;
+#else
+    const Qt::CaseSensitivity pathCaseSensitivity = Qt::CaseSensitive;
+#endif
+
+    QFileInfoList listFiles =
+        inputDir.entryInfoList(QDir::Files | QDir::System | QDir::Hidden | QDir::NoDotAndDotDot, QDir::Name | QDir::IgnoreCase);
+    if (listFiles.size() > SI_MAX_DIRECTORY_ENTRIES) return false;
     QMap<qint32, QFileInfo> mapVolumes;
     qint32 nCandidates = 0;
 
@@ -408,7 +433,12 @@ static bool siCompanionCabRegions(QIODevice *pDevice, const QByteArray &baConfig
                 break;
             }
         }
-        if (!bDecimal || fileInfo.isSymLink()) continue;
+        QString sCanonicalCandidate = fileInfo.canonicalFilePath();
+        if (!bDecimal || fileInfo.isSymLink() || !fileInfo.isReadable() || sCanonicalCandidate.isEmpty() ||
+            (QFileInfo(sCanonicalCandidate).absolutePath().compare(sCanonicalDirectory, pathCaseSensitivity) != 0) ||
+            (!sCanonicalInput.isEmpty() && (sCanonicalCandidate.compare(sCanonicalInput, pathCaseSensitivity) == 0))) {
+            continue;
+        }
 
         bool bNumberValid = false;
         qint32 nVolume = sNumber.toInt(&bNumberValid);
@@ -416,7 +446,7 @@ static bool siCompanionCabRegions(QIODevice *pDevice, const QByteArray &baConfig
 
         qint64 nCandidateSize = fileInfo.size();
         if ((nCandidateSize < 48) || (nCandidateSize > SI_MAX_ARCHIVE_SIZE)) continue;
-        QFile headerFile(fileInfo.absoluteFilePath());
+        QFile headerFile(sCanonicalCandidate);
         if (!headerFile.open(QIODevice::ReadOnly)) continue;
         QByteArray baHeader = headerFile.read(40);
         headerFile.close();
@@ -448,7 +478,12 @@ static bool siCompanionCabRegions(QIODevice *pDevice, const QByteArray &baConfig
         if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
         qint64 nFileSize = it.value().size();
-        QFile file(it.value().absoluteFilePath());
+        QString sCanonicalVolume = it.value().canonicalFilePath();
+        if (sCanonicalVolume.isEmpty() ||
+            (QFileInfo(sCanonicalVolume).absolutePath().compare(sCanonicalDirectory, pathCaseSensitivity) != 0)) {
+            return false;
+        }
+        QFile file(sCanonicalVolume);
         if (!file.open(QIODevice::ReadOnly) || (file.size() != nFileSize)) return false;
 
         QByteArray baRegion;
@@ -460,7 +495,7 @@ static bool siCompanionCabRegions(QIODevice *pDevice, const QByteArray &baConfig
             }
             qint64 nToRead = qMin(Q_INT64_C(1024) * 1024, nFileSize - baRegion.size());
             QByteArray baChunk = file.read(nToRead);
-            if (baChunk.size() != nToRead) {
+            if (baChunk.isEmpty() || (baChunk.size() > nToRead)) {
                 file.close();
                 return false;
             }
@@ -470,10 +505,12 @@ static bool siCompanionCabRegions(QIODevice *pDevice, const QByteArray &baConfig
         file.close();
 
         if (!XBinary::isPdStructNotCanceled(pPdStruct) || !bExactFile || (baRegion.size() != nFileSize) || !siLooksLikeCabRegion(baRegion)) return false;
-        pListRegions->append(baRegion);
+        listRegions.append(baRegion);
     }
 
-    return !pListRegions->isEmpty();
+    if (listRegions.isEmpty()) return false;
+    *pListRegions = listRegions;
+    return true;
 }
 
 XSmartInstall::INTERNAL_INFO XSmartInstall::_detect(PDSTRUCT *pPdStruct)
@@ -586,14 +623,17 @@ static bool simInflate(const quint8 *pSrc, qint64 nSrcLen, const QByteArray &baD
     return true;
 }
 
-static bool siDecodeCabRegion(const QByteArray &baRegion, QList<quint32> *pListSizes, QList<qint32> *pListIndexes, QByteArray *pbaCombined,
-                              XBinary::PDSTRUCT *pPdStruct)
+static bool siDecodeCabRegion(const QByteArray &baRegion, qint64 nMaxOutput, QList<quint32> *pListSizes, QList<qint32> *pListIndexes,
+                              QByteArray *pbaCombined, XBinary::PDSTRUCT *pPdStruct)
 {
-    if (!pListSizes || !pListIndexes || !pbaCombined || !siLooksLikeCabRegion(baRegion) || !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+    if (!pListSizes || !pListIndexes || !pbaCombined || (nMaxOutput < 0) || (nMaxOutput > SI_MAX_ARCHIVE_SIZE) ||
+        !siLooksLikeCabRegion(baRegion) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        return false;
+    }
 
-    pListSizes->clear();
-    pListIndexes->clear();
-    pbaCombined->clear();
+    QList<quint32> listSizes;
+    QList<qint32> listIndexes;
+    QByteArray baCombined;
 
     const quint8 *p = reinterpret_cast<const quint8 *>(baRegion.constData());
     const qint64 nRegionSize = baRegion.size();
@@ -629,9 +669,9 @@ static bool siDecodeCabRegion(const QByteArray &baRegion, QList<quint32> *pListS
         if (!bIndexValid || !siIsDecimalField(baCabName)) return false;
 
         nFileBytes += nFileSize;
-        if (nFileBytes > (quint64)SI_MAX_ARCHIVE_SIZE) return false;
-        pListSizes->append(nFileSize);
-        pListIndexes->append(nNameIndex);
+        if ((nFileBytes > (quint64)SI_MAX_ARCHIVE_SIZE) || (nFileBytes > (quint64)nMaxOutput)) return false;
+        listSizes.append(nFileSize);
+        listIndexes.append(nNameIndex);
         nFilePos = nNameEnd + 1;
     }
 
@@ -670,12 +710,12 @@ static bool siDecodeCabRegion(const QByteArray &baRegion, QList<quint32> *pListS
 
             QByteArray baBlock;
             qint64 nConsumed = 0;
-            QByteArray baDictionary = (pbaCombined->size() > 32768) ? pbaCombined->right(32768) : *pbaCombined;
+            QByteArray baDictionary = (baCombined.size() > 32768) ? baCombined.right(32768) : baCombined;
             if (!simInflate(p + nPayloadPos + 2, nCompressedSize - 2, baDictionary, nUncompressedSize, &baBlock, &nConsumed, pPdStruct) ||
                 (nConsumed != nCompressedSize - 2) || (baBlock.size() != nUncompressedSize)) {
                 return false;
             }
-            pbaCombined->append(baBlock);
+            baCombined.append(baBlock);
         } else {
             baLzxStream.append(reinterpret_cast<const char *>(p + nPayloadPos), nCompressedSize);
         }
@@ -683,21 +723,26 @@ static bool siDecodeCabRegion(const QByteArray &baRegion, QList<quint32> *pListS
         nBlockPos = nPayloadPos + nCompressedSize;
     }
 
-    if ((nBlockBytes != nFileBytes) || (pListSizes->size() != nFiles) || (nBlockPos != nRegionSize)) return false;
+    if ((nBlockBytes != nFileBytes) || (listSizes.size() != nFiles) || (nBlockPos != nRegionSize)) return false;
 
     if ((nMethod == 3) && nBlockBytes) {
         qint32 nWindowBits = (nCompression >> 8) & 0x1f;
-        if (!XLZXDecoder::decompressCABFolder(baLzxStream, pbaCombined, (qint64)nBlockBytes, nWindowBits, pPdStruct)) return false;
+        if (!XLZXDecoder::decompressCABFolder(baLzxStream, &baCombined, (qint64)nBlockBytes, nWindowBits, pPdStruct)) return false;
     } else if (!nBlockBytes && !baLzxStream.isEmpty()) {
         return false;
     }
 
-    return XBinary::isPdStructNotCanceled(pPdStruct) && ((quint64)pbaCombined->size() == nFileBytes);
+    if (!XBinary::isPdStructNotCanceled(pPdStruct) || ((quint64)baCombined.size() != nFileBytes)) return false;
+    *pListSizes = listSizes;
+    *pListIndexes = listIndexes;
+    *pbaCombined = baCombined;
+    return true;
 }
 
 bool XSmartInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
+    if (pState->pContext && !finishUnpack(pState, pPdStruct)) return false;
 
     pState->nCurrentOffset = 0;
     pState->nTotalSize = getSize();
@@ -705,6 +750,7 @@ bool XSmartInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVa
     pState->nNumberOfRecords = 0;
     pState->pContext = nullptr;
     pState->mapUnpackProperties = mapProperties;
+    pState->mapArchiveProperties.clear();
 
     INTERNAL_INFO info = _detect(pPdStruct);
     if (!info.bIsValid || !info.bExtractable || (info.nDataStart < 0)) return false;
@@ -838,7 +884,9 @@ bool XSmartInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVa
             QList<quint32> listSizes;
             QList<qint32> listIndexes;
             QByteArray baCombined;
-            if (!siDecodeCabRegion(listRegions.at(nRegion), &listSizes, &listIndexes, &baCombined, pPdStruct) ||
+            qint64 nRemainingDecoded = SI_MAX_ARCHIVE_SIZE - nTotalDecodedSize;
+            if ((nRemainingDecoded < 0) ||
+                !siDecodeCabRegion(listRegions.at(nRegion), nRemainingDecoded, &listSizes, &listIndexes, &baCombined, pPdStruct) ||
                 (listSizes.size() != listIndexes.size())) {
                 delete pContext;
                 return false;
@@ -888,9 +936,8 @@ bool XSmartInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVa
 
 XBinary::ARCHIVERECORD XSmartInstall::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(pPdStruct)
     ARCHIVERECORD result = {};
-    if (!pState || !pState->pContext) return result;
+    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct)) return result;
     UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
     qint32 nIndex = pState->nCurrentIndex;
     if ((nIndex < 0) || (nIndex >= pContext->listEntries.size())) return result;
@@ -911,6 +958,7 @@ bool XSmartInstall::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDST
     if ((nIndex < 0) || (nIndex >= pContext->listEntries.size())) return false;
 
     const QByteArray &baData = pContext->listEntries.at(nIndex).baData;
+    if (!pDevice->isSequential() && (!pDevice->seek(0) || ((pDevice->size() != 0) && !XBinary::resize(pDevice, 0)))) return false;
     qint64 nWritten = 0;
     pState->nCurrentOffset = 0;
     while (nWritten < baData.size()) {
@@ -943,7 +991,10 @@ bool XSmartInstall::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         pState->pContext = nullptr;
     }
     pState->nCurrentOffset = 0;
+    pState->nTotalSize = 0;
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
+    pState->mapUnpackProperties.clear();
+    pState->mapArchiveProperties.clear();
     return true;
 }
