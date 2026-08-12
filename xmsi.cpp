@@ -1126,7 +1126,7 @@ static bool destroyCabinetContext(XMSI::CAB_CONTEXT *pCabinet, XBinary::PDSTRUCT
 
     bool bResult = true;
     if (pCabinet->pArchive) {
-        if (!pCabinet->pArchive->finishUnpack(&pCabinet->state, pPdStruct)) {
+        if (!pCabinet->pArchive->finishUnpack(&pCabinet->state, nullptr)) {
             bResult = false;
         }
         delete pCabinet->pArchive;
@@ -1520,11 +1520,21 @@ static bool unpackExternalPayloadFile(const XMSI::PAYLOAD_ENTRY &entry, QIODevic
         return false;
     }
 
-    if (!pOutputDevice->isSequential() &&
+    const bool bSeekableOutput = !pOutputDevice->isSequential();
+    auto failOutput = [&]() -> bool {
+        if (bSeekableOutput) {
+            XBinary::resize(pOutputDevice, 0);
+            pOutputDevice->seek(0);
+            *pnWritten = 0;
+        }
+        return false;
+    };
+
+    *pnWritten = 0;
+    if (bSeekableOutput &&
         (!pOutputDevice->seek(0) || ((pOutputDevice->size() != 0) && !XBinary::resize(pOutputDevice, 0)))) {
         return false;
     }
-    *pnWritten = 0;
 
     QByteArray baBuffer;
     baBuffer.resize((qint32)qMin<qint64>(1 << 20, qMax<qint64>(1, entry.nSize)));
@@ -1536,7 +1546,7 @@ static bool unpackExternalPayloadFile(const XMSI::PAYLOAD_ENTRY &entry, QIODevic
         while (nRead < nToRead) {
             const qint64 nResult = file.read(baBuffer.data() + nRead, nToRead - nRead);
             if (nResult <= 0) {
-                return false;
+                return failOutput();
             }
             nRead += nResult;
         }
@@ -1546,7 +1556,7 @@ static bool unpackExternalPayloadFile(const XMSI::PAYLOAD_ENTRY &entry, QIODevic
             const qint64 nToWrite = nRead - nWritten;
             const qint64 nResult = pOutputDevice->write(baBuffer.constData() + nWritten, nToWrite);
             if ((nResult <= 0) || (nResult > nToWrite)) {
-                return false;
+                return failOutput();
             }
             nWritten += nResult;
             *pnWritten += nResult;
@@ -1554,8 +1564,9 @@ static bool unpackExternalPayloadFile(const XMSI::PAYLOAD_ENTRY &entry, QIODevic
         nRemaining -= nRead;
     }
 
-    return (nRemaining == 0) && (file.size() == entry.nSize) && file.atEnd() &&
-           XBinary::isPdStructNotCanceled(pPdStruct);
+    const bool bResult = (nRemaining == 0) && (file.size() == entry.nSize) && file.atEnd() &&
+                         XBinary::isPdStructNotCanceled(pPdStruct);
+    return bResult ? true : failOutput();
 }
 }  // namespace
 
@@ -1688,7 +1699,7 @@ void XMSI::setExternalCabinetData(const QMap<QString, QByteArray> &mapData)
 bool XMSI::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
-    if (pState->pContext && !finishUnpack(pState, pPdStruct)) return false;
+    if (pState->pContext && !finishUnpack(pState, nullptr)) return false;
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
     *pState = UNPACK_STATE();
@@ -1741,6 +1752,8 @@ bool XMSI::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     }
 
     pState->nNumberOfRecords = pContext->innerState.nNumberOfRecords;
+    pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
+    pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
     pState->pContext = pContext;
     return true;
 }
@@ -1802,7 +1815,10 @@ bool XMSI::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
 
     if (!pContext->pArchive) return false;
     pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
-    return pContext->pArchive->unpackCurrent(&pContext->innerState, pDevice, pPdStruct);
+    bool bResult = pContext->pArchive->unpackCurrent(&pContext->innerState, pDevice, pPdStruct);
+    pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
+    pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
+    return bResult;
 }
 
 bool XMSI::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
@@ -1815,7 +1831,7 @@ bool XMSI::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         if ((pState->nNumberOfRecords != pContext->listEntries.size()) ||
             (pState->nCurrentIndex >= pContext->listEntries.size())) return false;
         pState->nCurrentIndex++;
-        pState->nCurrentOffset = pState->nCurrentIndex;
+        pState->nCurrentOffset = 0;
         return pState->nCurrentIndex < pState->nNumberOfRecords;
     }
 
@@ -1824,6 +1840,7 @@ bool XMSI::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     bool bResult = pContext->pArchive->moveToNext(&pContext->innerState, pPdStruct);
     pState->nCurrentIndex = pContext->innerState.nCurrentIndex;
     pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
+    pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
     return bResult;
 }
 
@@ -1839,7 +1856,7 @@ bool XMSI::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         }
 
         if (pContext->pArchive) {
-            if (!pContext->pArchive->finishUnpack(&pContext->innerState, pPdStruct)) {
+            if (!pContext->pArchive->finishUnpack(&pContext->innerState, nullptr)) {
                 bResult = false;
             }
             delete pContext->pArchive;

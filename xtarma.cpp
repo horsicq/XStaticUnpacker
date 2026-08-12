@@ -828,7 +828,7 @@ bool XTarma::_buildEntries(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
 bool XTarma::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
-    if (pState->pContext && !finishUnpack(pState, pPdStruct)) return false;
+    if (pState->pContext && !finishUnpack(pState, nullptr)) return false;
 
     pState->nCurrentOffset = 0;
     pState->nTotalSize = getSize();
@@ -873,18 +873,28 @@ bool XTarma::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *p
     if ((nIndex < 0) || (nIndex >= pContext->listEntries.size())) return false;
 
     const FILE_ENTRY &e = pContext->listEntries.at(nIndex);
-    if (!pDevice->isSequential() && (!pDevice->seek(0) || ((pDevice->size() != 0) && !XBinary::resize(pDevice, 0)))) return false;
+    const bool bSeekableOutput = !pDevice->isSequential();
+    auto failOutput = [&]() -> bool {
+        if (bSeekableOutput) {
+            XBinary::resize(pDevice, 0);
+            pDevice->seek(0);
+            pState->nCurrentOffset = 0;
+        }
+        return false;
+    };
+    if (bSeekableOutput && (!pDevice->seek(0) || ((pDevice->size() != 0) && !XBinary::resize(pDevice, 0)))) return false;
     qint64 nWritten = 0;
     pState->nCurrentOffset = 0;
     while (nWritten < e.baData.size()) {
-        if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) return failOutput();
         qint64 nChunk = qMin<qint64>(1 << 20, e.baData.size() - nWritten);
         qint64 nResult = pDevice->write(e.baData.constData() + nWritten, nChunk);
-        if ((nResult <= 0) || (nResult > nChunk)) return false;
+        if ((nResult <= 0) || (nResult > nChunk)) return failOutput();
         nWritten += nResult;
         pState->nCurrentOffset = nWritten;
     }
-    return XBinary::isPdStructNotCanceled(pPdStruct);
+    if (!XBinary::isPdStructNotCanceled(pPdStruct)) return failOutput();
+    return true;
 }
 
 bool XTarma::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)

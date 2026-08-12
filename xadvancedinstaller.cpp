@@ -551,7 +551,7 @@ bool XAdvancedInstaller::_deleteUnpackContext(UNPACK_CONTEXT *pContext, PDSTRUCT
 
     bool bResult = true;
     if (pContext->pMSI) {
-        if (pContext->bInnerInitialized && !pContext->pMSI->finishUnpack(&pContext->innerState, pPdStruct)) {
+        if (pContext->bInnerInitialized && !pContext->pMSI->finishUnpack(&pContext->innerState, nullptr)) {
             bResult = false;
         }
         delete pContext->pMSI;
@@ -592,6 +592,8 @@ bool XAdvancedInstaller::_initMSIDelegate(UNPACK_STATE *pState, QIODevice *pSour
 
     pContext->bInnerInitialized = true;
     pState->nNumberOfRecords = pContext->innerState.nNumberOfRecords;
+    pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
+    pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
     pState->pContext = pContext;
     return true;
 }
@@ -604,7 +606,7 @@ QMap<XBinary::UNPACK_PROP, QVariant> XAdvancedInstaller::getDefaultUnpackPropert
 bool XAdvancedInstaller::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
-    if (pState->pContext && !finishUnpack(pState, pPdStruct)) return false;
+    if (pState->pContext && !finishUnpack(pState, nullptr)) return false;
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
     pState->nCurrentOffset = 0;
@@ -719,7 +721,10 @@ bool XAdvancedInstaller::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice,
     if (!pContext->pMSI || !pContext->bInnerInitialized) return false;
 
     pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
-    return pContext->pMSI->unpackCurrent(&pContext->innerState, pDevice, pPdStruct);
+    bool bResult = pContext->pMSI->unpackCurrent(&pContext->innerState, pDevice, pPdStruct);
+    pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
+    pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
+    return bResult;
 }
 
 bool XAdvancedInstaller::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
@@ -734,6 +739,7 @@ bool XAdvancedInstaller::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     bool bResult = pContext->pMSI->moveToNext(&pContext->innerState, pPdStruct);
     pState->nCurrentIndex = pContext->innerState.nCurrentIndex;
     pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
+    pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
     return bResult;
 }
 

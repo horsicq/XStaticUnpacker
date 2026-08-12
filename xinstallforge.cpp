@@ -334,7 +334,7 @@ QMap<XBinary::UNPACK_PROP, QVariant> XInstallForge::getDefaultUnpackProperties()
 bool XInstallForge::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
-    if (pState->pContext && !finishUnpack(pState, pPdStruct)) return false;
+    if (pState->pContext && !finishUnpack(pState, nullptr)) return false;
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
     *pState = UNPACK_STATE();
@@ -395,7 +395,7 @@ bool XInstallForge::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVa
         }
     }
     if (!bNamesValid || !XBinary::isPdStructNotCanceled(pPdStruct)) {
-        pContext->pArchive->finishUnpack(&pContext->innerState, pPdStruct);
+        pContext->pArchive->finishUnpack(&pContext->innerState, nullptr);
         delete pContext->pArchive;
         pContext->pSubDevice->close();
         delete pContext->pSubDevice;
@@ -470,7 +470,7 @@ bool XInstallForge::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     if (pState->pContext) {
         UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
         if (pContext->pArchive) {
-            bResult = pContext->pArchive->finishUnpack(&pContext->innerState, pPdStruct);
+            bResult = pContext->pArchive->finishUnpack(&pContext->innerState, nullptr);
             delete pContext->pArchive;
         }
         if (pContext->pSubDevice) {

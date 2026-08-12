@@ -244,7 +244,7 @@ QMap<XBinary::UNPACK_PROP, QVariant> X7ZSFX::getDefaultUnpackProperties()
 bool X7ZSFX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
-    if (pState->pContext && !finishUnpack(pState, pPdStruct)) return false;
+    if (pState->pContext && !finishUnpack(pState, nullptr)) return false;
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
     *pState = UNPACK_STATE();
@@ -326,7 +326,7 @@ bool X7ZSFX::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     if (pState->pContext) {
         UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
         if (pContext->pArchive) {
-            bResult = pContext->pArchive->finishUnpack(&pContext->innerState, pPdStruct);
+            bResult = pContext->pArchive->finishUnpack(&pContext->innerState, nullptr);
             delete pContext->pArchive;
         }
         if (pContext->pSubDevice) {

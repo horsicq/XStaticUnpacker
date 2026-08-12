@@ -170,7 +170,7 @@ QMap<XBinary::UNPACK_PROP, QVariant> XWinRarSfx::getDefaultUnpackProperties()
 bool XWinRarSfx::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
-    if (pState->pContext && !finishUnpack(pState, pPdStruct)) return false;
+    if (pState->pContext && !finishUnpack(pState, nullptr)) return false;
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
     *pState = UNPACK_STATE();
@@ -253,7 +253,7 @@ bool XWinRarSfx::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     if (pState->pContext) {
         UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
         if (pContext->pArchive) {
-            bResult = pContext->pArchive->finishUnpack(&pContext->innerState, pPdStruct) && bResult;
+            bResult = pContext->pArchive->finishUnpack(&pContext->innerState, nullptr) && bResult;
             delete pContext->pArchive;
         }
         if (pContext->pSubDevice) {

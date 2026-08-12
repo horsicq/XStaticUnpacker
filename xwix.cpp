@@ -398,7 +398,7 @@ QMap<XBinary::UNPACK_PROP, QVariant> XWiX::getDefaultUnpackProperties()
 bool XWiX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
-    if (pState->pContext && !finishUnpack(pState, pPdStruct)) return false;
+    if (pState->pContext && !finishUnpack(pState, nullptr)) return false;
     if (!XBinary::isPdStructNotCanceled(pPdStruct) || !_detect(pPdStruct).bIsValid) return false;
 
     *pState = UNPACK_STATE();
@@ -416,6 +416,8 @@ bool XWiX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     }
 
     pState->nNumberOfRecords = pContext->state.nNumberOfRecords;
+    pState->nCurrentOffset = pContext->state.nCurrentOffset;
+    pState->mapArchiveProperties = pContext->state.mapArchiveProperties;
     pState->pContext = pContext;
     return true;
 }
@@ -442,7 +444,10 @@ bool XWiX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
 
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     pContext->state.nCurrentIndex = pState->nCurrentIndex;
-    return pContext->pMSI->unpackCurrent(&pContext->state, pDevice, pPdStruct);
+    bool bResult = pContext->pMSI->unpackCurrent(&pContext->state, pDevice, pPdStruct);
+    pState->nCurrentOffset = pContext->state.nCurrentOffset;
+    pState->mapArchiveProperties = pContext->state.mapArchiveProperties;
+    return bResult;
 }
 
 bool XWiX::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
@@ -457,6 +462,7 @@ bool XWiX::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     bool bResult = pContext->pMSI->moveToNext(&pContext->state, pPdStruct);
     pState->nCurrentIndex = pContext->state.nCurrentIndex;
     pState->nCurrentOffset = pContext->state.nCurrentOffset;
+    pState->mapArchiveProperties = pContext->state.mapArchiveProperties;
     return bResult;
 }
 
@@ -469,7 +475,7 @@ bool XWiX::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     bool bResult = true;
     if (pState->pContext) {
         UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-        if (!pContext->pMSI->finishUnpack(&pContext->state, pPdStruct)) {
+        if (!pContext->pMSI->finishUnpack(&pContext->state, nullptr)) {
             bResult = false;
         }
         delete pContext->pMSI;
