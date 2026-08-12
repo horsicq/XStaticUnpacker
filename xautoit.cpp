@@ -362,6 +362,8 @@ bool XAUTOIT::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant>
 {
     if (!pState) return false;
 
+    if (pState->pContext && !finishUnpack(pState, nullptr)) return false;
+
     pState->nCurrentOffset = 0;
     pState->nTotalSize = getSize();
     pState->nCurrentIndex = 0;
@@ -391,10 +393,8 @@ bool XAUTOIT::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant>
 
 XBinary::ARCHIVERECORD XAUTOIT::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(pPdStruct)
-
     ARCHIVERECORD result = {};
-    if (!pState || !pState->pContext) return result;
+    if (!pState || !pState->pContext || !isPdStructNotCanceled(pPdStruct)) return result;
 
     UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
     qint32 nIndex = pState->nCurrentIndex;
@@ -412,25 +412,23 @@ XBinary::ARCHIVERECORD XAUTOIT::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdS
 
 bool XAUTOIT::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(pPdStruct)
-
-    if (!pState || !pState->pContext || !pDevice) return false;
+    if (!pState || !pState->pContext || !pDevice || !pDevice->isWritable() || !isPdStructNotCanceled(pPdStruct)) return false;
 
     UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
     qint32 nIndex = pState->nCurrentIndex;
     if ((nIndex < 0) || (nIndex >= pContext->listRecords.size())) return false;
 
     const QByteArray &baData = pContext->listRecords.at(nIndex).baData;
-    return (pDevice->write(baData) == baData.size());
+    return writeUnpackData(pState, pDevice, baData, pPdStruct);
 }
 
 bool XAUTOIT::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(pPdStruct)
-
-    if (!pState || !pState->pContext) return false;
+    if (!pState || !pState->pContext || !isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+        (pState->nCurrentIndex >= pState->nNumberOfRecords)) return false;
 
     pState->nCurrentIndex++;
+    pState->nCurrentOffset = 0;
     return (pState->nCurrentIndex < pState->nNumberOfRecords);
 }
 
@@ -448,8 +446,11 @@ bool XAUTOIT::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     }
 
     pState->nCurrentOffset = 0;
+    pState->nTotalSize = 0;
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
+    pState->mapUnpackProperties.clear();
+    pState->mapArchiveProperties.clear();
 
     return true;
 }

@@ -962,12 +962,22 @@ bool XUPX::_prepareOutputDevice(QIODevice *pDevice, bool *pbCloseOutputDevice)
         return false;
     }
 
-    if (XBinary::isResizeEnable(pDevice)) {
-        XBinary::resize(pDevice, 0);
+    if (!pDevice->isSequential() && (pDevice->size() != 0) && !XBinary::resize(pDevice, 0)) {
+        if (*pbCloseOutputDevice) {
+            pDevice->close();
+            *pbCloseOutputDevice = false;
+        }
+
+        return false;
     }
 
-    if (!pDevice->isSequential()) {
-        pDevice->seek(0);
+    if (!pDevice->isSequential() && !pDevice->seek(0)) {
+        if (*pbCloseOutputDevice) {
+            pDevice->close();
+            *pbCloseOutputDevice = false;
+        }
+
+        return false;
     }
 
     return true;
@@ -988,23 +998,37 @@ bool XUPX::_writeBufferToDevice(const QByteArray &baData, QIODevice *pDevice, PD
     const qint64 nChunkSize = 0x100000;
     qint64 nOffset = 0;
     bool bResult = true;
+    const bool bSeekableOutput = !pDevice->isSequential();
+
+    auto failOutput = [&]() {
+        if (bSeekableOutput) {
+            XBinary::resize(pDevice, 0);
+            pDevice->seek(0);
+        }
+        bResult = false;
+    };
 
     while ((nOffset < baData.size()) && XBinary::isPdStructNotCanceled(pPdStruct)) {
         qint64 nCurrentChunkSize = qMin(nChunkSize, (qint64)baData.size() - nOffset);
+        qint64 nWritten = pDevice->write(baData.constData() + nOffset, nCurrentChunkSize);
 
-        if (pDevice->write(baData.constData() + nOffset, nCurrentChunkSize) != nCurrentChunkSize) {
-            bResult = false;
+        if ((nWritten <= 0) || (nWritten > nCurrentChunkSize)) {
+            failOutput();
             break;
         }
 
-        nOffset += nCurrentChunkSize;
+        nOffset += nWritten;
+    }
+
+    if (!XBinary::isPdStructNotCanceled(pPdStruct) || (nOffset != baData.size())) {
+        failOutput();
     }
 
     if (bCloseOutputDevice) {
         pDevice->close();
     }
 
-    return bResult && XBinary::isPdStructNotCanceled(pPdStruct) && (nOffset == baData.size());
+    return bResult;
 }
 
 bool XUPX::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
@@ -1092,11 +1116,16 @@ bool XUPX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
         return false;
     }
 
+    if (pState->pContext && !finishUnpack(pState, nullptr)) {
+        return false;
+    }
+
     pState->nCurrentOffset = 0;
     pState->nTotalSize = getSize();
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
     pState->mapUnpackProperties = mapProperties;
+    pState->mapArchiveProperties.clear();
     pState->pContext = nullptr;
 
     INTERNAL_INFO info = *static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct));
@@ -1105,7 +1134,7 @@ bool XUPX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
         return false;
     }
 
-    UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT;
+    UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT();
     pContext->listRecords.append(_createArchiveRecord(info));
 
     pState->pContext = pContext;
@@ -1116,11 +1145,9 @@ bool XUPX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
 
 XBinary::ARCHIVERECORD XUPX::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(pPdStruct)
-
     ARCHIVERECORD result = {};
 
-    if ((!pState) || (!pState->pContext)) {
+    if ((!pState) || (!pState->pContext) || !isPdStructNotCanceled(pPdStruct)) {
         return result;
     }
 
@@ -1133,15 +1160,33 @@ XBinary::ARCHIVERECORD XUPX::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStru
     return result;
 }
 
+bool XUPX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct)
+{
+    if (!pState || !pState->pContext || !pDevice || !pDevice->isWritable() || !isPdStructNotCanceled(pPdStruct) ||
+        (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
+        return false;
+    }
+
+    pState->nCurrentOffset = 0;
+    if (!unpack(pDevice, pPdStruct)) {
+        return false;
+    }
+
+    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
+    pState->nCurrentOffset = pContext->listRecords.at(pState->nCurrentIndex)
+                                 .mapProperties.value(FPART_PROP_UNCOMPRESSEDSIZE, pDevice->pos()).toLongLong();
+    return isPdStructNotCanceled(pPdStruct);
+}
+
 bool XUPX::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(pPdStruct)
-
-    if ((!pState) || (!pState->pContext)) {
+    if ((!pState) || (!pState->pContext) || !isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+        (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
         return false;
     }
 
     pState->nCurrentIndex++;
+    pState->nCurrentOffset = 0;
 
     return (pState->nCurrentIndex < pState->nNumberOfRecords);
 }
@@ -1162,8 +1207,11 @@ bool XUPX::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     }
 
     pState->nCurrentOffset = 0;
+    pState->nTotalSize = 0;
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
+    pState->mapUnpackProperties.clear();
+    pState->mapArchiveProperties.clear();
 
     return true;
 }
@@ -2823,6 +2871,9 @@ QList<XBinary::FPART> XUPX::getFileParts(quint32 nFileParts, qint32 nLimit, PDST
     QList<FPART> listOverlay;
     qint64 nDataSize = getSize();
 
+    if ((nLimit < -1) || (nLimit == 0)) return listResult;
+    auto canAppend = [&]() -> bool { return (nLimit == -1) || (listResult.size() < nLimit); };
+
     // Do not call this class's getOverlayOffset(): it obtains the XUPX memory
     // map and recursively re-enters getFileParts(FILEPART_OVERLAY).  A local
     // PE parser has independent file-part state and can safely split the
@@ -2842,7 +2893,7 @@ QList<XBinary::FPART> XUPX::getFileParts(quint32 nFileParts, qint32 nLimit, PDST
         }
     }
 
-    if (nFileParts & FILEPART_HEADER) {
+    if ((nFileParts & FILEPART_HEADER) && canAppend()) {
         FPART record = {};
 
         record.filePart = FILEPART_HEADER;
@@ -2854,7 +2905,7 @@ QList<XBinary::FPART> XUPX::getFileParts(quint32 nFileParts, qint32 nLimit, PDST
         listResult.append(record);
     }
 
-    if (nFileParts & FILEPART_DATA) {
+    if ((nFileParts & FILEPART_DATA) && canAppend()) {
         FPART record = {};
 
         record.filePart = FILEPART_DATA;
@@ -2867,7 +2918,10 @@ QList<XBinary::FPART> XUPX::getFileParts(quint32 nFileParts, qint32 nLimit, PDST
     }
 
     if (nFileParts & FILEPART_OVERLAY) {
-        listResult.append(listOverlay);
+        for (const FPART &part : listOverlay) {
+            if (!canAppend()) break;
+            listResult.append(part);
+        }
     }
 
     return listResult;

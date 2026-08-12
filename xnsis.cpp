@@ -1393,19 +1393,24 @@ bool XNSIS::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
         return false;
     }
 
+    if (pState->pContext && !finishUnpack(pState, nullptr)) {
+        return false;
+    }
+
     pState->nCurrentOffset = 0;
     pState->nTotalSize = getSize();
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
     pState->pContext = nullptr;
     pState->mapUnpackProperties = mapProperties;
+    pState->mapArchiveProperties.clear();
 
     INTERNAL_INFO info = *static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct));
     if (!info.bIsValid) {
         return false;
     }
 
-    UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT;
+    UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT();
     pContext->nFirstHeaderOffset = 0;
     pContext->nDataStreamOffset = 0;
     pContext->nFlags = 0;
@@ -1427,12 +1432,13 @@ bool XNSIS::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
     pContext->nDataOffset = 0;
     pContext->nDataSize = 0;
 
-    if (_findFirstHeader(info.nSignatureOffset, pState->nTotalSize, pContext, pPdStruct)) {
-        if (_open(pContext, pPdStruct)) {
-            pState->nNumberOfRecords = pContext->listEntries.size();
-        }
+    if (!_findFirstHeader(info.nSignatureOffset, pState->nTotalSize, pContext, pPdStruct) || !_open(pContext, pPdStruct) ||
+        !isPdStructNotCanceled(pPdStruct)) {
+        delete pContext;
+        return false;
     }
 
+    pState->nNumberOfRecords = pContext->listEntries.size();
     pState->pContext = pContext;
 
     return true;
@@ -1440,11 +1446,9 @@ bool XNSIS::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
 
 XBinary::ARCHIVERECORD XNSIS::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(pPdStruct)
-
     ARCHIVERECORD result = {};
 
-    if (!pState || !pState->pContext) {
+    if (!pState || !pState->pContext || !isPdStructNotCanceled(pPdStruct)) {
         return result;
     }
 
@@ -1471,7 +1475,7 @@ XBinary::ARCHIVERECORD XNSIS::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStr
 
 bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
-    if (!pState || !pState->pContext || !pDevice) {
+    if (!pState || !pState->pContext || !pDevice || !pDevice->isWritable() || !isPdStructNotCanceled(pPdStruct)) {
         return false;
     }
 
@@ -1484,27 +1488,41 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
 
     const FILE_ENTRY &entry = pContext->listEntries.at(nIndex);
 
+    const bool bSeekableOutput = !pDevice->isSequential();
+    auto failOutput = [&]() -> bool {
+        if (bSeekableOutput) {
+            XBinary::resize(pDevice, 0);
+            pDevice->seek(0);
+        }
+        pState->nCurrentOffset = 0;
+        return false;
+    };
+
+    if (!writeUnpackData(pState, pDevice, nullptr, 0, pPdStruct)) {
+        return false;
+    }
+
     // Obtain the item's raw (uncompressed) data.
     QByteArray baData;
     QByteArray baSolidTail;  // for a patched uninstaller: the block that follows the patch block
 
     if (pContext->bIsSolid) {
         if (!_decodeSolidStream(pContext, pPdStruct)) {
-            return false;
+            return failOutput();
         }
         const qint64 nSolidSize = pContext->baSolid.size();
         const quint8 *pSolid = (const quint8 *)pContext->baSolid.constData();
 
         qint64 nAbs = 4 + (qint64)pContext->nHeaderSize + entry.nPos;
         if ((nAbs + 4) > nSolidSize) {
-            return false;
+            return failOutput();
         }
         quint32 nSize = rd32(pSolid + nAbs);
         if (nSize == 0) {
-            return true;  // empty file
+            return (!entry.bSizeDefined || (entry.nSize == 0)) ? true : failOutput();
         }
         if ((qint64)(nAbs + 4 + nSize) > nSolidSize) {
-            return false;
+            return failOutput();
         }
         baData = QByteArray((const char *)pSolid + nAbs + 4, (int)nSize);
 
@@ -1521,25 +1539,33 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
         }
     } else {
         // non-solid: [4-byte size|flag][block]
-        qint64 nItemPos = pContext->nDataStreamOffset + 4 + pContext->nNonSolidStartOffset + entry.nPos;
+        const qint64 nFileSize = getSize();
+        if ((pContext->nDataStreamOffset < 0) || (nFileSize < 0)) return failOutput();
+        const quint64 nItemPos64 = (quint64)pContext->nDataStreamOffset + 4 + (quint64)pContext->nNonSolidStartOffset + entry.nPos;
+        if ((nItemPos64 > (quint64)nFileSize) || (((quint64)nFileSize - nItemPos64) < 4)) return failOutput();
+        const qint64 nItemPos = (qint64)nItemPos64;
         quint32 nSizeField = read_uint32(nItemPos, false);
         bool bIsCompressed = (nSizeField & kMask_IsCompressed) != 0;
         quint32 nSize = nSizeField & ~kMask_IsCompressed;
 
         if (nSize == 0) {
-            return true;  // empty file
+            return (!entry.bSizeDefined || (entry.nSize == 0)) ? true : failOutput();
         }
 
         QByteArray baBlock = read_array_process(nItemPos + 4, nSize, pPdStruct);
         if ((quint32)baBlock.size() != nSize) {
-            return false;
+            return failOutput();
         }
 
         if (!bIsCompressed) {
             baData = baBlock;
         } else if (!_decodeBlock(pContext->method, pContext->bFilterFlag, (const quint8 *)baBlock.constData(), baBlock.size(), 0, false, &baData, pPdStruct)) {
-            return false;
+            return failOutput();
         }
+    }
+
+    if (!entry.bIsUninstaller && entry.bSizeDefined && ((quint64)baData.size() != entry.nSize)) {
+        return failOutput();
     }
 
     // Patched uninstaller: apply the patch stream onto a copy of the installer's PE stub,
@@ -1550,26 +1576,24 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
             QByteArray baPatched = baStub;
             if (_uninstallerPatch(baData, &baPatched)) {
                 baPatched.append(baSolidTail);
-                qint64 nWritten = pDevice->write(baPatched);
-                return (nWritten == baPatched.size());
+                return writeUnpackData(pState, pDevice, baPatched, pPdStruct);
             }
         }
         // not a patch stream (e.g. NSIS 3.08 unpatched uninstaller): fall through to raw output
     }
 
-    qint64 nWritten = pDevice->write(baData);
-    return (nWritten == baData.size());
+    return writeUnpackData(pState, pDevice, baData, pPdStruct);
 }
 
 bool XNSIS::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(pPdStruct)
-
-    if (!pState || !pState->pContext) {
+    if (!pState || !pState->pContext || !isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+        (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
         return false;
     }
 
     pState->nCurrentIndex++;
+    pState->nCurrentOffset = 0;
 
     return (pState->nCurrentIndex < pState->nNumberOfRecords);
 }
@@ -1592,8 +1616,11 @@ bool XNSIS::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     }
 
     pState->nCurrentOffset = 0;
+    pState->nTotalSize = 0;
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
+    pState->mapUnpackProperties.clear();
+    pState->mapArchiveProperties.clear();
 
     return true;
 }

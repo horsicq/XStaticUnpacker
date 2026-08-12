@@ -288,13 +288,25 @@ bool XInnoSetup::initUnpack(XBinary::UNPACK_STATE *pState, const QMap<XBinary::U
         return false;
     }
 
+    if (pState->pContext && !finishUnpack(pState, nullptr)) {
+        return false;
+    }
+
+    pState->nCurrentOffset = 0;
+    pState->nTotalSize = getSize();
+    pState->nCurrentIndex = 0;
+    pState->nNumberOfRecords = 0;
+    pState->pContext = nullptr;
+    pState->mapUnpackProperties = mapProperties;
+    pState->mapArchiveProperties.clear();
+
     INTERNAL_INFO info = _analyse(pPdStruct);
 
     if (!info.bIsValid) {
         return false;
     }
 
-    UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT;
+    UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT();
     pContext->bIsRealFormat = false;
     pContext->nSignatureOffset = info.nSignatureOffset;
     pContext->nDataStreamOffset = 0;
@@ -310,8 +322,6 @@ bool XInnoSetup::initUnpack(XBinary::UNPACK_STATE *pState, const QMap<XBinary::U
     }
 
     pState->pContext = pContext;
-    pState->mapUnpackProperties = mapProperties;
-    pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = pContext->listAllRecords.count();
 
     return true;
@@ -319,11 +329,9 @@ bool XInnoSetup::initUnpack(XBinary::UNPACK_STATE *pState, const QMap<XBinary::U
 
 XBinary::ARCHIVERECORD XInnoSetup::infoCurrent(XBinary::UNPACK_STATE *pState, XBinary::PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(pPdStruct)
-
     ARCHIVERECORD result = {};
 
-    if (!pState || !pState->pContext) {
+    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct)) {
         return result;
     }
 
@@ -338,7 +346,7 @@ XBinary::ARCHIVERECORD XInnoSetup::infoCurrent(XBinary::UNPACK_STATE *pState, XB
 
 bool XInnoSetup::unpackCurrent(XBinary::UNPACK_STATE *pState, QIODevice *pDevice, XBinary::PDSTRUCT *pPdStruct)
 {
-    if (!pState || !pState->pContext) {
+    if (!pState || !pState->pContext || !pDevice || !pDevice->isWritable() || !XBinary::isPdStructNotCanceled(pPdStruct)) {
         return false;
     }
 
@@ -349,6 +357,20 @@ bool XInnoSetup::unpackCurrent(XBinary::UNPACK_STATE *pState, QIODevice *pDevice
     }
 
     ARCHIVERECORD record = pContext->listAllRecords.at(pState->nCurrentIndex);
+
+    const bool bSeekableOutput = !pDevice->isSequential();
+    auto failOutput = [&]() -> bool {
+        if (bSeekableOutput) {
+            XBinary::resize(pDevice, 0);
+            pDevice->seek(0);
+        }
+        pState->nCurrentOffset = 0;
+        return false;
+    };
+
+    if (!XBinary::writeUnpackData(pState, pDevice, nullptr, 0, pPdStruct)) {
+        return false;
+    }
 
     auto verifyCRC = [&]() -> bool {
         CRC_TYPE crcType = (CRC_TYPE)record.mapProperties.value(FPART_PROP_CRC_TYPE, CRC_TYPE_UNKNOWN).toUInt();
@@ -376,12 +398,11 @@ bool XInnoSetup::unpackCurrent(XBinary::UNPACK_STATE *pState, QIODevice *pDevice
 
     // Empty file — nothing to write
     if (nUncompressedSize == 0) {
-        return verifyCRC();
+        if (!verifyCRC()) return failOutput();
+        return true;
     }
 
-    if (!pDevice) {
-        return false;
-    }
+    if (nUncompressedSize < 0) return failOutput();
 
     if (pContext->bIsRealFormat) {
         // Real InnoSetup: solid LZMA decompression
@@ -397,7 +418,7 @@ bool XInnoSetup::unpackCurrent(XBinary::UNPACK_STATE *pState, QIODevice *pDevice
 
             if (baDecompressed.isEmpty()) {
                 qWarning() << "[InnoSetup] Failed to decompress data chunk at offset" << nStreamOffset;
-                return false;
+                return failOutput();
             }
 
             pContext->chunkCache.nChunkCompressedSize = nChunkCompressedSize;
@@ -407,31 +428,36 @@ bool XInnoSetup::unpackCurrent(XBinary::UNPACK_STATE *pState, QIODevice *pDevice
         // Extract this file's data from the decompressed chunk
         const QByteArray &baChunk = pContext->chunkCache.baDecompressedData;
 
-        if (nDecompressedOffset + nUncompressedSize > baChunk.size()) {
+        if ((nDecompressedOffset < 0) || (nDecompressedOffset > baChunk.size()) ||
+            (nUncompressedSize > ((qint64)baChunk.size() - nDecompressedOffset))) {
             qWarning() << "[InnoSetup] File data exceeds chunk boundary: offset" << nDecompressedOffset << "size" << nUncompressedSize << "chunk size" << baChunk.size();
-            return false;
+            return failOutput();
         }
 
-        qint64 nWritten = pDevice->write(baChunk.constData() + nDecompressedOffset, nUncompressedSize);
-
-        return (nWritten == nUncompressedSize) && verifyCRC();
+        if (!XBinary::writeUnpackData(pState, pDevice, baChunk.constData() + nDecompressedOffset, nUncompressedSize, pPdStruct)) return false;
+        if (!verifyCRC()) return failOutput();
+        return true;
     } else {
         // Synthetic ISDF: stored data — direct copy using XStoreDecoder
         qint64 nStreamOffset = record.mapProperties.value(FPART_PROP_STREAMOFFSET).toLongLong();
         qint64 nStreamSize = record.mapProperties.value(FPART_PROP_STREAMSIZE).toLongLong();
 
         if (nStreamSize == 0) {
-            return verifyCRC();
+            return failOutput();
         }
 
         // Clamp to file size
         qint64 nFileSize = getSize();
 
-        if (nStreamOffset + nStreamSize > nFileSize) {
+        if ((nStreamOffset < 0) || (nStreamSize < 0) || (nStreamOffset > nFileSize)) {
+            return failOutput();
+        }
+
+        if (nStreamSize > (nFileSize - nStreamOffset)) {
             nStreamSize = nFileSize - nStreamOffset;
 
             if (nStreamSize <= 0) {
-                return false;
+                return failOutput();
             }
         }
 
@@ -445,19 +471,26 @@ bool XInnoSetup::unpackCurrent(XBinary::UNPACK_STATE *pState, QIODevice *pDevice
         decompressState.nProcessedOffset = 0;
         decompressState.nProcessedLimit = -1;
 
-        return XStoreDecoder::decompress(&decompressState, pPdStruct) && verifyCRC();
+        if (!XStoreDecoder::decompress(&decompressState, pPdStruct) || (decompressState.nCountInput != nStreamSize) ||
+            (decompressState.nCountOutput != nStreamSize)) {
+            return failOutput();
+        }
+
+        pState->nCurrentOffset = decompressState.nCountOutput;
+        if (!verifyCRC()) return failOutput();
+        return true;
     }
 }
 
 bool XInnoSetup::moveToNext(XBinary::UNPACK_STATE *pState, XBinary::PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(pPdStruct)
-
-    if (!pState || !pState->pContext) {
+    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+        (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
         return false;
     }
 
     pState->nCurrentIndex++;
+    pState->nCurrentOffset = 0;
 
     return (pState->nCurrentIndex < pState->nNumberOfRecords);
 }
@@ -482,6 +515,10 @@ bool XInnoSetup::finishUnpack(XBinary::UNPACK_STATE *pState, XBinary::PDSTRUCT *
 
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
+    pState->nCurrentOffset = 0;
+    pState->nTotalSize = 0;
+    pState->mapUnpackProperties.clear();
+    pState->mapArchiveProperties.clear();
 
     return true;
 }
