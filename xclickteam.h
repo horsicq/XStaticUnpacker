@@ -5,38 +5,52 @@
 #ifndef XCLICKTEAM_H
 #define XCLICKTEAM_H
 
+#include <QList>
+#include <QPointer>
+#include <QSet>
+#include <QSharedPointer>
+
 #include "xbinary.h"
 
-/* Detector + extractor for Clickteam Install Creator (Install Creator 2 /
- * Patch Maker). The PE stub keeps its installer payload in the overlay, tagged
- * with the literal marker "wwgT)" at the overlay start, followed by a chunk
- * table [u32 compSize][u32 uncompSize][u8 method][data][u32 trailer]. The last
- * top-level chunk is a "compound" region holding the installed user files as
- * bare [u8 method][stream] entries. Every user file uses method 1 = zlib, so
- * they are extracted here with stock zlib; method 2 (bzip2) is used only for a
- * UI resource chunk and is skipped. Separate-data builds use the identical
- * bare stream sequence in a sibling .D01 volume. */
+class XMaterializedUnpackGuard;
 
 class XClickteam : public XBinary {
     Q_OBJECT
 
 public:
     struct INTERNAL_INFO : public XBinary::INTERNAL_INFO {
-        bool bIsValid;
+        bool bIsValid = false;
         QString sVersion;
-        qint64 nContainerOffset;
+        qint64 nContainerOffset = -1;
     };
 
     struct FILE_ENTRY {
         QString sName;
-        QByteArray baData;  // decompressed content
+        QByteArray baData;
     };
 
     struct UNPACK_CONTEXT {
-        UNPACK_CONTEXT() : nTotalOutput(0) {}
+        ~UNPACK_CONTEXT();
 
         QList<FILE_ENTRY> listEntries;
-        qint64 nTotalOutput;
+        qint64 nTotalOutput = 0;
+        qint32 nCurrentIndex = 0;
+        qint64 nCurrentOffset = 0;
+        qint64 nSourceSize = 0;
+        quint64 nDeviceGeneration = 0;
+        QPointer<QIODevice> pSourceDevice;
+        UNPACK_STATE *pOwnerState = nullptr;
+        QByteArray baToken;
+        XMaterializedUnpackGuard *pSourceGuard = nullptr;
+        QList<XMaterializedUnpackGuard *> listCompanionGuards;
+    };
+
+    struct LIFETIME_STATE {
+        ~LIFETIME_STATE();
+
+        bool bOwnerAlive = true;
+        bool bOperationInProgress = false;
+        QSet<UNPACK_CONTEXT *> setContexts;
     };
 
     explicit XClickteam(QIODevice *pDevice = nullptr, bool bIsImage = false, XADDR nModuleAddress = -1);
@@ -44,23 +58,28 @@ public:
 
     bool isValid(PDSTRUCT *pPdStruct = nullptr) override;
     static bool isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr);
-    virtual bool handleInternalInfo(PDSTRUCT *pPdStruct) override;
-    virtual void *getInternalInfo(PDSTRUCT *pPdStruct = nullptr) override;
-    virtual void setInternalInfo(void *pInternalInfo) override;
+    bool handleInternalInfo(PDSTRUCT *pPdStruct) override;
+    void *getInternalInfo(PDSTRUCT *pPdStruct = nullptr) override;
+    void setInternalInfo(void *pInternalInfo) override;
+    FT getFileType() override;
 
-    virtual FT getFileType() override;
+    bool initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct = nullptr) override;
+    ARCHIVERECORD infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
+    bool unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
+    bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
+    bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
 
-    virtual bool initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct = nullptr) override;
-    virtual ARCHIVERECORD infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
-    virtual bool unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
-    virtual bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
-    virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
+protected:
+    bool isDeviceReplacementAllowed() const override;
 
 private:
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
-    INTERNAL_INFO m_internalInfo;
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);
     bool _buildEntries(UNPACK_CONTEXT *pContext, qint64 nContainerOffset, PDSTRUCT *pPdStruct);
+
+    INTERNAL_INFO m_internalInfo;
+    QSharedPointer<LIFETIME_STATE> m_pUnpackLifetimeState;
+    bool m_bTrustedSnapshot = false;
 };
 
 #endif  // XCLICKTEAM_H

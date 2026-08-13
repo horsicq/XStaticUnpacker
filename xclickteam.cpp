@@ -4,8 +4,11 @@
  */
 
 #include "xclickteam.h"
+#include "xmaterializedunpackguard.h"
 
 #include <cstring>
+#include <memory>
+#include <new>
 #include <zlib.h>
 
 #include <QBuffer>
@@ -14,18 +17,49 @@
 #include <QFileInfo>
 #include <QHash>
 #include <QQueue>
+#include <QScopedPointer>
+#include <QScopedValueRollback>
 #include <QSet>
+#include <QUuid>
 
 #include "../XArchive/Algos/xbzip2decoder.h"
 #include "xpe.h"
 
 XClickteam::XClickteam(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : XBinary(pDevice, bIsImage, nModuleAddress)
 {
+    m_pUnpackLifetimeState = QSharedPointer<LIFETIME_STATE>::create();
     setIsArchive(true);
+}
+
+XClickteam::UNPACK_CONTEXT::~UNPACK_CONTEXT()
+{
+    delete pSourceGuard;
+    for (XMaterializedUnpackGuard *pGuard : listCompanionGuards) delete pGuard;
 }
 
 XClickteam::~XClickteam()
 {
+    QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
+    if (pLifetimeState) pLifetimeState->bOwnerAlive = false;
+    m_pUnpackLifetimeState.clear();
+    if (pLifetimeState && !pLifetimeState->bOperationInProgress) {
+        const QSet<UNPACK_CONTEXT *> setContextsCopy = pLifetimeState->setContexts;
+        pLifetimeState->setContexts.clear();
+        for (UNPACK_CONTEXT *pContext : setContextsCopy) delete pContext;
+    }
+}
+
+XClickteam::LIFETIME_STATE::~LIFETIME_STATE()
+{
+    const QSet<UNPACK_CONTEXT *> setContextsCopy = setContexts;
+    setContexts.clear();
+    for (UNPACK_CONTEXT *pContext : setContextsCopy) delete pContext;
+}
+
+bool XClickteam::isDeviceReplacementAllowed() const
+{
+    const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
+    return pLifetimeState && pLifetimeState->bOwnerAlive && !pLifetimeState->bOperationInProgress && pLifetimeState->setContexts.isEmpty();
 }
 
 bool XClickteam::isValid(PDSTRUCT *pPdStruct)
@@ -199,21 +233,26 @@ static bool ctInflate(const quint8 *pSrc, qint64 nSrcLen, qint64 nMaxOutput, QBy
     s.avail_in = (uInt)nSrcLen;
     pOut->clear();
 
-    char aBuf[65536];
+    const qint32 nBufferSize = 65536;
+    std::unique_ptr<char[]> pBuffer(new (std::nothrow) char[nBufferSize]);
+    if (!pBuffer) {
+        inflateEnd(&s);
+        return false;
+    }
     bool bOk = false;
     while (XBinary::isPdStructNotCanceled(pPdStruct)) {
-        s.next_out = (Bytef *)aBuf;
-        s.avail_out = sizeof(aBuf);
+        s.next_out = (Bytef *)pBuffer.get();
+        s.avail_out = (uInt)nBufferSize;
         int rc = inflate(&s, Z_NO_FLUSH);
-        qint64 nProduced = (qint64)sizeof(aBuf) - s.avail_out;
+        qint64 nProduced = (qint64)nBufferSize - s.avail_out;
         if ((nProduced < 0) || (nProduced > nMaxOutput - pOut->size())) break;
-        if (nProduced) pOut->append(aBuf, (int)nProduced);
+        if (nProduced) pOut->append(pBuffer.get(), (int)nProduced);
         if (rc == Z_STREAM_END) {
             bOk = true;
             break;
         }
         if (rc != Z_OK) break;                                    // Z_DATA_ERROR / Z_BUF_ERROR ...
-        if ((s.avail_in == 0) && (s.avail_out == sizeof(aBuf))) break;  // no progress
+        if ((s.avail_in == 0) && (s.avail_out == (uInt)nBufferSize)) break;  // no progress
     }
 
     if (pnConsumed) *pnConsumed = (qint64)s.total_in;
@@ -355,10 +394,14 @@ static bool ctReadSeparateVolume(QIODevice *pDevice, qint64 nDeclaredRegionSize,
         return false;
     }
 
-    QFile *pInputFile = qobject_cast<QFile *>(pDevice);
-    if (!pInputFile) return false;
+    const bool bSourceIdentityBound = pDevice && pDevice->property("XStaticUnpacker.SourceIdentityBound").toBool();
+    QString sInputFileName = pDevice ? pDevice->property("XStaticUnpacker.SourceFileName").toString() : QString();
+    if (!bSourceIdentityBound && sInputFileName.isEmpty()) {
+        if (QFile *pInputFile = qobject_cast<QFile *>(pDevice)) sInputFileName = pInputFile->fileName();
+    }
+    if (sInputFileName.isEmpty()) return false;
 
-    QFileInfo inputInfo(pInputFile->fileName());
+    QFileInfo inputInfo(sInputFileName);
     if (inputInfo.fileName().isEmpty()) return false;
 
     QString sCanonicalDirectory = QFileInfo(inputInfo.absolutePath()).canonicalFilePath();
@@ -400,26 +443,20 @@ static bool ctReadSeparateVolume(QIODevice *pDevice, qint64 nDeclaredRegionSize,
     qint64 nVolumeSize = volumeInfo.size();
     if ((nVolumeSize != nDeclaredRegionSize + 4) || (nVolumeSize < 5) || (nVolumeSize > CT_MAX_CONTAINER_SIZE)) return false;
 
-    QFile volumeFile(sCanonicalVolume);
-    if (!volumeFile.open(QIODevice::ReadOnly) || (volumeFile.size() != nVolumeSize)) return false;
+    QScopedPointer<XMaterializedUnpackGuard> pVolumeGuard(XMaterializedUnpackGuard::openFile(sCanonicalVolume, pPdStruct));
+    QFile *pVolumeFile = pVolumeGuard ? qobject_cast<QFile *>(pVolumeGuard->device()) : nullptr;
+    if (!pVolumeFile || (pVolumeFile->size() != nVolumeSize)) return false;
     QByteArray baVolume;
     baVolume.reserve((int)nVolumeSize);
     while ((qint64)baVolume.size() < nVolumeSize) {
-        if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
-            volumeFile.close();
-            return false;
-        }
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
         qint64 nToRead = qMin(Q_INT64_C(1024) * 1024, nVolumeSize - (qint64)baVolume.size());
-        QByteArray baChunk = volumeFile.read(nToRead);
-        if (baChunk.isEmpty() || (baChunk.size() > nToRead)) {
-            volumeFile.close();
-            return false;
-        }
+        QByteArray baChunk = pVolumeFile->read(nToRead);
+        if (baChunk.isEmpty() || (baChunk.size() > nToRead)) return false;
         baVolume.append(baChunk);
     }
-    bool bExactRead = (baVolume.size() == nVolumeSize) && volumeFile.atEnd() && (volumeFile.size() == nVolumeSize);
-    volumeFile.close();
-    if (!bExactRead || !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+    bool bExactRead = (baVolume.size() == nVolumeSize) && pVolumeFile->atEnd() && (pVolumeFile->size() == nVolumeSize);
+    if (!bExactRead || !pVolumeGuard->validateAndFinalize(pPdStruct) || !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
     const quint8 *p = (const quint8 *)baVolume.constData();
     qint64 nRegionSize = ctRd32(p);
@@ -449,7 +486,19 @@ static bool ctReadSeparateVolume(QIODevice *pDevice, qint64 nDeclaredRegionSize,
         q += 1 + nConsumed;
     }
 
-    return (q == nEnd) && (nStreams >= 2) && !pContext->listEntries.isEmpty() && XBinary::isPdStructNotCanceled(pPdStruct);
+    const bool bResult = (q == nEnd) && (nStreams >= 2) && !pContext->listEntries.isEmpty() &&
+                         XBinary::isPdStructNotCanceled(pPdStruct);
+    if (!bResult) return false;
+    try {
+        pContext->listCompanionGuards.reserve(pContext->listCompanionGuards.size() + 1);
+        // Keep ownership until QList has accepted the pointer.  append() can
+        // allocate while detaching/growing and must not leak the open guard.
+        pContext->listCompanionGuards.append(pVolumeGuard.data());
+    } catch (const std::bad_alloc &) {
+        return false;
+    }
+    pVolumeGuard.take();
+    return true;
 }
 
 bool XClickteam::_buildEntries(UNPACK_CONTEXT *pContext, qint64 nContainerOffset, PDSTRUCT *pPdStruct)
@@ -579,85 +628,220 @@ bool XClickteam::_buildEntries(UNPACK_CONTEXT *pContext, qint64 nContainerOffset
 bool XClickteam::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
-    if (pState->pContext && !finishUnpack(pState, nullptr)) return false;
-
-    pState->nCurrentOffset = 0;
-    pState->nTotalSize = getSize();
-    pState->nCurrentIndex = 0;
-    pState->nNumberOfRecords = 0;
-    pState->pContext = nullptr;
+    const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
+    if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return false;
+    QScopedValueRollback<bool> operationGuard(pLifetimeState->bOperationInProgress, true);
+    QPointer<XClickteam> guardedThis(this);
+    if (pState->pContext || !pState->baUnpackSourceToken.isEmpty()) {
+        UNPACK_CONTEXT *pOldContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+        if (!pOldContext || !pLifetimeState->setContexts.contains(pOldContext) || (pOldContext->pOwnerState != pState) ||
+            (pOldContext->baToken != pState->baUnpackSourceToken)) return false;
+        pLifetimeState->setContexts.remove(pOldContext);
+        *pState = UNPACK_STATE();
+        delete pOldContext;
+    } else {
+        *pState = UNPACK_STATE();
+    }
+    if (!isPdStructNotCanceled(pPdStruct)) return false;
+    QPointer<QIODevice> guardedSource(getDevice());
+    const quint64 nGeneration = getDeviceGeneration();
+    const bool bIsImage = isImage();
+    const XADDR nModuleAddress = getModuleAddress();
+    if (!guardedSource) return false;
+    const qint64 nSourceSize = guardedSource->size();
+    if (!guardedThis || !guardedSource || (nSourceSize < 0) || (getDeviceGeneration() != nGeneration) ||
+        (getDevice() != guardedSource.data())) return false;
+    QScopedPointer<XMaterializedUnpackGuard> pSourceGuard(XMaterializedUnpackGuard::bind(guardedSource.data(), pPdStruct));
+    if (!pSourceGuard || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
+        (getDevice() != guardedSource.data())) return false;
+    if (!m_bTrustedSnapshot) {
+        QScopedPointer<QIODevice> pSnapshot(createFileBuffer(nSourceSize, pPdStruct));
+        if (!guardedThis || !guardedSource || !pSnapshot || (getDeviceGeneration() != nGeneration) ||
+            (getDevice() != guardedSource.data())) return false;
+        QString sSourceFileName;
+        if (QFile *pSourceFile = qobject_cast<QFile *>(guardedSource.data())) sSourceFileName = pSourceFile->fileName();
+        pSnapshot->setProperty("XStaticUnpacker.SourceIdentityBound", true);
+        if (!sSourceFileName.isEmpty()) pSnapshot->setProperty("XStaticUnpacker.SourceFileName", sSourceFileName);
+        if (!copyDeviceMemory(guardedSource.data(), 0, pSnapshot.data(), 0, nSourceSize, pPdStruct) || !guardedThis ||
+            !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data())) return false;
+        XClickteam worker(pSnapshot.data(), bIsImage, nModuleAddress);
+        worker.m_bTrustedSnapshot = true;
+        UNPACK_STATE materializedState;
+        const bool bMaterialized = worker.initUnpack(&materializedState, mapProperties, pPdStruct);
+        if (!guardedThis || !guardedSource || !bMaterialized || (getDeviceGeneration() != nGeneration) ||
+            (getDevice() != guardedSource.data())) return false;
+        UNPACK_CONTEXT *pMaterializedContext = static_cast<UNPACK_CONTEXT *>(materializedState.pContext);
+        if (!pMaterializedContext) return false;
+        QScopedPointer<UNPACK_CONTEXT> pContext(new (std::nothrow) UNPACK_CONTEXT);
+        if (!pContext) return false;
+        pContext->listEntries = pMaterializedContext->listEntries;
+        pContext->nTotalOutput = pMaterializedContext->nTotalOutput;
+        pContext->listCompanionGuards.swap(pMaterializedContext->listCompanionGuards);
+        if (!worker.finishUnpack(&materializedState, nullptr) || !guardedThis || !guardedSource ||
+            (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
+            !isPdStructNotCanceled(pPdStruct) || pContext->listEntries.isEmpty()) return false;
+        pContext->pSourceDevice = guardedSource;
+        pContext->pOwnerState = pState;
+        pContext->baToken = QUuid::createUuid().toRfc4122();
+        pContext->nDeviceGeneration = nGeneration;
+        pContext->nSourceSize = nSourceSize;
+        if (pContext->baToken.isEmpty()) return false;
+        if (!pSourceGuard->validateAndFinalize(pPdStruct) ||
+            !XMaterializedUnpackGuard::areCurrent(pSourceGuard.data(), pContext->listCompanionGuards, pPdStruct) ||
+            !guardedThis || !guardedSource ||
+            (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
+            !isPdStructNotCanceled(pPdStruct)) return false;
+        pContext->pSourceGuard = pSourceGuard.take();
+        pState->nTotalSize = nSourceSize;
+        pState->nNumberOfRecords = pContext->listEntries.size();
+        pState->mapUnpackProperties = mapProperties;
+        pState->pContext = pContext.data();
+        pState->baUnpackSourceToken = pContext->baToken;
+        pLifetimeState->setContexts.insert(pContext.take());
+        return guardedThis && pLifetimeState->bOwnerAlive;
+    }
+    pState->nTotalSize = nSourceSize;
     pState->mapUnpackProperties = mapProperties;
-    pState->mapArchiveProperties.clear();
 
     INTERNAL_INFO info = _detect(pPdStruct);
     if (!info.bIsValid || (info.nContainerOffset < 0)) return false;
 
-    UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT;
+    UNPACK_CONTEXT *pContext = new (std::nothrow) UNPACK_CONTEXT;
+    if (!pContext) return false;
     if (!_buildEntries(pContext, info.nContainerOffset, pPdStruct)) {
         delete pContext;
         return false;
     }
 
+    pContext->pSourceDevice = guardedSource;
+    pContext->pOwnerState = pState;
+    pContext->baToken = QUuid::createUuid().toRfc4122();
+    pContext->nDeviceGeneration = nGeneration;
+    pContext->nSourceSize = nSourceSize;
+    if (pContext->baToken.isEmpty()) {
+        delete pContext;
+        return false;
+    }
+    if (!pSourceGuard->validateAndFinalize(pPdStruct) ||
+        !XMaterializedUnpackGuard::areCurrent(pSourceGuard.data(), pContext->listCompanionGuards, pPdStruct) ||
+        !guardedThis || !guardedSource ||
+        (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
+        !isPdStructNotCanceled(pPdStruct)) {
+        delete pContext;
+        return false;
+    }
+    pContext->pSourceGuard = pSourceGuard.take();
     pState->nNumberOfRecords = pContext->listEntries.size();
     pState->pContext = pContext;
-    return true;
+    pState->baUnpackSourceToken = pContext->baToken;
+    pLifetimeState->setContexts.insert(pContext);
+    return guardedThis && pLifetimeState->bOwnerAlive;
 }
 
 XBinary::ARCHIVERECORD XClickteam::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
     ARCHIVERECORD result = {};
-    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct)) return result;
-    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
+    const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
+    if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return result;
+    QScopedValueRollback<bool> operationGuard(pLifetimeState->bOperationInProgress, true);
+    QPointer<XClickteam> guardedThis(this);
+    if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !isPdStructNotCanceled(pPdStruct)) return result;
+    UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     qint32 nIndex = pState->nCurrentIndex;
-    if ((nIndex < 0) || (nIndex >= pContext->listEntries.size())) return result;
+    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) ||
+        (pContext->baToken != pState->baUnpackSourceToken) || (pContext->nDeviceGeneration != getDeviceGeneration()) ||
+        (pContext->pSourceDevice.data() != getDevice()) || (pState->nCurrentOffset != pContext->nCurrentOffset) ||
+        (nIndex != pContext->nCurrentIndex) || (pState->nNumberOfRecords != pContext->listEntries.size()) ||
+        (pState->nTotalSize != pContext->nSourceSize) || (nIndex < 0) || (nIndex >= pContext->listEntries.size())) return result;
+    if (!XMaterializedUnpackGuard::areCurrent(pContext->pSourceGuard, pContext->listCompanionGuards, pPdStruct) || !guardedThis ||
+        !pLifetimeState->bOwnerAlive || !pLifetimeState->setContexts.contains(pContext) ||
+        (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
+        (pContext->baToken != pState->baUnpackSourceToken) || (pState->nCurrentIndex != pContext->nCurrentIndex)) return result;
 
     const FILE_ENTRY &e = pContext->listEntries.at(nIndex);
     result.nStreamSize = e.baData.size();
     result.mapProperties[FPART_PROP_ORIGINALNAME] = e.sName;
     result.mapProperties[FPART_PROP_UNCOMPRESSEDSIZE] = (qint64)e.baData.size();
     result.mapProperties[FPART_PROP_ISFOLDER] = false;
-    return result;
+    return guardedThis ? result : ARCHIVERECORD();
 }
 
 bool XClickteam::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
-    if (!pState || !pState->pContext || !pDevice || !pDevice->isWritable() || !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
-    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
-    qint32 nIndex = pState->nCurrentIndex;
-    if ((nIndex < 0) || (nIndex >= pContext->listEntries.size())) return false;
-
-    const QByteArray &baData = pContext->listEntries.at(nIndex).baData;
-    const bool bSeekableOutput = !pDevice->isSequential();
-    auto failOutput = [&]() -> bool {
-        if (bSeekableOutput) {
-            XBinary::resize(pDevice, 0);
-            pDevice->seek(0);
-            pState->nCurrentOffset = 0;
+    const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
+    if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return false;
+    QScopedValueRollback<bool> operationGuard(pLifetimeState->bOperationInProgress, true);
+    QPointer<XClickteam> guardedThis(this);
+    QPointer<QIODevice> guardedOutput(pDevice);
+    if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !guardedOutput || !isPdStructNotCanceled(pPdStruct)) return false;
+    UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+    const qint32 nIndex = pState->nCurrentIndex;
+    const auto isAuthenticated = [&]() -> bool {
+        return guardedThis && pLifetimeState->bOwnerAlive && pLifetimeState->setContexts.contains(pContext) &&
+               (pState->pContext == pContext) && (pContext->pOwnerState == pState) && (pState->baUnpackSourceToken == pContext->baToken) &&
+               (pContext->nDeviceGeneration == guardedThis->getDeviceGeneration()) && (pContext->pSourceDevice.data() == guardedThis->getDevice()) &&
+               (pState->nCurrentIndex == pContext->nCurrentIndex) && (pState->nCurrentOffset == pContext->nCurrentOffset) &&
+               (pState->nNumberOfRecords == pContext->listEntries.size()) && (pState->nTotalSize == pContext->nSourceSize) &&
+               (nIndex >= 0) && (nIndex < pContext->listEntries.size());
+    };
+    if (!isAuthenticated()) return false;
+    const bool bOpen = guardedOutput->isOpen();
+    if (!isAuthenticated() || !guardedOutput || !bOpen) return false;
+    const bool bWritable = guardedOutput->isWritable();
+    if (!isAuthenticated() || !guardedOutput || !bWritable) return false;
+    const bool bSequential = guardedOutput->isSequential();
+    if (!isAuthenticated() || !guardedOutput || bSequential) return false;
+    const QIODevice::OpenMode openMode = guardedOutput->openMode();
+    if (!isAuthenticated() || !guardedOutput || (openMode & (QIODevice::Append | QIODevice::Text)) || !isResizeEnable(guardedOutput.data()) ||
+        !guardedOutput || devicesAlias(pContext->pSourceDevice.data(), guardedOutput.data()) || !isAuthenticated() || !guardedOutput) return false;
+    if (!XMaterializedUnpackGuard::areCurrent(pContext->pSourceGuard, pContext->listCompanionGuards, pPdStruct) ||
+        !guardedOutput || !isAuthenticated()) return false;
+    const QByteArray baData = pContext->listEntries.at(nIndex).baData;
+    QScopedPointer<QIODevice> pStage(createFileBuffer(baData.size(), pPdStruct));
+    QPointer<QIODevice> guardedStage(pStage.data());
+    if (!isAuthenticated() || !guardedOutput || !guardedStage) return false;
+    UNPACK_STATE writeState = *pState;
+    writeState.pContext = nullptr;
+    writeState.baUnpackSourceToken.clear();
+    if (!writeUnpackData(&writeState, guardedStage.data(), baData, pPdStruct) || !guardedStage || !guardedOutput || !isAuthenticated()) return false;
+    writeState.nCurrentOffset = 0;
+    const bool bPublished = writeUnpackData(&writeState, guardedOutput.data(), baData, pPdStruct);
+    const bool bSourceCurrent = bPublished &&
+                                XMaterializedUnpackGuard::areCurrent(pContext->pSourceGuard, pContext->listCompanionGuards, pPdStruct);
+    const bool bFinal = bSourceCurrent && guardedOutput && isAuthenticated() && isPdStructNotCanceled(pPdStruct);
+    if (!bFinal) {
+        if (bPublished && guardedOutput) {
+            resize(guardedOutput.data(), 0);
+            if (guardedOutput) guardedOutput->seek(0);
         }
         return false;
-    };
-    if (bSeekableOutput && (!pDevice->seek(0) || ((pDevice->size() != 0) && !XBinary::resize(pDevice, 0)))) return false;
-    qint64 nWritten = 0;
-    pState->nCurrentOffset = 0;
-    while (nWritten < baData.size()) {
-        if (!XBinary::isPdStructNotCanceled(pPdStruct)) return failOutput();
-        qint64 nChunk = qMin<qint64>(1ll << 20, baData.size() - nWritten);
-        qint64 nResult = pDevice->write(baData.constData() + nWritten, nChunk);
-        if ((nResult <= 0) || (nResult > nChunk)) return failOutput();
-        nWritten += nResult;
-        pState->nCurrentOffset = nWritten;
     }
-
-    if (!XBinary::isPdStructNotCanceled(pPdStruct)) return failOutput();
+    pContext->nCurrentOffset = writeState.nCurrentOffset;
+    pState->nCurrentOffset = writeState.nCurrentOffset;
     return true;
 }
 
 bool XClickteam::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
-    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
-    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
-    if ((pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pContext->listEntries.size() - 1)) return false;
-    pState->nCurrentIndex++;
+    const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
+    if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return false;
+    QScopedValueRollback<bool> operationGuard(pLifetimeState->bOperationInProgress, true);
+    QPointer<XClickteam> guardedThis(this);
+    if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !isPdStructNotCanceled(pPdStruct)) return false;
+    UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
+        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) ||
+        (pState->nCurrentIndex != pContext->nCurrentIndex) || (pState->nCurrentOffset != pContext->nCurrentOffset) ||
+        (pState->nNumberOfRecords != pContext->listEntries.size()) || (pState->nTotalSize != pContext->nSourceSize) ||
+        (pContext->nCurrentIndex < 0) || (pContext->nCurrentIndex >= pContext->listEntries.size() - 1)) return false;
+    if (!XMaterializedUnpackGuard::areCurrent(pContext->pSourceGuard, pContext->listCompanionGuards, pPdStruct) || !guardedThis ||
+        !pLifetimeState->bOwnerAlive || !pLifetimeState->setContexts.contains(pContext) ||
+        (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
+        (pContext->baToken != pState->baUnpackSourceToken) ||
+        (pContext->nCurrentIndex >= pContext->listEntries.size() - 1)) return false;
+    ++pContext->nCurrentIndex;
+    pContext->nCurrentOffset = 0;
+    pState->nCurrentIndex = pContext->nCurrentIndex;
     pState->nCurrentOffset = 0;
     return true;
 }
@@ -666,15 +850,18 @@ bool XClickteam::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
     Q_UNUSED(pPdStruct)
     if (!pState) return false;
-    if (pState->pContext) {
-        delete (UNPACK_CONTEXT *)pState->pContext;
-        pState->pContext = nullptr;
+    const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
+    if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return false;
+    QScopedValueRollback<bool> operationGuard(pLifetimeState->bOperationInProgress, true);
+    if (!pState->pContext && pState->baUnpackSourceToken.isEmpty()) {
+        *pState = UNPACK_STATE();
+        return true;
     }
-    pState->nCurrentOffset = 0;
-    pState->nTotalSize = 0;
-    pState->nCurrentIndex = 0;
-    pState->nNumberOfRecords = 0;
-    pState->mapUnpackProperties.clear();
-    pState->mapArchiveProperties.clear();
+    UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+    if (!pContext || !pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) ||
+        (pContext->baToken != pState->baUnpackSourceToken)) return false;
+    pLifetimeState->setContexts.remove(pContext);
+    *pState = UNPACK_STATE();
+    delete pContext;
     return true;
 }

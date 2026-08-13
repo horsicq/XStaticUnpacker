@@ -735,4 +735,3 @@ bool XMEW::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
 
     return true;
 }
-

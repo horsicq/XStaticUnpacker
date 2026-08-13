@@ -475,4 +475,3 @@ bool XYODA::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
     return true;
 }
 
-
