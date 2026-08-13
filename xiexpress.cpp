@@ -5,6 +5,8 @@
 
 #include "xiexpress.h"
 
+#include <QScopedValueRollback>
+
 #include "xpe.h"
 #include "subdevice.h"
 #include "../XArchive/xcab.h"
@@ -12,20 +14,50 @@
 // RT_RCDATA resource type id.
 #define IEXPRESS_RT_RCDATA 10
 
+XIExpress::UNPACK_DEFERRED_CLEANUP::~UNPACK_DEFERRED_CLEANUP()
+{
+    const QSet<UNPACK_CONTEXT *> contexts = setContexts;
+    setContexts.clear();
+    for (UNPACK_CONTEXT *pContext : contexts) {
+        if (pContext->pArchive) {
+            pContext->pArchive->finishUnpack(&pContext->innerState, nullptr);
+            delete pContext->pArchive;
+        }
+        if (pContext->pSubDevice) {
+            pContext->pSubDevice->close();
+            delete pContext->pSubDevice;
+        }
+        delete pContext;
+    }
+}
+
 XIExpress::XIExpress(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : XBinary(pDevice, bIsImage, nModuleAddress)
 {
+    m_pUnpackDeferredCleanup = QSharedPointer<UNPACK_DEFERRED_CLEANUP>::create();
+    const QSharedPointer<UNPACK_DEFERRED_CLEANUP> pDeferredCleanup = m_pUnpackDeferredCleanup;
+    m_pUnpackOperationState = QSharedPointer<bool>(new bool(false), [pDeferredCleanup](bool *pValue) { delete pValue; });
     m_internalInfo = INTERNAL_INFO();
     setIsArchive(true);
 }
 
 XIExpress::~XIExpress()
 {
+    if (m_pUnpackOperationState) *m_pUnpackOperationState = true;
+    if (m_pUnpackDeferredCleanup) {
+        m_pUnpackDeferredCleanup->setContexts.unite(m_setUnpackContexts);
+        m_setUnpackContexts.clear();
+    }
+    m_pUnpackDeferredCleanup.clear();
+    m_pUnpackOperationState.clear();
 }
 
 bool XIExpress::isValid(PDSTRUCT *pPdStruct)
 {
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
-    return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
+    QPointer<XIExpress> guardedThis(this);
+    const INTERNAL_INFO *pInfo =
+        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
+    return guardedThis && pInfo && pInfo->bIsValid;
 }
 
 bool XIExpress::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
@@ -42,14 +74,48 @@ XIExpress::INTERNAL_INFO XIExpress::_getInternalInfo(PDSTRUCT *pPdStruct)
 // Cache format-specific parsing together with the XBinary memory map.
 bool XIExpress::handleInternalInfo(PDSTRUCT *pPdStruct)
 {
-    if (!isInternalInfoHandled()) {
-        INTERNAL_INFO info = _getInternalInfo(pPdStruct);
-        if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
-        info.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
-        if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
-        m_internalInfo = info;
-        setIsInternalInfoHandled(true);
-        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    QPointer<XIExpress> guardedThis(this);
+    const bool bAlreadyHandled = guardedThis->isInternalInfoHandled();
+    if (!guardedThis) return false;
+
+    if (!bAlreadyHandled) {
+        const quint64 nTransaction =
+            guardedThis->beginInternalInfoTransaction();
+        if (!nTransaction) return false;
+
+        // The transaction supplies the recursion sentinel. Keep every
+        // source-derived value local until the same binding is revalidated.
+        guardedThis->m_internalInfo = INTERNAL_INFO();
+        INTERNAL_INFO info = guardedThis->_getInternalInfo(pPdStruct);
+        if (!guardedThis) return false;
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
+            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+            return false;
+        }
+
+        const auto memoryMap =
+            guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        if (!guardedThis) return false;
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
+            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+            return false;
+        }
+        info.memoryMap = memoryMap;
+
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction)) {
+            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+            return false;
+        }
+        guardedThis->m_internalInfo = info;
+        if (!guardedThis->commitInternalInfoTransaction(
+                nTransaction,
+                static_cast<XBinary::INTERNAL_INFO *>(
+                    &guardedThis->m_internalInfo))) {
+            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+            return false;
+        }
     }
 
     return true;
@@ -57,8 +123,11 @@ bool XIExpress::handleInternalInfo(PDSTRUCT *pPdStruct)
 
 void *XIExpress::getInternalInfo(PDSTRUCT *pPdStruct)
 {
-    handleInternalInfo(pPdStruct);
-    return &m_internalInfo;
+    QPointer<XIExpress> guardedThis(this);
+    const bool bHandled = guardedThis->handleInternalInfo(pPdStruct);
+    if (!guardedThis || !bHandled) return nullptr;
+
+    return &guardedThis->m_internalInfo;
 }
 
 void XIExpress::setInternalInfo(void *pInternalInfo)
@@ -77,6 +146,17 @@ void XIExpress::setInternalInfo(void *pInternalInfo)
 XBinary::FT XIExpress::getFileType()
 {
     return FT_ARCHIVE;
+}
+
+static bool iexFindStubString(XIExpress *pThis, qint64 nCabinetOffset, qint64 nCabinetEnd, qint64 nTotalSize, XBinary::PDSTRUCT *pPdStruct,
+                              const QString &sString, bool bCaseInsensitive)
+{
+    qint64 nFound = bCaseInsensitive ? pThis->find_ansiStringI(0, nCabinetOffset, sString, pPdStruct)
+                                     : pThis->find_ansiString(0, nCabinetOffset, sString, pPdStruct);
+    if (nFound != -1) return true;
+    nFound = bCaseInsensitive ? pThis->find_ansiStringI(nCabinetEnd, nTotalSize - nCabinetEnd, sString, pPdStruct)
+                              : pThis->find_ansiString(nCabinetEnd, nTotalSize - nCabinetEnd, sString, pPdStruct);
+    return nFound != -1;
 }
 
 XIExpress::INTERNAL_INFO XIExpress::_detect(PDSTRUCT *pPdStruct)
@@ -125,16 +205,8 @@ XIExpress::INTERNAL_INFO XIExpress::_detect(PDSTRUCT *pPdStruct)
             break;
         }
     }
-    auto findStubString = [&](const QString &sString, bool bCaseInsensitive) -> bool {
-        qint64 nFound = bCaseInsensitive ? find_ansiStringI(0, rrCab.nOffset, sString, pPdStruct)
-                                         : find_ansiString(0, rrCab.nOffset, sString, pPdStruct);
-        if (nFound != -1) return true;
-        nFound = bCaseInsensitive ? find_ansiStringI(nCabinetEnd, nTotalSize - nCabinetEnd, sString, pPdStruct)
-                                  : find_ansiString(nCabinetEnd, nTotalSize - nCabinetEnd, sString, pPdStruct);
-        return nFound != -1;
-    };
-    bool bWextract = bRunResource || findStubString(QStringLiteral("wextract"), true) ||
-                     findStubString(QStringLiteral("IExpress extraction tool"), false);
+    bool bWextract = bRunResource || iexFindStubString(this, rrCab.nOffset, nCabinetEnd, nTotalSize, pPdStruct, QStringLiteral("wextract"), true) ||
+                     iexFindStubString(this, rrCab.nOffset, nCabinetEnd, nTotalSize, pPdStruct, QStringLiteral("IExpress extraction tool"), false);
     if (!bWextract) return result;
 
     // Authenticate the complete cabinet table during detection.  A resource
@@ -181,17 +253,46 @@ QMap<XBinary::UNPACK_PROP, QVariant> XIExpress::getDefaultUnpackProperties()
 bool XIExpress::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
-    if (pState->pContext && !finishUnpack(pState, nullptr)) return false;
+    QSharedPointer<bool> pOperationState = m_pUnpackOperationState;
+    if (!pOperationState || *pOperationState) return false;
+    QScopedValueRollback<bool> operationGuard(*pOperationState, true);
+    QPointer<XIExpress> guardedThis(this);
+    if (!pState->baUnpackSourceToken.isEmpty()) return false;
+    if (pState->pContext) {
+        UNPACK_CONTEXT *pOldContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+        if (!m_setUnpackContexts.contains(pOldContext) || (pOldContext->pOwnerState != pState)) return false;
+        m_setUnpackContexts.remove(pOldContext);
+        pState->pContext = nullptr;
+        bool bFinishOK = true;
+        if (pOldContext->pArchive) {
+            bFinishOK = pOldContext->pArchive->finishUnpack(&pOldContext->innerState, nullptr);
+            delete pOldContext->pArchive;
+        }
+        if (pOldContext->pSubDevice) {
+            pOldContext->pSubDevice->close();
+            delete pOldContext->pSubDevice;
+        }
+        delete pOldContext;
+        *pState = UNPACK_STATE();
+        if (!guardedThis || !bFinishOK) return false;
+    }
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
     *pState = UNPACK_STATE();
     pState->mapUnpackProperties = mapProperties;
 
-    INTERNAL_INFO info = _detect(pPdStruct);
-    if (!info.bIsValid || (info.nArchiveOffset < 0) || (info.nArchiveSize <= 0)) return false;
+    QPointer<QIODevice> guardedSource(getDevice());
+    if (!guardedSource) return false;
+    XIExpress detector(guardedSource.data(), isImage(), getModuleAddress());
+    INTERNAL_INFO info = detector._detect(pPdStruct);
+    if (!guardedThis || !guardedSource || !info.bIsValid || (info.nArchiveOffset < 0) || (info.nArchiveSize <= 0)) return false;
+    const qint64 nTotalSize = guardedSource->size();
+    if (!guardedThis || !guardedSource || (nTotalSize < 0)) return false;
 
     UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT;
-    pContext->pSubDevice = new SubDevice(getDevice(), info.nArchiveOffset, info.nArchiveSize);
+    pContext->pOuterSourceDevice = guardedSource;
+    pContext->nOwnerDeviceGeneration = getDeviceGeneration();
+    pContext->pSubDevice = new SubDevice(guardedSource.data(), info.nArchiveOffset, info.nArchiveSize);
     pContext->pArchive = nullptr;
     pContext->innerState = UNPACK_STATE();
 
@@ -202,7 +303,8 @@ bool XIExpress::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
     }
 
     pContext->pArchive = new XCab(pContext->pSubDevice);
-    if (!pContext->pArchive->initUnpack(&pContext->innerState, mapProperties, pPdStruct)) {
+    if (!pContext->pArchive->initUnpack(&pContext->innerState, mapProperties, pPdStruct) || !guardedThis || !guardedSource) {
+        pContext->pArchive->finishUnpack(&pContext->innerState, nullptr);
         delete pContext->pArchive;
         pContext->pSubDevice->close();
         delete pContext->pSubDevice;
@@ -211,32 +313,55 @@ bool XIExpress::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
     }
 
     pState->nNumberOfRecords = pContext->innerState.nNumberOfRecords;
-    pState->nTotalSize = getSize();
+    pState->nTotalSize = nTotalSize;
     pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
     pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
+    pContext->pOwnerState = pState;
     pState->pContext = pContext;
+    m_setUnpackContexts.insert(pContext);
     return true;
 }
 
 XBinary::ARCHIVERECORD XIExpress::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
     ARCHIVERECORD result = {};
-    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) ||
+    QSharedPointer<bool> pOperationState = m_pUnpackOperationState;
+    if (!pOperationState || *pOperationState) return result;
+    QScopedValueRollback<bool> operationGuard(*pOperationState, true);
+    QPointer<XIExpress> guardedThis(this);
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) ||
         (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) return result;
-    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
-    if (!pContext->pArchive) return result;
-    pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
-    return pContext->pArchive->infoCurrent(&pContext->innerState, pPdStruct);
+    UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
+        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pArchive ||
+        (pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
+        (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
+        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords)) return result;
+    result = pContext->pArchive->infoCurrent(&pContext->innerState, pPdStruct);
+    if (!guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return ARCHIVERECORD();
+    return result;
 }
 
 bool XIExpress::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
-    if (!pState || !pState->pContext || !pDevice || !pDevice->isWritable() || !XBinary::isPdStructNotCanceled(pPdStruct) ||
+    QSharedPointer<bool> pOperationState = m_pUnpackOperationState;
+    if (!pOperationState || *pOperationState) return false;
+    QScopedValueRollback<bool> operationGuard(*pOperationState, true);
+    QPointer<XIExpress> guardedThis(this);
+    QPointer<QIODevice> guardedOutput(pDevice);
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !guardedOutput || !guardedOutput->isOpen() ||
+        !guardedOutput->isWritable() || guardedOutput->isSequential() || !guardedThis || !guardedOutput ||
+        (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) ||
+        !XBinary::isPdStructNotCanceled(pPdStruct) ||
         (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) return false;
-    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
-    if (!pContext->pArchive) return false;
-    pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
-    bool bResult = pContext->pArchive->unpackCurrent(&pContext->innerState, pDevice, pPdStruct);
+    UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
+        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pArchive ||
+        (pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
+        (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
+        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords)) return false;
+    bool bResult = pContext->pArchive->unpackCurrent(&pContext->innerState, guardedOutput.data(), pPdStruct);
+    if (!guardedThis || !guardedOutput || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
     pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
     pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
     return bResult;
@@ -244,12 +369,20 @@ bool XIExpress::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT
 
 bool XIExpress::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
-    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) ||
+    QSharedPointer<bool> pOperationState = m_pUnpackOperationState;
+    if (!pOperationState || *pOperationState) return false;
+    QScopedValueRollback<bool> operationGuard(*pOperationState, true);
+    QPointer<XIExpress> guardedThis(this);
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) ||
         (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) return false;
-    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
-    if (!pContext->pArchive) return false;
-    pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
+    UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
+        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pArchive ||
+        (pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
+        (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
+        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords)) return false;
     bool bResult = pContext->pArchive->moveToNext(&pContext->innerState, pPdStruct);
+    if (!guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
     pState->nCurrentIndex = pContext->innerState.nCurrentIndex;
     pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
     pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
@@ -258,10 +391,19 @@ bool XIExpress::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 
 bool XIExpress::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
+    Q_UNUSED(pPdStruct)
     if (!pState) return false;
+    if (!pState->baUnpackSourceToken.isEmpty()) return false;
+    QSharedPointer<bool> pOperationState = m_pUnpackOperationState;
+    if (!pOperationState || *pOperationState) return false;
+    QScopedValueRollback<bool> operationGuard(*pOperationState, true);
+    QPointer<XIExpress> guardedThis(this);
     bool bResult = true;
     if (pState->pContext) {
-        UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
+        UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+        if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState)) return false;
+        m_setUnpackContexts.remove(pContext);
+        pState->pContext = nullptr;
         if (pContext->pArchive) {
             bResult = pContext->pArchive->finishUnpack(&pContext->innerState, nullptr);
             delete pContext->pArchive;
@@ -271,7 +413,7 @@ bool XIExpress::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
             delete pContext->pSubDevice;
         }
         delete pContext;
-        pState->pContext = nullptr;
+        if (!guardedThis) return false;
     }
     pState->nCurrentOffset = 0;
     pState->nTotalSize = 0;

@@ -5,6 +5,8 @@
 
 #include "xupx.h"
 
+#include "../XArchive/xarchive.h"
+
 #include "Algos/xucldecoder.h"
 #include "Algos/xalgo_local.h"
 #include "xmach.h"
@@ -13,7 +15,32 @@
 #include <QBuffer>
 #include <QFile>
 #include <QFileInfo>
+#include <QTemporaryFile>
 #include <zlib.h>
+
+namespace {
+class UpxOperationGuard {
+public:
+    explicit UpxOperationGuard(const QSharedPointer<XUPX::UNPACK_LIFETIME_STATE> &pState) : m_pState(pState), m_bAcquired(false)
+    {
+        if (m_pState && m_pState->bOwnerAlive && !m_pState->bOperationInProgress) {
+            m_pState->bOperationInProgress = true;
+            m_bAcquired = true;
+        }
+    }
+    ~UpxOperationGuard() { if (m_pState && m_bAcquired) m_pState->bOperationInProgress = false; }
+    bool isAcquired() const { return m_bAcquired; }
+private:
+    QSharedPointer<XUPX::UNPACK_LIFETIME_STATE> m_pState;
+    bool m_bAcquired;
+};
+
+class UpxPublisher : public XArchive {
+public:
+    explicit UpxPublisher(QIODevice *pDevice) : XArchive(pDevice) {}
+    using XArchive::publishUnpackOutput;
+};
+}
 
 SRes X_LzmaDecode(Byte *dest, SizeT *destLen, const Byte *src, SizeT *srcLen, const Byte *propData, unsigned propSize, ELzmaFinishMode finishMode, ELzmaStatus *status,
                   ISzAllocPtr alloc);
@@ -283,13 +310,34 @@ enum DOS_EXE_UPX_FLAGS : qint32 {
     DOS_EXE_FLAG_MAXMEM = 32
 };
 
+XUPX::UNPACK_LIFETIME_STATE::~UNPACK_LIFETIME_STATE()
+{
+    const QSet<UNPACK_CONTEXT *> contexts = setContexts;
+    setContexts.clear();
+    for (UNPACK_CONTEXT *pContext : contexts) XUPX::deleteUnpackContext(pContext);
+}
+
+void XUPX::deleteUnpackContext(UNPACK_CONTEXT *pContext)
+{
+    if (!pContext) return;
+    if (pContext->pSourceValidator) {
+        pContext->pSourceValidator->releaseUnpackSource(&pContext->sourceValidationState);
+        delete pContext->pSourceValidator;
+    }
+    delete pContext;
+}
+
 XUPX::XUPX(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : XBinary(pDevice, bIsImage, nModuleAddress)
 {
+    m_pUnpackLifetimeState = QSharedPointer<UNPACK_LIFETIME_STATE>::create();
     setIsArchive(true);
 }
 
 XUPX::~XUPX()
 {
+    QSharedPointer<UNPACK_LIFETIME_STATE> pLifetime = m_pUnpackLifetimeState;
+    if (pLifetime) pLifetime->bOwnerAlive = false;
+    m_pUnpackLifetimeState.clear();
 }
 
 QList<QString> XUPX::getSearchSignatures()
@@ -319,7 +367,10 @@ quint32 XUPX::ftStringToStructID(const QString &sFtString)
 
 bool XUPX::isValid(PDSTRUCT *pPdStruct)
 {
-    return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
+    QPointer<XUPX> guardedThis(this);
+    const INTERNAL_INFO *pInfo =
+        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
+    return guardedThis && pInfo && pInfo->bIsValid;
 }
 
 bool XUPX::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
@@ -455,6 +506,71 @@ bool XUPX::_detectELFInfo(INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct)
     return true;
 }
 
+static bool upxIsMethodSupported(quint8 nMethod)
+{
+    switch (nMethod) {
+        case XUPX::UPX_M_NRV2B_LE32:
+        case XUPX::UPX_M_NRV2B_8:
+        case XUPX::UPX_M_NRV2B_LE16:
+        case XUPX::UPX_M_NRV2D_LE32:
+        case XUPX::UPX_M_NRV2D_8:
+        case XUPX::UPX_M_NRV2D_LE16:
+        case XUPX::UPX_M_NRV2E_LE32:
+        case XUPX::UPX_M_NRV2E_8:
+        case XUPX::UPX_M_NRV2E_LE16:
+        case XUPX::UPX_M_LZMA:
+        case XUPX::UPX_M_DEFLATE: return true;
+        default: break;
+    }
+
+    return false;
+}
+
+static bool upxValidateMachDataOffset(XUPX *pUpx, XMACH *pMach, quint32 nHeaderSize, bool bIsBigEndian, quint8 nFormat, XBinary::PDSTRUCT *pPdStruct, qint64 nDataOffset,
+                                      XUPX::INTERNAL_INFO *pResult)
+{
+    if ((!pResult) || (nDataOffset < nHeaderSize) || ((nDataOffset + (qint64)sizeof(XUPX::p_info) + (qint64)sizeof(XUPX::b_info)) > pUpx->getSize()) ||
+        (nDataOffset & 3)) {
+        return false;
+    }
+
+    QByteArray baProgramInfo = pUpx->read_array_process(nDataOffset, sizeof(XUPX::p_info), pPdStruct);
+    QByteArray baBlockInfo = pUpx->read_array_process(nDataOffset + sizeof(XUPX::p_info), sizeof(XUPX::b_info), pPdStruct);
+
+    if ((baProgramInfo.size() != (qint64)sizeof(XUPX::p_info)) || (baBlockInfo.size() != (qint64)sizeof(XUPX::b_info))) {
+        return false;
+    }
+
+    XUPX::p_info programInfo = {};
+    XUPX::b_info blockInfo = {};
+
+    XBinary::_copyMemory((char *)&programInfo, baProgramInfo.constData(), sizeof(programInfo));
+    XBinary::_copyMemory((char *)&blockInfo, baBlockInfo.constData(), sizeof(blockInfo));
+
+    const quint32 nOrigFileSize = XBinary::_read_uint32((char *)&programInfo.p_filesize, bIsBigEndian);
+    const quint32 nBlockSize = XBinary::_read_uint32((char *)&programInfo.p_blocksize, bIsBigEndian);
+    const quint32 nHeaderUnpackedSize = XBinary::_read_uint32((char *)&blockInfo.sz_unc, bIsBigEndian);
+    const quint32 nHeaderCompressedSize = XBinary::_read_uint32((char *)&blockInfo.sz_cpr, bIsBigEndian);
+
+    if ((!nOrigFileSize) || (!nBlockSize) || (nBlockSize > nOrigFileSize) || (nOrigFileSize <= (quint32)pUpx->getSize()) || (nHeaderUnpackedSize != nHeaderSize) ||
+        (!nHeaderCompressedSize) || (nHeaderCompressedSize > nBlockSize) || (!upxIsMethodSupported(blockInfo.b_method))) {
+        return false;
+    }
+
+    pResult->bIsValid = true;
+    pResult->fileType = pMach->getFileType();
+    pResult->format = nFormat;
+    pResult->method = blockInfo.b_method;
+    pResult->filter = blockInfo.b_ftid;
+    pResult->filter_cto = blockInfo.b_cto8;
+    pResult->u_len = nOrigFileSize;
+    pResult->u_file_size = nOrigFileSize;
+    pResult->c_len = nHeaderCompressedSize;
+    pResult->nDataOffset = nDataOffset;
+
+    return true;
+}
+
 bool XUPX::_detectMachInfo(INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct)
 {
     if (!pInfo) {
@@ -475,67 +591,6 @@ bool XUPX::_detectMachInfo(INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct)
         return false;
     }
 
-    auto isMethodSupported = [](quint8 nMethod) -> bool {
-        switch (nMethod) {
-            case XUPX::UPX_M_NRV2B_LE32:
-            case XUPX::UPX_M_NRV2B_8:
-            case XUPX::UPX_M_NRV2B_LE16:
-            case XUPX::UPX_M_NRV2D_LE32:
-            case XUPX::UPX_M_NRV2D_8:
-            case XUPX::UPX_M_NRV2D_LE16:
-            case XUPX::UPX_M_NRV2E_LE32:
-            case XUPX::UPX_M_NRV2E_8:
-            case XUPX::UPX_M_NRV2E_LE16:
-            case XUPX::UPX_M_LZMA:
-            case XUPX::UPX_M_DEFLATE: return true;
-            default: break;
-        }
-
-        return false;
-    };
-
-    auto validateDataOffset = [&](qint64 nDataOffset, INTERNAL_INFO *pResult) -> bool {
-        if ((!pResult) || (nDataOffset < nHeaderSize) || ((nDataOffset + (qint64)sizeof(p_info) + (qint64)sizeof(b_info)) > getSize()) || (nDataOffset & 3)) {
-            return false;
-        }
-
-        QByteArray baProgramInfo = read_array_process(nDataOffset, sizeof(p_info), pPdStruct);
-        QByteArray baBlockInfo = read_array_process(nDataOffset + sizeof(p_info), sizeof(b_info), pPdStruct);
-
-        if ((baProgramInfo.size() != (qint64)sizeof(p_info)) || (baBlockInfo.size() != (qint64)sizeof(b_info))) {
-            return false;
-        }
-
-        p_info programInfo = {};
-        b_info blockInfo = {};
-
-        XBinary::_copyMemory((char *)&programInfo, baProgramInfo.constData(), sizeof(programInfo));
-        XBinary::_copyMemory((char *)&blockInfo, baBlockInfo.constData(), sizeof(blockInfo));
-
-        const quint32 nOrigFileSize = XBinary::_read_uint32((char *)&programInfo.p_filesize, bIsBigEndian);
-        const quint32 nBlockSize = XBinary::_read_uint32((char *)&programInfo.p_blocksize, bIsBigEndian);
-        const quint32 nHeaderUnpackedSize = XBinary::_read_uint32((char *)&blockInfo.sz_unc, bIsBigEndian);
-        const quint32 nHeaderCompressedSize = XBinary::_read_uint32((char *)&blockInfo.sz_cpr, bIsBigEndian);
-
-        if ((!nOrigFileSize) || (!nBlockSize) || (nBlockSize > nOrigFileSize) || (nOrigFileSize <= (quint32)getSize()) || (nHeaderUnpackedSize != nHeaderSize) ||
-            (!nHeaderCompressedSize) || (nHeaderCompressedSize > nBlockSize) || (!isMethodSupported(blockInfo.b_method))) {
-            return false;
-        }
-
-        pResult->bIsValid = true;
-        pResult->fileType = mach.getFileType();
-        pResult->format = nFormat;
-        pResult->method = blockInfo.b_method;
-        pResult->filter = blockInfo.b_ftid;
-        pResult->filter_cto = blockInfo.b_cto8;
-        pResult->u_len = nOrigFileSize;
-        pResult->u_file_size = nOrigFileSize;
-        pResult->c_len = nHeaderCompressedSize;
-        pResult->nDataOffset = nDataOffset;
-
-        return true;
-    };
-
     const qint64 nSearchSize = qMin((qint64)XUPX_HEADER_SEARCH_SIZE, getSize());
     QByteArray baSearch = read_array_process(0, nSearchSize, pPdStruct);
 
@@ -551,7 +606,7 @@ bool XUPX::_detectMachInfo(INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct)
 
             qint64 nDataOffset = XBinary::_read_uint32_safe(baSearch.data(), baSearch.size(), nIndex + info.nPackHeaderSize, bIsBigEndian);
 
-            if (validateDataOffset(nDataOffset, &info)) {
+            if (upxValidateMachDataOffset(this, &mach, nHeaderSize, bIsBigEndian, nFormat, pPdStruct, nDataOffset, &info)) {
                 info.nHeaderOffset = nIndex;
                 info.fileType = mach.getFileType();
                 info.format = nFormat;
@@ -573,7 +628,7 @@ bool XUPX::_detectMachInfo(INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct)
     for (qint64 i = 0; (i + (qint64)sizeof(p_info) + (qint64)sizeof(b_info)) <= baScan.size(); i += 4) {
         INTERNAL_INFO info = {};
 
-        if (validateDataOffset(nScanStart + i, &info)) {
+        if (upxValidateMachDataOffset(this, &mach, nHeaderSize, bIsBigEndian, nFormat, pPdStruct, nScanStart + i, &info)) {
             *pInfo = info;
             return true;
         }
@@ -764,15 +819,48 @@ XUPX::INTERNAL_INFO XUPX::_getInternalInfo(PDSTRUCT *pPdStruct)
 // Cache format-specific parsing together with the XBinary memory map.
 bool XUPX::handleInternalInfo(PDSTRUCT *pPdStruct)
 {
-    if (!isInternalInfoHandled()) {
-        // Detection uses virtual format/memory-map helpers which can re-enter
-        // getInternalInfo(). Publish an initialized cache and its guard before
-        // starting detection so recursive queries observe a stable object.
-        m_internalInfo = INTERNAL_INFO();
-        setIsInternalInfoHandled(true);
-        m_internalInfo = _getInternalInfo(pPdStruct);
-        m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
-        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+    QPointer<XUPX> guardedThis(this);
+    const bool bAlreadyHandled = guardedThis->isInternalInfoHandled();
+    if (!guardedThis) return false;
+
+    if (!bAlreadyHandled) {
+        const quint64 nTransaction =
+            guardedThis->beginInternalInfoTransaction();
+        if (!nTransaction) return false;
+
+        // The transaction supplies the recursion sentinel. Keep every
+        // source-derived value local until the same binding is revalidated.
+        guardedThis->m_internalInfo = INTERNAL_INFO();
+        INTERNAL_INFO info = guardedThis->_getInternalInfo(pPdStruct);
+        if (!guardedThis) return false;
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
+            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+            return false;
+        }
+
+        const auto memoryMap =
+            guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        if (!guardedThis) return false;
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
+            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+            return false;
+        }
+        info.memoryMap = memoryMap;
+
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction)) {
+            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+            return false;
+        }
+        guardedThis->m_internalInfo = info;
+        if (!guardedThis->commitInternalInfoTransaction(
+                nTransaction,
+                static_cast<XBinary::INTERNAL_INFO *>(
+                    &guardedThis->m_internalInfo))) {
+            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+            return false;
+        }
     }
 
     return true;
@@ -780,8 +868,11 @@ bool XUPX::handleInternalInfo(PDSTRUCT *pPdStruct)
 
 void *XUPX::getInternalInfo(PDSTRUCT *pPdStruct)
 {
-    handleInternalInfo(pPdStruct);
-    return &m_internalInfo;
+    QPointer<XUPX> guardedThis(this);
+    const bool bHandled = guardedThis->handleInternalInfo(pPdStruct);
+    if (!guardedThis || !bHandled) return nullptr;
+
+    return &guardedThis->m_internalInfo;
 }
 
 void XUPX::setInternalInfo(void *pInternalInfo)
@@ -811,7 +902,11 @@ QString XUPX::getArch()
 {
     QString sResult;
 
-    INTERNAL_INFO info = *static_cast<INTERNAL_INFO *>(getInternalInfo());
+    QPointer<XUPX> guardedThis(this);
+    const INTERNAL_INFO *pInfo =
+        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo());
+    if (!guardedThis || !pInfo) return sResult;
+    const INTERNAL_INFO info = *pInfo;
 
     if (info.bIsValid) {
         // Map UPX format to architecture
@@ -869,12 +964,18 @@ QString XUPX::getFileFormatExtsString()
 
 qint64 XUPX::getFileFormatSize(PDSTRUCT *pPdStruct)
 {
+    Q_UNUSED(pPdStruct)
+
     return getSize();
 }
 
 QString XUPX::getVersion()
 {
-    INTERNAL_INFO info = *static_cast<INTERNAL_INFO *>(getInternalInfo());
+    QPointer<XUPX> guardedThis(this);
+    const INTERNAL_INFO *pInfo =
+        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo());
+    if (!guardedThis || !pInfo) return QString();
+    const INTERNAL_INFO info = *pInfo;
     if (info.bIsValid) {
         return QString::number(info.version);
     }
@@ -983,6 +1084,15 @@ bool XUPX::_prepareOutputDevice(QIODevice *pDevice, bool *pbCloseOutputDevice)
     return true;
 }
 
+static void upxFailOutput(QIODevice *pDevice, bool bSeekableOutput, bool *pbResult)
+{
+    if (bSeekableOutput) {
+        XBinary::resize(pDevice, 0);
+        pDevice->seek(0);
+    }
+    *pbResult = false;
+}
+
 bool XUPX::_writeBufferToDevice(const QByteArray &baData, QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
     if (!pDevice) {
@@ -1000,20 +1110,12 @@ bool XUPX::_writeBufferToDevice(const QByteArray &baData, QIODevice *pDevice, PD
     bool bResult = true;
     const bool bSeekableOutput = !pDevice->isSequential();
 
-    auto failOutput = [&]() {
-        if (bSeekableOutput) {
-            XBinary::resize(pDevice, 0);
-            pDevice->seek(0);
-        }
-        bResult = false;
-    };
-
     while ((nOffset < baData.size()) && XBinary::isPdStructNotCanceled(pPdStruct)) {
         qint64 nCurrentChunkSize = qMin(nChunkSize, (qint64)baData.size() - nOffset);
         qint64 nWritten = pDevice->write(baData.constData() + nOffset, nCurrentChunkSize);
 
         if ((nWritten <= 0) || (nWritten > nCurrentChunkSize)) {
-            failOutput();
+            upxFailOutput(pDevice, bSeekableOutput, &bResult);
             break;
         }
 
@@ -1021,7 +1123,7 @@ bool XUPX::_writeBufferToDevice(const QByteArray &baData, QIODevice *pDevice, PD
     }
 
     if (!XBinary::isPdStructNotCanceled(pPdStruct) || (nOffset != baData.size())) {
-        failOutput();
+        upxFailOutput(pDevice, bSeekableOutput, &bResult);
     }
 
     if (bCloseOutputDevice) {
@@ -1033,14 +1135,42 @@ bool XUPX::_writeBufferToDevice(const QByteArray &baData, QIODevice *pDevice, PD
 
 bool XUPX::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
-    return _unpackToFile(pDevice, pPdStruct);
+    QSharedPointer<UNPACK_LIFETIME_STATE> pLifetime = m_pUnpackLifetimeState;
+    UpxOperationGuard operationGuard(pLifetime);
+    if (!operationGuard.isAcquired()) return false;
+    QPointer<XUPX> guardedThis(this);
+    QPointer<QIODevice> guardedSource(getDevice());
+    QPointer<QIODevice> guardedOutput(pDevice);
+    if (!guardedSource || !guardedOutput || !guardedOutput->isOpen() || !guardedOutput->isWritable() || guardedOutput->isSequential() ||
+        (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) || !XBinary::isResizeEnable(guardedOutput.data()) ||
+        !guardedThis || !guardedSource || !guardedOutput || XBinary::devicesAlias(guardedSource.data(), guardedOutput.data()) ||
+        !guardedThis || !guardedSource || !guardedOutput || !isPdStructNotCanceled(pPdStruct)) return false;
+
+    const bool bOuterIsImage = isImage();
+    const XADDR nOuterModuleAddress = getModuleAddress();
+    UpxPublisher publisher(guardedSource.data());
+    UNPACK_STATE publicationState = {};
+    if (!publisher.bindUnpackSource(&publicationState, pPdStruct) || !guardedThis || !guardedSource || !guardedOutput || !pLifetime->bOwnerAlive) return false;
+
+    QTemporaryFile stage;
+    XUPX decoder(guardedSource.data(), bOuterIsImage, nOuterModuleAddress);
+    if (!stage.open() || !decoder._unpackToFile(&stage, pPdStruct) || !guardedThis || !guardedSource || !guardedOutput ||
+        !pLifetime->bOwnerAlive || !publisher.validateAndFinalizeUnpackSource(&publicationState, pPdStruct) || !guardedThis ||
+        !guardedSource || !guardedOutput || !pLifetime->bOwnerAlive ||
+        !publisher.publishUnpackOutput(&stage, guardedOutput.data(), &publicationState, pPdStruct) || !guardedThis || !guardedOutput ||
+        !pLifetime->bOwnerAlive) return false;
+    return true;
 }
 
 bool XUPX::_unpackToFile(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
     bool bResult = false;
 
-    INTERNAL_INFO info = *static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct));
+    QPointer<XUPX> guardedThis(this);
+    const INTERNAL_INFO *pInfo =
+        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
+    if (!guardedThis || !pInfo) return false;
+    const INTERNAL_INFO info = *pInfo;
 
     if (info.bIsValid) {
         if (_isPEFileType(info.fileType)) {
@@ -1085,15 +1215,32 @@ XBinary::ARCHIVERECORD XUPX::_createArchiveRecord(const INTERNAL_INFO &info)
 QString XUPX::_getUnpackedFileName()
 {
     QString sResult = "content";
+    QPointer<XUPX> guardedThis(this);
+    QPointer<QIODevice> guardedDevice(getDevice());
+    const quint64 nGeneration = getDeviceGeneration();
+    if (!guardedThis || !guardedDevice) return sResult;
 
-    if (QFile *pFile = qobject_cast<QFile *>(getDevice())) {
-        QFileInfo fi(pFile->fileName());
+    // Avoid qobject_cast on a caller-owned device: its virtual meta-object
+    // hooks may re-enter and destroy either the device or this parser.
+    QFile *pFile = dynamic_cast<QFile *>(guardedDevice.data());
+    QPointer<QFile> guardedFile(pFile);
+    if (!guardedThis || !guardedDevice) return sResult;
+    if (guardedFile) {
+        const QString sFileName = guardedFile->fileName();
+        if (!guardedThis || !guardedDevice || !guardedFile ||
+            (getDeviceGeneration() != nGeneration) ||
+            (getDevice() != guardedDevice.data())) return sResult;
+        QFileInfo fi(sFileName);
 
         if (!fi.fileName().isEmpty()) {
             sResult = fi.fileName();
         }
-    } else if (getDevice() && !getDevice()->objectName().isEmpty()) {
-        QFileInfo fi(getDevice()->objectName());
+    } else {
+        const QString sObjectName = guardedDevice->objectName();
+        if (!guardedThis || !guardedDevice ||
+            (getDeviceGeneration() != nGeneration) ||
+            (getDevice() != guardedDevice.data())) return sResult;
+        QFileInfo fi(sObjectName);
 
         if (!fi.fileName().isEmpty()) {
             sResult = fi.fileName();
@@ -1112,33 +1259,67 @@ QMap<XBinary::UNPACK_PROP, QVariant> XUPX::getDefaultUnpackProperties()
 
 bool XUPX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
-    if (!pState) {
-        return false;
+    if (!pState || !pState->baUnpackSourceToken.isEmpty()) return false;
+    QSharedPointer<UNPACK_LIFETIME_STATE> pLifetime = m_pUnpackLifetimeState;
+    UpxOperationGuard operationGuard(pLifetime);
+    if (!operationGuard.isAcquired()) return false;
+    QPointer<XUPX> guardedThis(this);
+    if (pState->pContext) {
+        UNPACK_CONTEXT *pOldContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+        if (!pLifetime->setContexts.contains(pOldContext) || (pOldContext->pOwnerState != pState)) return false;
+        pLifetime->setContexts.remove(pOldContext);
+        pState->pContext = nullptr;
+        deleteUnpackContext(pOldContext);
+        *pState = UNPACK_STATE();
+        if (!guardedThis || !pLifetime->bOwnerAlive) return false;
     }
+    if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
-    if (pState->pContext && !finishUnpack(pState, nullptr)) {
-        return false;
-    }
-
-    pState->nCurrentOffset = 0;
-    pState->nTotalSize = getSize();
-    pState->nCurrentIndex = 0;
-    pState->nNumberOfRecords = 0;
+    *pState = UNPACK_STATE();
     pState->mapUnpackProperties = mapProperties;
-    pState->mapArchiveProperties.clear();
-    pState->pContext = nullptr;
-
-    INTERNAL_INFO info = *static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct));
-
-    if (!info.bIsValid) {
+    QPointer<QIODevice> guardedSource(getDevice());
+    if (!guardedSource) return false;
+    XArchive *pSourceValidator = new XArchive(guardedSource.data());
+    UNPACK_STATE sourceValidationState = {};
+    if (!pSourceValidator->bindUnpackSource(&sourceValidationState, pPdStruct) || !guardedThis || !guardedSource) {
+        pSourceValidator->releaseUnpackSource(&sourceValidationState);
+        delete pSourceValidator;
+        return false;
+    }
+    XUPX detector(guardedSource.data(), isImage(), getModuleAddress());
+    const qint64 nTotalSize = guardedSource->size();
+    INTERNAL_INFO info = detector._getInternalInfo(pPdStruct);
+    if (!guardedThis || !guardedSource || (nTotalSize < 0) || !info.bIsValid ||
+        !pSourceValidator->isUnpackSourceCurrent(&sourceValidationState, pPdStruct) || !guardedThis || !guardedSource) {
+        pSourceValidator->releaseUnpackSource(&sourceValidationState);
+        delete pSourceValidator;
         return false;
     }
 
     UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT();
-    pContext->listRecords.append(_createArchiveRecord(info));
+    pContext->pOuterSourceDevice = guardedSource;
+    pContext->nOwnerDeviceGeneration = getDeviceGeneration();
+    pContext->pSourceValidator = pSourceValidator;
+    pContext->sourceValidationState = UNPACK_STATE();
+    if (!pContext->pSourceValidator->transferUnpackSourceOwnership(&sourceValidationState, &pContext->sourceValidationState)) {
+        pContext->pSourceValidator->releaseUnpackSource(&sourceValidationState);
+        deleteUnpackContext(pContext);
+        return false;
+    }
+    pContext->listRecords.append(detector._createArchiveRecord(info));
 
+    if (pContext->listRecords.isEmpty() ||
+        !pContext->pSourceValidator->validateAndFinalizeUnpackSource(&pContext->sourceValidationState, pPdStruct) ||
+        !guardedThis || !guardedSource) {
+        deleteUnpackContext(pContext);
+        return false;
+    }
+
+    pState->nTotalSize = nTotalSize;
+    pContext->pOwnerState = pState;
     pState->pContext = pContext;
     pState->nNumberOfRecords = pContext->listRecords.size();
+    pLifetime->setContexts.insert(pContext);
 
     return (pState->nNumberOfRecords > 0);
 }
@@ -1146,84 +1327,120 @@ bool XUPX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
 XBinary::ARCHIVERECORD XUPX::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
     ARCHIVERECORD result = {};
-
-    if ((!pState) || (!pState->pContext) || !isPdStructNotCanceled(pPdStruct)) {
-        return result;
-    }
-
-    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
-
-    if ((pState->nCurrentIndex >= 0) && (pState->nCurrentIndex < pContext->listRecords.size())) {
-        result = pContext->listRecords.at(pState->nCurrentIndex);
-    }
-
+    QSharedPointer<UNPACK_LIFETIME_STATE> pLifetime = m_pUnpackLifetimeState;
+    UpxOperationGuard operationGuard(pLifetime);
+    if (!operationGuard.isAcquired()) return result;
+    QPointer<XUPX> guardedThis(this);
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !isPdStructNotCanceled(pPdStruct)) return result;
+    UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+    if (!pLifetime->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
+        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) ||
+        !pContext->pSourceValidator || (pState->nNumberOfRecords != pContext->listRecords.size()) ||
+        (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pContext->listRecords.size()) ||
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis ||
+        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return result;
+    result = pContext->listRecords.at(pState->nCurrentIndex);
     return result;
 }
 
 bool XUPX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
-    if (!pState || !pState->pContext || !pDevice || !pDevice->isWritable() || !isPdStructNotCanceled(pPdStruct) ||
+    QSharedPointer<UNPACK_LIFETIME_STATE> pLifetime = m_pUnpackLifetimeState;
+    UpxOperationGuard operationGuard(pLifetime);
+    if (!operationGuard.isAcquired()) return false;
+    QPointer<XUPX> guardedThis(this);
+    QPointer<QIODevice> guardedOutput(pDevice);
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !guardedOutput || !guardedOutput->isOpen() ||
+        !guardedOutput->isWritable() || guardedOutput->isSequential() || !guardedThis || !guardedOutput ||
+        (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) || !XBinary::isResizeEnable(guardedOutput.data()) ||
+        !guardedThis || !guardedOutput || !isPdStructNotCanceled(pPdStruct) ||
         (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
         return false;
     }
+    UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+    if (!pLifetime->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
+        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) ||
+        !pContext->pSourceValidator || (pState->nNumberOfRecords != pContext->listRecords.size()) ||
+        XBinary::devicesAlias(pContext->pOuterSourceDevice.data(), guardedOutput.data()) || !guardedThis || !guardedOutput ||
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !guardedOutput ||
+        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return false;
 
-    pState->nCurrentOffset = 0;
-    if (!unpack(pDevice, pPdStruct)) {
-        return false;
-    }
-
-    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
-    pState->nCurrentOffset = pContext->listRecords.at(pState->nCurrentIndex)
-                                 .mapProperties.value(FPART_PROP_UNCOMPRESSEDSIZE, pDevice->pos()).toLongLong();
-    return isPdStructNotCanceled(pPdStruct);
+    const bool bOuterIsImage = isImage();
+    const XADDR nOuterModuleAddress = getModuleAddress();
+    XUPX decoder(pContext->pOuterSourceDevice.data(), bOuterIsImage, nOuterModuleAddress);
+    QTemporaryFile stage;
+    if (!stage.open() || !decoder._unpackToFile(&stage, pPdStruct) || !guardedThis || !guardedOutput ||
+        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !guardedOutput ||
+        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return false;
+    UpxPublisher publisher(pContext->pOuterSourceDevice.data());
+    UNPACK_STATE publicationState = {};
+    if (!publisher.bindUnpackSource(&publicationState, pPdStruct) ||
+        !publisher.validateAndFinalizeUnpackSource(&publicationState, pPdStruct) || !guardedThis || !guardedOutput ||
+        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||
+        !publisher.publishUnpackOutput(&stage, guardedOutput.data(), &publicationState, pPdStruct) || !guardedThis || !guardedOutput ||
+        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return false;
+    pState->nCurrentOffset = stage.size();
+    return true;
 }
 
 bool XUPX::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
-    if ((!pState) || (!pState->pContext) || !isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+    QSharedPointer<UNPACK_LIFETIME_STATE> pLifetime = m_pUnpackLifetimeState;
+    UpxOperationGuard operationGuard(pLifetime);
+    if (!operationGuard.isAcquired()) return false;
+    QPointer<XUPX> guardedThis(this);
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
         (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
         return false;
     }
-
+    UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+    if (!pLifetime->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
+        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) ||
+        !pContext->pSourceValidator || (pState->nNumberOfRecords != pContext->listRecords.size()) ||
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis ||
+        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return false;
     pState->nCurrentIndex++;
     pState->nCurrentOffset = 0;
-
-    return (pState->nCurrentIndex < pState->nNumberOfRecords);
+    const bool bCurrent = pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct);
+    return bCurrent && guardedThis && pLifetime->bOwnerAlive && pLifetime->setContexts.contains(pContext) &&
+           (pState->pContext == pContext) && (pState->nCurrentIndex < pState->nNumberOfRecords);
 }
 
 bool XUPX::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
     Q_UNUSED(pPdStruct)
 
-    if (!pState) {
-        return false;
-    }
-
+    if (!pState) return false;
+    QSharedPointer<UNPACK_LIFETIME_STATE> pLifetime = m_pUnpackLifetimeState;
+    UpxOperationGuard operationGuard(pLifetime);
+    if (!operationGuard.isAcquired()) return false;
     if (pState->pContext) {
-        UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
-        pContext->listRecords.clear();
-        delete pContext;
+        UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+        if (!pLifetime->setContexts.contains(pContext) || (pContext->pOwnerState != pState)) return false;
+        pLifetime->setContexts.remove(pContext);
         pState->pContext = nullptr;
+        deleteUnpackContext(pContext);
     }
-
-    pState->nCurrentOffset = 0;
-    pState->nTotalSize = 0;
-    pState->nCurrentIndex = 0;
-    pState->nNumberOfRecords = 0;
-    pState->mapUnpackProperties.clear();
-    pState->mapArchiveProperties.clear();
-
+    *pState = UNPACK_STATE();
     return true;
 }
 
 bool XUPX::isPackedFile(PDSTRUCT *pPdStruct)
 {
-    return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
+    QPointer<XUPX> guardedThis(this);
+    const INTERNAL_INFO *pInfo =
+        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
+    return guardedThis && pInfo && pInfo->bIsValid;
 }
 
 QString XUPX::packerVersion(PDSTRUCT *pPdStruct)
 {
-    INTERNAL_INFO info = *static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct));
+    QPointer<XUPX> guardedThis(this);
+    const INTERNAL_INFO *pInfo =
+        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
+    if (!guardedThis || !pInfo) return QString();
+    const INTERNAL_INFO info = *pInfo;
     if (info.bIsValid) {
         return QString::number(info.version);
     }
@@ -1232,7 +1449,11 @@ QString XUPX::packerVersion(PDSTRUCT *pPdStruct)
 
 QString XUPX::compressionMethod(PDSTRUCT *pPdStruct)
 {
-    INTERNAL_INFO info = *static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct));
+    QPointer<XUPX> guardedThis(this);
+    const INTERNAL_INFO *pInfo =
+        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
+    if (!guardedThis || !pInfo) return QString();
+    const INTERNAL_INFO info = *pInfo;
     if (info.bIsValid) {
         return upxMethodToString(info.method);
     }
@@ -1362,8 +1583,6 @@ bool XUPX::_fallbackUnpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 
 bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct)
 {
-    auto fallback = [&]() -> bool { return _fallbackUnpack(pDevice, pPdStruct); };
-
     if ((!getDevice()) || (!pDevice) || (!info.c_len) || (!info.u_len)) {
         return false;
     }
@@ -1371,14 +1590,14 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
     QByteArray baCompressed = read_array_process(info.nDataOffset, info.c_len, pPdStruct);
 
     if ((quint32)baCompressed.size() != info.c_len) {
-        return fallback();
+        return _fallbackUnpack(pDevice, pPdStruct);
     }
 
     QByteArray baPayload(info.u_len, 0);
     quint32 nPayloadSize = info.u_len;
 
     if (!_upxDecompress((const unsigned char *)baCompressed.constData(), (quint32)baCompressed.size(), (unsigned char *)baPayload.data(), &nPayloadSize, info.method)) {
-        return fallback();
+        return _fallbackUnpack(pDevice, pPdStruct);
     }
 
     baPayload.resize(nPayloadSize);
@@ -1386,7 +1605,7 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
     XPE pe(this->getDevice(), this->isImage(), this->getModuleAddress());
 
     if (!pe.isValid(pPdStruct)) {
-        return fallback();
+        return _fallbackUnpack(pDevice, pPdStruct);
     }
 
     bool bIs64 = pe.is64();
@@ -1395,17 +1614,17 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
     qint64 nBaseAddress = pe.getBaseAddress();
 
     if (baPayload.size() < 4) {
-        return fallback();
+        return _fallbackUnpack(pDevice, pPdStruct);
     }
 
     quint32 nExtraInfoOffset = XBinary::_read_uint32(baPayload.data() + baPayload.size() - 4, false);
 
     if ((!bIs64) && ((quint64)nExtraInfoOffset + sizeof(XPE_DEF::IMAGE_NT_HEADERS32) > (quint64)baPayload.size())) {
-        return fallback();
+        return _fallbackUnpack(pDevice, pPdStruct);
     }
 
     if ((bIs64) && ((quint64)nExtraInfoOffset + sizeof(XPE_DEF::IMAGE_NT_HEADERS64) > (quint64)baPayload.size())) {
-        return fallback();
+        return _fallbackUnpack(pDevice, pPdStruct);
     }
 
     char *pExtraInfo = baPayload.data() + nExtraInfoOffset;
@@ -1452,7 +1671,7 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
     }
 
     if (((!bIs64) && (ih32.Signature != XPE_DEF::S_IMAGE_NT_SIGNATURE)) || ((bIs64) && (ih64.Signature != XPE_DEF::S_IMAGE_NT_SIGNATURE))) {
-        return fallback();
+        return _fallbackUnpack(pDevice, pPdStruct);
     }
 
     for (int i = 0; i < nNumberOfSections; i++) {
@@ -1474,7 +1693,7 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
         quint32 nAddValue = nBaseOfCode - nRVAmin;
 
         if (!applyPEFilter(pFilteredData, nFilteredDataSize, info.filter, info.filter_cto, nAddValue)) {
-            return fallback();
+            return _fallbackUnpack(pDevice, pPdStruct);
         }
     }
 
@@ -1517,7 +1736,7 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
             quint32 nNameOffset = XBinary::_read_uint32(pOffset, false);
 
             if (nNameOffset >= (quint32)baImport.size()) {
-                return fallback();
+                return _fallbackUnpack(pDevice, pPdStruct);
             }
 
             char *pDName = baImport.data() + nNameOffset;
@@ -1601,7 +1820,7 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
                     quint32 nThunkOffset = XBinary::_read_uint32(pOffset + 1, false);
 
                     if ((qint64)nThunkOffset + 4 > baImport.size()) {
-                        return fallback();
+                        return _fallbackUnpack(pDevice, pPdStruct);
                     }
 
                     quint32 nThunkValue = XBinary::_read_uint32(baImport.data() + nThunkOffset, false);
@@ -1840,7 +2059,7 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
     QBuffer buffer(&baResultFile);
 
     if (!buffer.open(QIODevice::ReadWrite)) {
-        return fallback();
+        return _fallbackUnpack(pDevice, pPdStruct);
     }
 
     XPE peNew(&buffer);
@@ -1881,7 +2100,7 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
             if ((baOverlay.size() != nOverlaySize) || (!XBinary::isPdStructNotCanceled(pPdStruct))) {
                 buffer.close();
 
-                return fallback();
+                return _fallbackUnpack(pDevice, pPdStruct);
             }
 
             baResultFile.append(baOverlay);
@@ -1890,6 +2109,13 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
 
     buffer.close();
     return _writeBufferToDevice(baResultFile, pDevice, pPdStruct);
+}
+
+static void upxAddCandidateOffset(QList<qint64> *pListCandidateOffsets, qint64 nTotalSize, qint64 nOffset)
+{
+    if ((0 <= nOffset) && (nOffset < nTotalSize) && (!pListCandidateOffsets->contains(nOffset))) {
+        pListCandidateOffsets->append(nOffset);
+    }
 }
 
 bool XUPX::_unpackELF(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct)
@@ -1914,129 +2140,305 @@ bool XUPX::_unpackELF(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
         return _runUPXDecompress(pDevice, pPdStruct);
     }
 
-    qint64 nCurrentOffset = info.nDataOffset + sizeof(p_info);
-    bool bReachedEnd = false;
-    bool bStreamError = false;
-    QByteArray baCurrentDecoded;
-    qint64 nCurrentDecodedOffset = 0;
+    // Shared packed-block stream state; the member functions replace the former
+    // loadNextBlock/readDecodedBytes/decodeGapExtentsFromOffset/seekToGapExtentStream lambdas.
+    struct ELF_STREAM_STATE {
+        XUPX *pUpx;
+        PDSTRUCT *pPdStruct;
+        bool bIsBE;
+        quint32 nBlockSize;
+        quint32 nOrigFileSize;
+        const QList<XELF_DEF::Elf_Phdr> *pListProgramHeaders;
+        qint64 nCurrentOffset;
+        bool bReachedEnd;
+        bool bStreamError;
+        QByteArray baCurrentDecoded;
+        qint64 nCurrentDecodedOffset;
 
-    auto loadNextBlock = [&]() -> bool {
-        baCurrentDecoded.clear();
-        nCurrentDecodedOffset = 0;
+        bool loadNextBlock()
+        {
+            baCurrentDecoded.clear();
+            nCurrentDecodedOffset = 0;
 
-        QByteArray baBInfo = read_array_process(nCurrentOffset, sizeof(b_info), pPdStruct);
+            QByteArray baBInfo = pUpx->read_array_process(nCurrentOffset, sizeof(b_info), pPdStruct);
 
-        if (baBInfo.size() != (qint64)sizeof(b_info)) {
-            bStreamError = (baBInfo.size() != 0);
-            return false;
-        }
-
-        b_info header = {};
-        XBinary::_copyMemory((char *)&header, baBInfo.constData(), sizeof(b_info));
-
-        quint32 nUncompressedSize = XBinary::_read_uint32((char *)&header.sz_unc, bIsBE);
-        quint32 nCompressedSize = XBinary::_read_uint32((char *)&header.sz_cpr, bIsBE);
-        nCurrentOffset += sizeof(b_info);
-
-        if (nUncompressedSize == 0) {
-            if (XBinary::_read_uint32((char *)&header.sz_cpr, false) == 0x21585055) {
-                bReachedEnd = true;
+            if (baBInfo.size() != (qint64)sizeof(b_info)) {
+                bStreamError = (baBInfo.size() != 0);
+                return false;
             }
 
-            return false;
-        }
+            b_info header = {};
+            XBinary::_copyMemory((char *)&header, baBInfo.constData(), sizeof(b_info));
 
-        if ((!nCompressedSize) || (nCompressedSize > nBlockSize) || (nUncompressedSize > nBlockSize)) {
-            bStreamError = true;
-            return false;
-        }
+            quint32 nUncompressedSize = XBinary::_read_uint32((char *)&header.sz_unc, bIsBE);
+            quint32 nCompressedSize = XBinary::_read_uint32((char *)&header.sz_cpr, bIsBE);
+            nCurrentOffset += sizeof(b_info);
 
-        QByteArray baBlock = read_array_process(nCurrentOffset, nCompressedSize, pPdStruct);
+            if (nUncompressedSize == 0) {
+                if (XBinary::_read_uint32((char *)&header.sz_cpr, false) == 0x21585055) {
+                    bReachedEnd = true;
+                }
 
-        if ((quint32)baBlock.size() != nCompressedSize) {
-            bStreamError = true;
-            return false;
-        }
+                return false;
+            }
 
-        if (nCompressedSize < nUncompressedSize) {
-            baCurrentDecoded.resize(nUncompressedSize);
-            quint32 nDecodedSize = nUncompressedSize;
-
-            if (!_upxDecompress((const unsigned char *)baBlock.constData(), nCompressedSize, (unsigned char *)baCurrentDecoded.data(), &nDecodedSize, header.b_method)) {
-                baCurrentDecoded.clear();
+            if ((!nCompressedSize) || (nCompressedSize > nBlockSize) || (nUncompressedSize > nBlockSize)) {
                 bStreamError = true;
                 return false;
             }
 
-            baCurrentDecoded.resize(nDecodedSize);
+            QByteArray baBlock = pUpx->read_array_process(nCurrentOffset, nCompressedSize, pPdStruct);
 
-            if (header.b_ftid) {
-                if (!applyUPXBlockFilter((unsigned char *)baCurrentDecoded.data(), baCurrentDecoded.size(), header.b_ftid, header.b_cto8)) {
+            if ((quint32)baBlock.size() != nCompressedSize) {
+                bStreamError = true;
+                return false;
+            }
+
+            if (nCompressedSize < nUncompressedSize) {
+                baCurrentDecoded.resize(nUncompressedSize);
+                quint32 nDecodedSize = nUncompressedSize;
+
+                if (!pUpx->_upxDecompress((const unsigned char *)baBlock.constData(), nCompressedSize, (unsigned char *)baCurrentDecoded.data(), &nDecodedSize,
+                                          header.b_method)) {
                     baCurrentDecoded.clear();
                     bStreamError = true;
                     return false;
                 }
-            }
-        } else if (nCompressedSize == nUncompressedSize) {
-            baCurrentDecoded = baBlock;
-        } else {
-            bStreamError = true;
-            return false;
-        }
 
-        nCurrentOffset += nCompressedSize;
-        return true;
-    };
+                baCurrentDecoded.resize(nDecodedSize);
 
-    auto readDecodedBytes = [&](quint64 nWanted, QByteArray *pResult) -> bool {
-        if ((!pResult) || (nWanted > (quint64)INT_MAX)) {
-            return false;
-        }
-
-        pResult->clear();
-        pResult->reserve((int)nWanted);
-
-        while ((quint64)pResult->size() < nWanted && XBinary::isPdStructNotCanceled(pPdStruct)) {
-            if (nCurrentDecodedOffset >= baCurrentDecoded.size()) {
-                if (!loadNextBlock()) {
-                    if (bStreamError) {
+                if (header.b_ftid) {
+                    if (!applyUPXBlockFilter((unsigned char *)baCurrentDecoded.data(), baCurrentDecoded.size(), header.b_ftid, header.b_cto8)) {
+                        baCurrentDecoded.clear();
+                        bStreamError = true;
                         return false;
                     }
+                }
+            } else if (nCompressedSize == nUncompressedSize) {
+                baCurrentDecoded = baBlock;
+            } else {
+                bStreamError = true;
+                return false;
+            }
 
+            nCurrentOffset += nCompressedSize;
+            return true;
+        }
+
+        bool readDecodedBytes(quint64 nWanted, QByteArray *pResult)
+        {
+            if ((!pResult) || (nWanted > (quint64)INT_MAX)) {
+                return false;
+            }
+
+            pResult->clear();
+            pResult->reserve((int)nWanted);
+
+            while ((quint64)pResult->size() < nWanted && XBinary::isPdStructNotCanceled(pPdStruct)) {
+                if (nCurrentDecodedOffset >= baCurrentDecoded.size()) {
+                    if (!loadNextBlock()) {
+                        if (bStreamError) {
+                            return false;
+                        }
+
+                        break;
+                    }
+                }
+
+                qint64 nChunkSize = qMin<qint64>((qint64)(nWanted - (quint64)pResult->size()), baCurrentDecoded.size() - nCurrentDecodedOffset);
+
+                if (nChunkSize <= 0) {
+                    break;
+                }
+
+                pResult->append(baCurrentDecoded.constData() + nCurrentDecodedOffset, nChunkSize);
+                nCurrentDecodedOffset += nChunkSize;
+            }
+
+            return ((quint64)pResult->size() == nWanted);
+        }
+
+        bool decodeGapExtentsFromOffset(qint64 nGapStreamOffset, QByteArray *pOutput)
+        {
+            if ((!pOutput) || (nGapStreamOffset < 0) || (nGapStreamOffset >= pUpx->getSize())) {
+                return false;
+            }
+
+            qint64 nSavedCurrentOffset = nCurrentOffset;
+            bool bSavedReachedEnd = bReachedEnd;
+            bool bSavedStreamError = bStreamError;
+            QByteArray baSavedCurrentDecoded = baCurrentDecoded;
+            qint64 nSavedCurrentDecodedOffset = nCurrentDecodedOffset;
+            QByteArray baCandidateOutput = *pOutput;
+
+            nCurrentOffset = nGapStreamOffset;
+            baCurrentDecoded.clear();
+            nCurrentDecodedOffset = 0;
+            bReachedEnd = false;
+            bStreamError = false;
+
+            bool bResult = true;
+
+            for (qint32 i = 0; i < pListProgramHeaders->size(); i++) {
+                const XELF_DEF::Elf_Phdr &programHeader = pListProgramHeaders->at(i);
+
+                if (programHeader.p_type != XELF_DEF::S_PT_LOAD) {
+                    continue;
+                }
+
+                quint64 nGapSize = findELFLoadGap(*pListProgramHeaders, i, nOrigFileSize);
+
+                if (!nGapSize) {
+                    continue;
+                }
+
+                QByteArray baGapData;
+
+                if (!readDecodedBytes(nGapSize, &baGapData)) {
+                    bResult = false;
+                    break;
+                }
+
+                XBinary::_copyMemory(baCandidateOutput.data() + programHeader.p_offset + programHeader.p_filesz, baGapData.constData(), baGapData.size());
+            }
+
+            if (bResult && (bStreamError || (nCurrentDecodedOffset < baCurrentDecoded.size()))) {
+                bResult = false;
+            }
+
+            if (bResult) {
+                *pOutput = baCandidateOutput;
+            } else {
+                nCurrentOffset = nSavedCurrentOffset;
+                bReachedEnd = bSavedReachedEnd;
+                bStreamError = bSavedStreamError;
+                baCurrentDecoded = baSavedCurrentDecoded;
+                nCurrentDecodedOffset = nSavedCurrentDecodedOffset;
+            }
+
+            return bResult;
+        }
+
+        bool seekToGapExtentStream(const INTERNAL_INFO &info, XELF *pElf, QByteArray *pBaOutput)
+        {
+            qint64 nLInfoOffset = info.nDataOffset - (qint64)sizeof(l_info);
+
+            if (nLInfoOffset < 0) {
+                return false;
+            }
+
+            QByteArray baLInfo = pUpx->read_array_process(nLInfoOffset, sizeof(l_info), pPdStruct);
+
+            if (baLInfo.size() != (qint64)sizeof(l_info)) {
+                return false;
+            }
+
+            quint32 nLMagic = XBinary::_read_uint32(baLInfo.data() + offsetof(l_info, l_magic), false);
+            quint16 nLSize = XBinary::_read_uint16(baLInfo.data() + offsetof(l_info, l_lsize), bIsBE);
+
+            if ((nLMagic != 0x21585055) || (nLSize < sizeof(l_info))) {
+                return false;
+            }
+
+            QList<XELF_DEF::Elf_Phdr> listPackedProgramHeaders = pElf->getElf_PhdrList(0x1000);
+
+            if (listPackedProgramHeaders.isEmpty()) {
+                return false;
+            }
+
+            quint64 nEntry = pElf->is64() ? pElf->getHdr64_entry() : pElf->getHdr32_entry();
+            quint16 nType = pElf->is64() ? pElf->getHdr64_type() : pElf->getHdr32_type();
+            quint16 nMachine = pElf->is64() ? pElf->getHdr64_machine() : pElf->getHdr32_machine();
+
+            quint64 nOffEntry = 0;
+
+            for (qint32 i = 0; i < listPackedProgramHeaders.size(); i++) {
+                const XELF_DEF::Elf_Phdr &programHeader = listPackedProgramHeaders.at(i);
+
+                if ((programHeader.p_type == XELF_DEF::S_PT_LOAD) && (nEntry >= programHeader.p_vaddr) && ((nEntry - programHeader.p_vaddr) < programHeader.p_filesz)) {
+                    nOffEntry = (nEntry - programHeader.p_vaddr) + programHeader.p_offset;
                     break;
                 }
             }
 
-            qint64 nChunkSize = qMin<qint64>((qint64)(nWanted - (quint64)pResult->size()), baCurrentDecoded.size() - nCurrentDecodedOffset);
+            quint32 nDInfoSize = 0;
 
-            if (nChunkSize <= 0) {
-                break;
+            if ((nType != XELF_DEF::S_ET_DYN) && (!listPackedProgramHeaders.isEmpty()) && (listPackedProgramHeaders.first().p_flags & 1)) {
+                switch (nMachine) {
+                    case 183: nDInfoSize = 16; break;  // EM_AARCH64
+                    case 21: nDInfoSize = 12; break;   // EM_PPC64
+                    case 62: nDInfoSize = 8; break;    // EM_X86_64
+                    default: nDInfoSize = 0; break;
+                }
             }
 
-            pResult->append(baCurrentDecoded.constData() + nCurrentDecodedOffset, nChunkSize);
-            nCurrentDecodedOffset += nChunkSize;
-        }
+            QList<qint64> listCandidateOffsets;
 
-        return ((quint64)pResult->size() == nWanted);
+            if ((listPackedProgramHeaders.size() >= 2) && (listPackedProgramHeaders.at(0).p_filesz == 0x1000) && (listPackedProgramHeaders.at(0).p_offset == 0) &&
+                (listPackedProgramHeaders.at(1).p_offset == 0) && (listPackedProgramHeaders.at(1).p_filesz == listPackedProgramHeaders.at(1).p_memsz)) {
+                upxAddCandidateOffset(&listCandidateOffsets, pUpx->getSize(), (qint64)upxAlignUp(listPackedProgramHeaders.at(1).p_memsz, 4));
+            }
+
+            if ((nOffEntry) && ((nOffEntry + upxAlignUp(nLSize, 4) + info.nPackHeaderSize + sizeof(quint32)) < upxAlignUp(pUpx->getSize(), 4))) {
+                qint64 nLoaderOffset = (qint64)nOffEntry;
+
+                if (nDInfoSize) {
+                    upxAddCandidateOffset(&listCandidateOffsets, pUpx->getSize(), nLoaderOffset - nDInfoSize + nLSize);
+                    upxAddCandidateOffset(&listCandidateOffsets, pUpx->getSize(), nLoaderOffset - nDInfoSize + upxAlignUp(nLSize, 4));
+                    upxAddCandidateOffset(&listCandidateOffsets, pUpx->getSize(), nLoaderOffset + nLSize);
+                } else {
+                    upxAddCandidateOffset(&listCandidateOffsets, pUpx->getSize(), (qint64)upxAlignUp(nLoaderOffset, 4) + nLSize);
+                    upxAddCandidateOffset(&listCandidateOffsets, pUpx->getSize(), (qint64)upxAlignUp(nLoaderOffset, 4) + upxAlignUp(nLSize, 4));
+                    upxAddCandidateOffset(&listCandidateOffsets, pUpx->getSize(), nLoaderOffset + nLSize);
+                }
+            }
+
+            if (listCandidateOffsets.isEmpty()) {
+                return false;
+            }
+
+            QByteArray baCandidateOutput = *pBaOutput;
+
+            for (qint32 i = 0; i < listCandidateOffsets.size(); i++) {
+                if (decodeGapExtentsFromOffset(listCandidateOffsets.at(i), &baCandidateOutput)) {
+                    *pBaOutput = baCandidateOutput;
+                    return true;
+                }
+            }
+
+            return false;
+        }
     };
 
-    if (!loadNextBlock()) {
+    ELF_STREAM_STATE streamState;
+    streamState.pUpx = this;
+    streamState.pPdStruct = pPdStruct;
+    streamState.bIsBE = bIsBE;
+    streamState.nBlockSize = nBlockSize;
+    streamState.nOrigFileSize = nOrigFileSize;
+    streamState.pListProgramHeaders = nullptr;
+    streamState.nCurrentOffset = info.nDataOffset + sizeof(p_info);
+    streamState.bReachedEnd = false;
+    streamState.bStreamError = false;
+    streamState.nCurrentDecodedOffset = 0;
+
+    if (!streamState.loadNextBlock()) {
         return _runUPXDecompress(pDevice, pPdStruct);
     }
 
-    if (!baCurrentDecoded.startsWith("\x7f"
-                                     "ELF")) {
+    if (!streamState.baCurrentDecoded.startsWith("\x7f"
+                                                 "ELF")) {
         return _runUPXDecompress(pDevice, pPdStruct);
     }
 
-    QByteArray baHeaderBlock = baCurrentDecoded;
+    QByteArray baHeaderBlock = streamState.baCurrentDecoded;
     QBuffer headerBuffer(&baHeaderBlock);
 
     if (!headerBuffer.open(QIODevice::ReadOnly)) {
         return false;
     }
 
-    XELF unpackedElf(&headerBuffer, false, -1);
+    XELF unpackedElf(&headerBuffer, false, XADDR_MAX);
 
     if (!unpackedElf.isValid(pPdStruct)) {
         return _runUPXDecompress(pDevice, pPdStruct);
@@ -2047,6 +2449,8 @@ bool XUPX::_unpackELF(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
     if (listProgramHeaders.isEmpty()) {
         return _runUPXDecompress(pDevice, pPdStruct);
     }
+
+    streamState.pListProgramHeaders = &listProgramHeaders;
 
     quint64 nHeaderSize = unpackedElf.is64() ? (unpackedElf.getHdr64_phoff() + (quint64)unpackedElf.getHdr64_phentsize() * unpackedElf.getHdr64_phnum())
                                              : (unpackedElf.getHdr32_phoff() + (quint64)unpackedElf.getHdr32_phentsize() * unpackedElf.getHdr32_phnum());
@@ -2086,7 +2490,7 @@ bool XUPX::_unpackELF(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
 
         QByteArray baSegmentData;
 
-        if (!readDecodedBytes(programHeader.p_filesz, &baSegmentData)) {
+        if (!streamState.readDecodedBytes(programHeader.p_filesz, &baSegmentData)) {
             return _runUPXDecompress(pDevice, pPdStruct);
         }
 
@@ -2100,170 +2504,15 @@ bool XUPX::_unpackELF(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
         return _runUPXDecompress(pDevice, pPdStruct);
     }
 
-    auto decodeGapExtentsFromOffset = [&](qint64 nGapStreamOffset, QByteArray *pOutput) -> bool {
-        if ((!pOutput) || (nGapStreamOffset < 0) || (nGapStreamOffset >= getSize())) {
-            return false;
-        }
-
-        qint64 nSavedCurrentOffset = nCurrentOffset;
-        bool bSavedReachedEnd = bReachedEnd;
-        bool bSavedStreamError = bStreamError;
-        QByteArray baSavedCurrentDecoded = baCurrentDecoded;
-        qint64 nSavedCurrentDecodedOffset = nCurrentDecodedOffset;
-        QByteArray baCandidateOutput = *pOutput;
-
-        nCurrentOffset = nGapStreamOffset;
-        baCurrentDecoded.clear();
-        nCurrentDecodedOffset = 0;
-        bReachedEnd = false;
-        bStreamError = false;
-
-        bool bResult = true;
-
-        for (qint32 i = 0; i < listProgramHeaders.size(); i++) {
-            const XELF_DEF::Elf_Phdr &programHeader = listProgramHeaders.at(i);
-
-            if (programHeader.p_type != XELF_DEF::S_PT_LOAD) {
-                continue;
-            }
-
-            quint64 nGapSize = findELFLoadGap(listProgramHeaders, i, nOrigFileSize);
-
-            if (!nGapSize) {
-                continue;
-            }
-
-            QByteArray baGapData;
-
-            if (!readDecodedBytes(nGapSize, &baGapData)) {
-                bResult = false;
-                break;
-            }
-
-            XBinary::_copyMemory(baCandidateOutput.data() + programHeader.p_offset + programHeader.p_filesz, baGapData.constData(), baGapData.size());
-        }
-
-        if (bResult && (bStreamError || (nCurrentDecodedOffset < baCurrentDecoded.size()))) {
-            bResult = false;
-        }
-
-        if (bResult) {
-            *pOutput = baCandidateOutput;
-        } else {
-            nCurrentOffset = nSavedCurrentOffset;
-            bReachedEnd = bSavedReachedEnd;
-            bStreamError = bSavedStreamError;
-            baCurrentDecoded = baSavedCurrentDecoded;
-            nCurrentDecodedOffset = nSavedCurrentDecodedOffset;
-        }
-
-        return bResult;
-    };
-
-    auto seekToGapExtentStream = [&]() -> bool {
-        qint64 nLInfoOffset = info.nDataOffset - (qint64)sizeof(l_info);
-
-        if (nLInfoOffset < 0) {
-            return false;
-        }
-
-        QByteArray baLInfo = read_array_process(nLInfoOffset, sizeof(l_info), pPdStruct);
-
-        if (baLInfo.size() != (qint64)sizeof(l_info)) {
-            return false;
-        }
-
-        quint32 nLMagic = XBinary::_read_uint32(baLInfo.data() + offsetof(l_info, l_magic), false);
-        quint16 nLSize = XBinary::_read_uint16(baLInfo.data() + offsetof(l_info, l_lsize), bIsBE);
-
-        if ((nLMagic != 0x21585055) || (nLSize < sizeof(l_info))) {
-            return false;
-        }
-
-        QList<XELF_DEF::Elf_Phdr> listPackedProgramHeaders = elf.getElf_PhdrList(0x1000);
-
-        if (listPackedProgramHeaders.isEmpty()) {
-            return false;
-        }
-
-        quint64 nEntry = elf.is64() ? elf.getHdr64_entry() : elf.getHdr32_entry();
-        quint16 nType = elf.is64() ? elf.getHdr64_type() : elf.getHdr32_type();
-        quint16 nMachine = elf.is64() ? elf.getHdr64_machine() : elf.getHdr32_machine();
-
-        quint64 nOffEntry = 0;
-
-        for (qint32 i = 0; i < listPackedProgramHeaders.size(); i++) {
-            const XELF_DEF::Elf_Phdr &programHeader = listPackedProgramHeaders.at(i);
-
-            if ((programHeader.p_type == XELF_DEF::S_PT_LOAD) && (nEntry >= programHeader.p_vaddr) && ((nEntry - programHeader.p_vaddr) < programHeader.p_filesz)) {
-                nOffEntry = (nEntry - programHeader.p_vaddr) + programHeader.p_offset;
-                break;
-            }
-        }
-
-        quint32 nDInfoSize = 0;
-
-        if ((nType != XELF_DEF::S_ET_DYN) && (!listPackedProgramHeaders.isEmpty()) && (listPackedProgramHeaders.first().p_flags & 1)) {
-            switch (nMachine) {
-                case 183: nDInfoSize = 16; break;  // EM_AARCH64
-                case 21: nDInfoSize = 12; break;   // EM_PPC64
-                case 62: nDInfoSize = 8; break;    // EM_X86_64
-                default: nDInfoSize = 0; break;
-            }
-        }
-
-        QList<qint64> listCandidateOffsets;
-
-        auto addCandidateOffset = [&](qint64 nOffset) {
-            if ((0 <= nOffset) && (nOffset < getSize()) && (!listCandidateOffsets.contains(nOffset))) {
-                listCandidateOffsets.append(nOffset);
-            }
-        };
-
-        if ((listPackedProgramHeaders.size() >= 2) && (listPackedProgramHeaders.at(0).p_filesz == 0x1000) && (listPackedProgramHeaders.at(0).p_offset == 0) &&
-            (listPackedProgramHeaders.at(1).p_offset == 0) && (listPackedProgramHeaders.at(1).p_filesz == listPackedProgramHeaders.at(1).p_memsz)) {
-            addCandidateOffset((qint64)upxAlignUp(listPackedProgramHeaders.at(1).p_memsz, 4));
-        }
-
-        if ((nOffEntry) && ((nOffEntry + upxAlignUp(nLSize, 4) + info.nPackHeaderSize + sizeof(quint32)) < upxAlignUp(getSize(), 4))) {
-            qint64 nLoaderOffset = (qint64)nOffEntry;
-
-            if (nDInfoSize) {
-                addCandidateOffset(nLoaderOffset - nDInfoSize + nLSize);
-                addCandidateOffset(nLoaderOffset - nDInfoSize + upxAlignUp(nLSize, 4));
-                addCandidateOffset(nLoaderOffset + nLSize);
-            } else {
-                addCandidateOffset((qint64)upxAlignUp(nLoaderOffset, 4) + nLSize);
-                addCandidateOffset((qint64)upxAlignUp(nLoaderOffset, 4) + upxAlignUp(nLSize, 4));
-                addCandidateOffset(nLoaderOffset + nLSize);
-            }
-        }
-
-        if (listCandidateOffsets.isEmpty()) {
-            return false;
-        }
-
-        QByteArray baCandidateOutput = baOutput;
-
-        for (qint32 i = 0; i < listCandidateOffsets.size(); i++) {
-            if (decodeGapExtentsFromOffset(listCandidateOffsets.at(i), &baCandidateOutput)) {
-                baOutput = baCandidateOutput;
-                return true;
-            }
-        }
-
-        return false;
-    };
-
     quint64 nGapTotal = nOrigFileSize - nDecodedLoadBytes;
 
     if (nGapTotal) {
-        if (!seekToGapExtentStream()) {
+        if (!streamState.seekToGapExtentStream(info, &elf, &baOutput)) {
             return _runUPXDecompress(pDevice, pPdStruct);
         }
     }
 
-    if (bStreamError) {
+    if (streamState.bStreamError) {
         return _runUPXDecompress(pDevice, pPdStruct);
     }
 
@@ -2279,260 +2528,289 @@ bool XUPX::_unpackELF(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
     return _runUPXDecompress(pDevice, pPdStruct);
 }
 
+static quint64 upxGetSegmentFileOffset(const XMACH::SEGMENT_RECORD &record)
+{
+    return record.bIs64 ? record.s.segment64.fileoff : record.s.segment32.fileoff;
+}
+
+static quint64 upxGetSegmentFileSize(const XMACH::SEGMENT_RECORD &record)
+{
+    return record.bIs64 ? record.s.segment64.filesize : record.s.segment32.filesize;
+}
+
+static bool upxSegmentRecordLessThan(const XMACH::SEGMENT_RECORD &a, const XMACH::SEGMENT_RECORD &b)
+{
+    const quint64 nAFileOffset = a.bIs64 ? a.s.segment64.fileoff : a.s.segment32.fileoff;
+    const quint64 nBFileOffset = b.bIs64 ? b.s.segment64.fileoff : b.s.segment32.fileoff;
+
+    if (nAFileOffset != nBFileOffset) {
+        return nAFileOffset < nBFileOffset;
+    }
+
+    return a.nStructOffset < b.nStructOffset;
+}
+
+static quint64 upxFindSegmentGap(const QList<XMACH::SEGMENT_RECORD> &listSegments, quint32 nOrigFileSize, qint32 nIndex)
+{
+    const quint64 nHigh = upxGetSegmentFileOffset(listSegments.at(nIndex)) + upxGetSegmentFileSize(listSegments.at(nIndex));
+    quint64 nLow = nOrigFileSize;
+
+    for (qint32 i = 0; i < listSegments.size(); i++) {
+        if (i == nIndex) {
+            continue;
+        }
+
+        const quint64 nOtherFileSize = upxGetSegmentFileSize(listSegments.at(i));
+
+        if (!nOtherFileSize) {
+            continue;
+        }
+
+        const quint64 nOtherOffset = upxGetSegmentFileOffset(listSegments.at(i));
+
+        if ((nOtherOffset >= nHigh) && (nOtherOffset < nLow)) {
+            nLow = nOtherOffset;
+        }
+    }
+
+    return (nLow >= nHigh) ? (nLow - nHigh) : 0;
+}
+
 bool XUPX::_unpackMach(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct)
 {
-    auto fallback = [&]() -> bool { return _runUPXDecompress(pDevice, pPdStruct); };
-
     XMACH mach(this->getDevice(), this->isImage(), this->getModuleAddress());
 
     if (!mach.isValid(pPdStruct)) {
-        return fallback();
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
     if ((mach.getFileType() == FT_MACHOFAT) || (mach.getType() == XMACH::TYPE_DYLIB)) {
-        return fallback();
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
     const bool bIsBE = (mach.getEndian() == ENDIAN_BIG);
     QByteArray baPInfo = read_array_process(info.nDataOffset, sizeof(p_info), pPdStruct);
 
     if (baPInfo.size() != (qint64)sizeof(p_info)) {
-        return fallback();
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
     const quint32 nOrigFileSize = XBinary::_read_uint32(baPInfo.data() + offsetof(p_info, p_filesize), bIsBE);
     const quint32 nBlockSize = XBinary::_read_uint32(baPInfo.data() + offsetof(p_info, p_blocksize), bIsBE);
 
     if ((!nOrigFileSize) || (!nBlockSize) || (nBlockSize > nOrigFileSize)) {
-        return fallback();
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
-    qint64 nCurrentOffset = info.nDataOffset + sizeof(p_info);
-    bool bReachedEnd = false;
-    bool bStreamError = false;
-    QByteArray baCurrentDecoded;
-    qint64 nCurrentDecodedOffset = 0;
+    // Shared packed-block stream state; the member functions replace the former
+    // loadNextBlock/readDecodedBytes lambdas.
+    struct MACH_STREAM_STATE {
+        XUPX *pUpx;
+        PDSTRUCT *pPdStruct;
+        bool bIsBE;
+        quint32 nBlockSize;
+        qint64 nCurrentOffset;
+        bool bReachedEnd;
+        bool bStreamError;
+        QByteArray baCurrentDecoded;
+        qint64 nCurrentDecodedOffset;
 
-    auto loadNextBlock = [&]() -> bool {
-        baCurrentDecoded.clear();
-        nCurrentDecodedOffset = 0;
+        bool loadNextBlock()
+        {
+            baCurrentDecoded.clear();
+            nCurrentDecodedOffset = 0;
 
-        QByteArray baBInfo = read_array_process(nCurrentOffset, sizeof(b_info), pPdStruct);
+            QByteArray baBInfo = pUpx->read_array_process(nCurrentOffset, sizeof(b_info), pPdStruct);
 
-        if (baBInfo.size() != (qint64)sizeof(b_info)) {
-            bStreamError = (baBInfo.size() != 0);
-            return false;
-        }
-
-        b_info header = {};
-        XBinary::_copyMemory((char *)&header, baBInfo.constData(), sizeof(b_info));
-
-        const quint32 nUncompressedSize = XBinary::_read_uint32((char *)&header.sz_unc, bIsBE);
-        const quint32 nCompressedSize = XBinary::_read_uint32((char *)&header.sz_cpr, bIsBE);
-        nCurrentOffset += sizeof(b_info);
-
-        if (nUncompressedSize == 0) {
-            if (XBinary::_read_uint32((char *)&header.sz_cpr, false) == 0x21585055) {
-                bReachedEnd = true;
+            if (baBInfo.size() != (qint64)sizeof(b_info)) {
+                bStreamError = (baBInfo.size() != 0);
+                return false;
             }
 
-            return false;
-        }
+            b_info header = {};
+            XBinary::_copyMemory((char *)&header, baBInfo.constData(), sizeof(b_info));
 
-        if ((!nCompressedSize) || (nCompressedSize > nBlockSize) || (nUncompressedSize > nBlockSize)) {
-            bStreamError = true;
-            return false;
-        }
+            const quint32 nUncompressedSize = XBinary::_read_uint32((char *)&header.sz_unc, bIsBE);
+            const quint32 nCompressedSize = XBinary::_read_uint32((char *)&header.sz_cpr, bIsBE);
+            nCurrentOffset += sizeof(b_info);
 
-        QByteArray baBlock = read_array_process(nCurrentOffset, nCompressedSize, pPdStruct);
+            if (nUncompressedSize == 0) {
+                if (XBinary::_read_uint32((char *)&header.sz_cpr, false) == 0x21585055) {
+                    bReachedEnd = true;
+                }
 
-        if ((quint32)baBlock.size() != nCompressedSize) {
-            bStreamError = true;
-            return false;
-        }
+                return false;
+            }
 
-        if (nCompressedSize < nUncompressedSize) {
-            baCurrentDecoded.resize(nUncompressedSize);
-            quint32 nDecodedSize = nUncompressedSize;
-
-            if (!_upxDecompress((const unsigned char *)baBlock.constData(), nCompressedSize, (unsigned char *)baCurrentDecoded.data(), &nDecodedSize, header.b_method)) {
-                baCurrentDecoded.clear();
+            if ((!nCompressedSize) || (nCompressedSize > nBlockSize) || (nUncompressedSize > nBlockSize)) {
                 bStreamError = true;
                 return false;
             }
 
-            baCurrentDecoded.resize(nDecodedSize);
+            QByteArray baBlock = pUpx->read_array_process(nCurrentOffset, nCompressedSize, pPdStruct);
 
-            if (header.b_ftid) {
-                if (!applyUPXBlockFilter((unsigned char *)baCurrentDecoded.data(), baCurrentDecoded.size(), header.b_ftid, header.b_cto8)) {
+            if ((quint32)baBlock.size() != nCompressedSize) {
+                bStreamError = true;
+                return false;
+            }
+
+            if (nCompressedSize < nUncompressedSize) {
+                baCurrentDecoded.resize(nUncompressedSize);
+                quint32 nDecodedSize = nUncompressedSize;
+
+                if (!pUpx->_upxDecompress((const unsigned char *)baBlock.constData(), nCompressedSize, (unsigned char *)baCurrentDecoded.data(), &nDecodedSize,
+                                          header.b_method)) {
                     baCurrentDecoded.clear();
                     bStreamError = true;
                     return false;
                 }
-            }
-        } else if (nCompressedSize == nUncompressedSize) {
-            baCurrentDecoded = baBlock;
-        } else {
-            bStreamError = true;
-            return false;
-        }
 
-        nCurrentOffset += nCompressedSize;
-        return true;
-    };
+                baCurrentDecoded.resize(nDecodedSize);
 
-    auto readDecodedBytes = [&](quint64 nWanted, QByteArray *pResult) -> bool {
-        if ((!pResult) || (nWanted > (quint64)INT_MAX)) {
-            return false;
-        }
-
-        pResult->clear();
-        pResult->reserve((int)nWanted);
-
-        while ((quint64)pResult->size() < nWanted && XBinary::isPdStructNotCanceled(pPdStruct)) {
-            if (nCurrentDecodedOffset >= baCurrentDecoded.size()) {
-                if (!loadNextBlock()) {
-                    if (bStreamError) {
+                if (header.b_ftid) {
+                    if (!applyUPXBlockFilter((unsigned char *)baCurrentDecoded.data(), baCurrentDecoded.size(), header.b_ftid, header.b_cto8)) {
+                        baCurrentDecoded.clear();
+                        bStreamError = true;
                         return false;
                     }
-
-                    break;
                 }
+            } else if (nCompressedSize == nUncompressedSize) {
+                baCurrentDecoded = baBlock;
+            } else {
+                bStreamError = true;
+                return false;
             }
 
-            const qint64 nChunkSize = qMin<qint64>((qint64)(nWanted - (quint64)pResult->size()), baCurrentDecoded.size() - nCurrentDecodedOffset);
-
-            if (nChunkSize <= 0) {
-                break;
-            }
-
-            pResult->append(baCurrentDecoded.constData() + nCurrentDecodedOffset, nChunkSize);
-            nCurrentDecodedOffset += nChunkSize;
+            nCurrentOffset += nCompressedSize;
+            return true;
         }
 
-        return ((quint64)pResult->size() == nWanted);
+        bool readDecodedBytes(quint64 nWanted, QByteArray *pResult)
+        {
+            if ((!pResult) || (nWanted > (quint64)INT_MAX)) {
+                return false;
+            }
+
+            pResult->clear();
+            pResult->reserve((int)nWanted);
+
+            while ((quint64)pResult->size() < nWanted && XBinary::isPdStructNotCanceled(pPdStruct)) {
+                if (nCurrentDecodedOffset >= baCurrentDecoded.size()) {
+                    if (!loadNextBlock()) {
+                        if (bStreamError) {
+                            return false;
+                        }
+
+                        break;
+                    }
+                }
+
+                const qint64 nChunkSize = qMin<qint64>((qint64)(nWanted - (quint64)pResult->size()), baCurrentDecoded.size() - nCurrentDecodedOffset);
+
+                if (nChunkSize <= 0) {
+                    break;
+                }
+
+                pResult->append(baCurrentDecoded.constData() + nCurrentDecodedOffset, nChunkSize);
+                nCurrentDecodedOffset += nChunkSize;
+            }
+
+            return ((quint64)pResult->size() == nWanted);
+        }
     };
 
-    if (!loadNextBlock()) {
-        return fallback();
+    MACH_STREAM_STATE streamState;
+    streamState.pUpx = this;
+    streamState.pPdStruct = pPdStruct;
+    streamState.bIsBE = bIsBE;
+    streamState.nBlockSize = nBlockSize;
+    streamState.nCurrentOffset = info.nDataOffset + sizeof(p_info);
+    streamState.bReachedEnd = false;
+    streamState.bStreamError = false;
+    streamState.nCurrentDecodedOffset = 0;
+
+    if (!streamState.loadNextBlock()) {
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
-    QBuffer previewBuffer(&baCurrentDecoded);
+    QBuffer previewBuffer(&streamState.baCurrentDecoded);
 
     if (!previewBuffer.open(QIODevice::ReadOnly)) {
-        return fallback();
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
-    XMACH unpackedMach(&previewBuffer, false, -1);
+    XMACH unpackedMach(&previewBuffer, false, XADDR_MAX);
 
     if (!unpackedMach.isValid(pPdStruct)) {
-        return fallback();
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
     if ((mach.getHeader_cputype() != unpackedMach.getHeader_cputype()) || (mach.getHeader_cpusubtype() != unpackedMach.getHeader_cpusubtype()) ||
         (mach.getHeader_filetype() != unpackedMach.getHeader_filetype())) {
-        return fallback();
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
     const quint64 nHeaderSize = unpackedMach.getHeaderSize() + unpackedMach.getHeader_sizeofcmds();
 
-    if ((!nHeaderSize) || (nHeaderSize > (quint64)baCurrentDecoded.size()) || (nHeaderSize > nOrigFileSize)) {
-        return fallback();
+    if ((!nHeaderSize) || (nHeaderSize > (quint64)streamState.baCurrentDecoded.size()) || (nHeaderSize > nOrigFileSize)) {
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
     QList<XMACH::SEGMENT_RECORD> listSegments = unpackedMach.getSegmentRecords();
 
     if (listSegments.isEmpty()) {
-        return fallback();
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
-    std::sort(listSegments.begin(), listSegments.end(), [](const XMACH::SEGMENT_RECORD &a, const XMACH::SEGMENT_RECORD &b) -> bool {
-        const quint64 nAFileOffset = a.bIs64 ? a.s.segment64.fileoff : a.s.segment32.fileoff;
-        const quint64 nBFileOffset = b.bIs64 ? b.s.segment64.fileoff : b.s.segment32.fileoff;
-
-        if (nAFileOffset != nBFileOffset) {
-            return nAFileOffset < nBFileOffset;
-        }
-
-        return a.nStructOffset < b.nStructOffset;
-    });
-
-    auto getSegmentFileOffset = [](const XMACH::SEGMENT_RECORD &record) -> quint64 { return record.bIs64 ? record.s.segment64.fileoff : record.s.segment32.fileoff; };
-
-    auto getSegmentFileSize = [](const XMACH::SEGMENT_RECORD &record) -> quint64 { return record.bIs64 ? record.s.segment64.filesize : record.s.segment32.filesize; };
-
-    auto findSegmentGap = [&](qint32 nIndex) -> quint64 {
-        const quint64 nHigh = getSegmentFileOffset(listSegments.at(nIndex)) + getSegmentFileSize(listSegments.at(nIndex));
-        quint64 nLow = nOrigFileSize;
-
-        for (qint32 i = 0; i < listSegments.size(); i++) {
-            if (i == nIndex) {
-                continue;
-            }
-
-            const quint64 nOtherFileSize = getSegmentFileSize(listSegments.at(i));
-
-            if (!nOtherFileSize) {
-                continue;
-            }
-
-            const quint64 nOtherOffset = getSegmentFileOffset(listSegments.at(i));
-
-            if ((nOtherOffset >= nHigh) && (nOtherOffset < nLow)) {
-                nLow = nOtherOffset;
-            }
-        }
-
-        return (nLow >= nHigh) ? (nLow - nHigh) : 0;
-    };
+    std::sort(listSegments.begin(), listSegments.end(), upxSegmentRecordLessThan);
 
     QByteArray baOutput(nOrigFileSize, 0);
     quint64 nPreviousEnd = 0;
     quint64 nDecodedTotal = 0;
     bool bHasFileBackedSegment = false;
 
-    nCurrentOffset = info.nDataOffset + sizeof(p_info);
-    baCurrentDecoded.clear();
-    nCurrentDecodedOffset = 0;
-    bReachedEnd = false;
-    bStreamError = false;
+    streamState.nCurrentOffset = info.nDataOffset + sizeof(p_info);
+    streamState.baCurrentDecoded.clear();
+    streamState.nCurrentDecodedOffset = 0;
+    streamState.bReachedEnd = false;
+    streamState.bStreamError = false;
 
     for (qint32 i = 0; i < listSegments.size(); i++) {
-        const quint64 nFileOffset = getSegmentFileOffset(listSegments.at(i));
-        const quint64 nFileSize = getSegmentFileSize(listSegments.at(i));
+        const quint64 nFileOffset = upxGetSegmentFileOffset(listSegments.at(i));
+        const quint64 nFileSize = upxGetSegmentFileSize(listSegments.at(i));
 
         if (!nFileSize) {
             continue;
         }
 
         if ((!bHasFileBackedSegment) && (nFileOffset != 0)) {
-            return fallback();
+            return _runUPXDecompress(pDevice, pPdStruct);
         }
 
         if ((nFileOffset > nOrigFileSize) || (nFileSize > nOrigFileSize) || ((nFileOffset + nFileSize) > nOrigFileSize) || (nFileOffset < nPreviousEnd)) {
-            return fallback();
+            return _runUPXDecompress(pDevice, pPdStruct);
         }
 
         if ((!bHasFileBackedSegment) && (nFileSize < nHeaderSize)) {
-            return fallback();
+            return _runUPXDecompress(pDevice, pPdStruct);
         }
 
         QByteArray baSegmentData;
 
-        if (!readDecodedBytes(nFileSize, &baSegmentData)) {
-            return fallback();
+        if (!streamState.readDecodedBytes(nFileSize, &baSegmentData)) {
+            return _runUPXDecompress(pDevice, pPdStruct);
         }
 
         XBinary::_copyMemory(baOutput.data() + nFileOffset, baSegmentData.constData(), baSegmentData.size());
         nDecodedTotal += nFileSize;
 
-        const quint64 nGapSize = findSegmentGap(i);
+        const quint64 nGapSize = upxFindSegmentGap(listSegments, nOrigFileSize, i);
 
         if (nGapSize) {
             QByteArray baGapData;
 
-            if (!readDecodedBytes(nGapSize, &baGapData)) {
-                return fallback();
+            if (!streamState.readDecodedBytes(nGapSize, &baGapData)) {
+                return _runUPXDecompress(pDevice, pPdStruct);
             }
 
             XBinary::_copyMemory(baOutput.data() + nFileOffset + nFileSize, baGapData.constData(), baGapData.size());
@@ -2543,33 +2821,33 @@ bool XUPX::_unpackMach(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *
         bHasFileBackedSegment = true;
     }
 
-    if ((!bHasFileBackedSegment) || bStreamError || (nDecodedTotal != nOrigFileSize)) {
-        return fallback();
+    if ((!bHasFileBackedSegment) || streamState.bStreamError || (nDecodedTotal != nOrigFileSize)) {
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
-    if (nCurrentDecodedOffset < baCurrentDecoded.size()) {
-        return fallback();
+    if (streamState.nCurrentDecodedOffset < streamState.baCurrentDecoded.size()) {
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
-    if (loadNextBlock() || bStreamError || (!bReachedEnd)) {
-        return fallback();
+    if (streamState.loadNextBlock() || streamState.bStreamError || (!streamState.bReachedEnd)) {
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
     QBuffer verifyBuffer(&baOutput);
 
     if (!verifyBuffer.open(QIODevice::ReadOnly)) {
-        return fallback();
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
-    XMACH outputMach(&verifyBuffer, false, -1);
+    XMACH outputMach(&verifyBuffer, false, XADDR_MAX);
 
     if (!outputMach.isValid(pPdStruct)) {
-        return fallback();
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
     if ((outputMach.getHeader_cputype() != mach.getHeader_cputype()) || (outputMach.getHeader_cpusubtype() != mach.getHeader_cpusubtype()) ||
         (outputMach.getHeader_filetype() != mach.getHeader_filetype())) {
-        return fallback();
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
     return _writeBufferToDevice(baOutput, pDevice, pPdStruct);
@@ -2577,8 +2855,6 @@ bool XUPX::_unpackMach(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *
 
 bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct)
 {
-    auto fallback = [&]() -> bool { return _runUPXDecompress(pDevice, pPdStruct); };
-
     if ((!getDevice()) || (!pDevice) || (!info.c_len) || (!info.u_len)) {
         return false;
     }
@@ -2587,45 +2863,45 @@ bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
         QByteArray baCompressed = read_array_process(info.nDataOffset, info.c_len, pPdStruct);
 
         if ((quint32)baCompressed.size() != info.c_len) {
-            return fallback();
+            return _runUPXDecompress(pDevice, pPdStruct);
         }
 
         QByteArray baOutput(info.u_len, 0);
         quint32 nOutputSize = info.u_len;
 
         if (!_upxDecompress((const unsigned char *)baCompressed.constData(), info.c_len, (unsigned char *)baOutput.data(), &nOutputSize, info.method)) {
-            return fallback();
+            return _runUPXDecompress(pDevice, pPdStruct);
         }
 
         baOutput.resize(nOutputSize);
 
         if (info.filter) {
             if (!applyPEFilter((unsigned char *)baOutput.data(), baOutput.size(), info.filter, info.filter_cto, 0x100)) {
-                return fallback();
+                return _runUPXDecompress(pDevice, pPdStruct);
             }
         }
 
         if ((quint32)baOutput.size() != info.u_len) {
-            return fallback();
+            return _runUPXDecompress(pDevice, pPdStruct);
         }
 
         return _writeBufferToDevice(baOutput, pDevice, pPdStruct);
     }
 
     if (!((info.format == UPX_F_DOS_EXE) || (info.format == UPX_F_DOS_EXEH))) {
-        return fallback();
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
     XMSDOS msdos(this->getDevice(), this->isImage(), this->getModuleAddress());
 
     if (!msdos.isValid(pPdStruct)) {
-        return fallback();
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
     QByteArray baExeHeader = read_array_process(0, sizeof(XMSDOS_DEF::EXE_file), pPdStruct);
 
     if (baExeHeader.size() != (qint64)sizeof(XMSDOS_DEF::EXE_file)) {
-        return fallback();
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
     XMSDOS_DEF::EXE_file ih = {};
@@ -2639,25 +2915,25 @@ bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
     }
 
     if ((nExeSize < nHeaderSize) || (nExeSize > (quint32)getSize())) {
-        return fallback();
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
     const quint32 nImageSize = nExeSize - nHeaderSize;
 
     if (nImageSize < 4) {
-        return fallback();
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
     QByteArray baPackedImage = read_array_process(nHeaderSize, nImageSize, pPdStruct);
 
     if ((quint32)baPackedImage.size() != nImageSize) {
-        return fallback();
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
     const quint32 nPackedDataOffset = (quint32)(info.nDataOffset - nHeaderSize);
 
     if ((nPackedDataOffset >= (quint32)baPackedImage.size()) || (((quint64)nPackedDataOffset + info.c_len) > (quint64)baPackedImage.size())) {
-        return fallback();
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
     QByteArray baUnpacked(info.u_len, 0);
@@ -2665,13 +2941,13 @@ bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
 
     if (!_upxDecompress((const unsigned char *)baPackedImage.constData() + nPackedDataOffset, info.c_len, (unsigned char *)baUnpacked.data(), &nUnpackedSize,
                         info.method)) {
-        return fallback();
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
     baUnpacked.resize(nUnpackedSize);
 
     if ((quint32)baUnpacked.size() != info.u_len) {
-        return fallback();
+        return _runUPXDecompress(pDevice, pPdStruct);
     }
 
     quint32 nImageTail = nImageSize - 1;
@@ -2682,14 +2958,14 @@ bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
 
     if (!(nFlag & DOS_EXE_FLAG_NORELOC)) {
         if (nPayloadSize < 2) {
-            return fallback();
+            return _runUPXDecompress(pDevice, pPdStruct);
         }
 
         quint16 nRelocSize = XBinary::_read_uint16((char *)baUnpacked.data() + nPayloadSize - 2, false);
         nPayloadSize -= 2;
 
         if ((nRelocSize < 11) || (nRelocSize > 0x6000) || (nRelocSize >= nImageTail) || (nRelocSize > nPayloadSize)) {
-            return fallback();
+            return _runUPXDecompress(pDevice, pPdStruct);
         }
 
         const quint32 nRelocStart = nPayloadSize - nRelocSize;
@@ -2702,7 +2978,7 @@ bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
 
         while (nOnes) {
             if ((nCursor + 4) > nPayloadSize) {
-                return fallback();
+                return _runUPXDecompress(pDevice, pPdStruct);
             }
 
             quint32 nDI = XBinary::_read_uint16((char *)baUnpacked.data() + nCursor, false);
@@ -2734,7 +3010,7 @@ bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
                     }
 
                     if ((nSearchOffset + 4) >= nPayloadSize) {
-                        return fallback();
+                        return _runUPXDecompress(pDevice, pPdStruct);
                     }
 
                     nDI = nSearchOffset - (nES * 16) + 3;
@@ -2782,7 +3058,7 @@ bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
 
     if (nFlag & DOS_EXE_FLAG_MAXMEM) {
         if (nImageTail < 2) {
-            return fallback();
+            return _runUPXDecompress(pDevice, pPdStruct);
         }
 
         nImageTail -= 2;
@@ -2791,7 +3067,7 @@ bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
 
     if (nFlag & DOS_EXE_FLAG_MINMEM) {
         if (nImageTail < 2) {
-            return fallback();
+            return _runUPXDecompress(pDevice, pPdStruct);
         }
 
         nImageTail -= 2;
@@ -2800,7 +3076,7 @@ bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
 
     if (nFlag & DOS_EXE_FLAG_SP) {
         if (nImageTail < 2) {
-            return fallback();
+            return _runUPXDecompress(pDevice, pPdStruct);
         }
 
         nImageTail -= 2;
@@ -2809,7 +3085,7 @@ bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
 
     if (nFlag & DOS_EXE_FLAG_SS) {
         if (nImageTail < 2) {
-            return fallback();
+            return _runUPXDecompress(pDevice, pPdStruct);
         }
 
         nImageTail -= 2;
@@ -2820,7 +3096,7 @@ bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
 
     if (nFlag & DOS_EXE_FLAG_USEJUMP) {
         if (nImageTail < 4) {
-            return fallback();
+            return _runUPXDecompress(pDevice, pPdStruct);
         }
 
         nIP = XBinary::_read_uint32((char *)baPackedImage.data() + nImageTail - 4, false);
@@ -2846,7 +3122,7 @@ bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
         QByteArray baOverlay = read_array_process(nExeSize, getSize() - nExeSize, pPdStruct);
 
         if (baOverlay.size() != (getSize() - nExeSize)) {
-            return fallback();
+            return _runUPXDecompress(pDevice, pPdStruct);
         }
 
         baResult.append(baOverlay);
@@ -2865,6 +3141,11 @@ bool XUPX::_runUPXDecompress(QIODevice *pDevice, PDSTRUCT *pPdStruct)
     return false;
 }
 
+static bool upxCanAppendFilePart(qint32 nLimit, const QList<XBinary::FPART> &listResult)
+{
+    return (nLimit == -1) || (listResult.size() < nLimit);
+}
+
 QList<XBinary::FPART> XUPX::getFileParts(quint32 nFileParts, qint32 nLimit, PDSTRUCT *pPdStruct)
 {
     QList<FPART> listResult;
@@ -2872,7 +3153,6 @@ QList<XBinary::FPART> XUPX::getFileParts(quint32 nFileParts, qint32 nLimit, PDST
     qint64 nDataSize = getSize();
 
     if ((nLimit < -1) || (nLimit == 0)) return listResult;
-    auto canAppend = [&]() -> bool { return (nLimit == -1) || (listResult.size() < nLimit); };
 
     // Do not call this class's getOverlayOffset(): it obtains the XUPX memory
     // map and recursively re-enters getFileParts(FILEPART_OVERLAY).  A local
@@ -2893,25 +3173,25 @@ QList<XBinary::FPART> XUPX::getFileParts(quint32 nFileParts, qint32 nLimit, PDST
         }
     }
 
-    if ((nFileParts & FILEPART_HEADER) && canAppend()) {
+    if ((nFileParts & FILEPART_HEADER) && upxCanAppendFilePart(nLimit, listResult)) {
         FPART record = {};
 
         record.filePart = FILEPART_HEADER;
         record.nFileOffset = 0;
         record.nFileSize = 0;  // TODO
-        record.nVirtualAddress = -1;
+        record.nVirtualAddress = XADDR_MAX;
         record.sName = tr("Header");
 
         listResult.append(record);
     }
 
-    if ((nFileParts & FILEPART_DATA) && canAppend()) {
+    if ((nFileParts & FILEPART_DATA) && upxCanAppendFilePart(nLimit, listResult)) {
         FPART record = {};
 
         record.filePart = FILEPART_DATA;
         record.nFileOffset = 0;  // TODO
         record.nFileSize = nDataSize;
-        record.nVirtualAddress = -1;
+        record.nVirtualAddress = XADDR_MAX;
         record.sName = tr("Data");
 
         listResult.append(record);
@@ -2919,7 +3199,7 @@ QList<XBinary::FPART> XUPX::getFileParts(quint32 nFileParts, qint32 nLimit, PDST
 
     if (nFileParts & FILEPART_OVERLAY) {
         for (const FPART &part : listOverlay) {
-            if (!canAppend()) break;
+            if (!upxCanAppendFilePart(nLimit, listResult)) break;
             listResult.append(part);
         }
     }

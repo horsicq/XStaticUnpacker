@@ -27,10 +27,20 @@ public:
     };
 
     struct UNPACK_CONTEXT {
+        QPointer<QIODevice> pOuterSourceDevice;
+        quint64 nOwnerDeviceGeneration;
+        UNPACK_STATE *pOwnerState = nullptr;
         SubDevice *pSubDevice;
         XArchive *pArchive;
         UNPACK_STATE innerState;
+        XArchive *pSourceValidator;
+        UNPACK_STATE sourceValidationState;
         QMap<qint32, QString> mapRecordNames;
+    };
+
+    struct UNPACK_DEFERRED_CLEANUP {
+        ~UNPACK_DEFERRED_CLEANUP();
+        QSet<UNPACK_CONTEXT *> setContexts;
     };
 
     explicit XActualInstaller(QIODevice *pDevice = nullptr, bool bIsImage = false, XADDR nModuleAddress = -1);
@@ -51,11 +61,20 @@ public:
     virtual bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
 
+protected:
+    bool isDeviceReplacementAllowed() const override
+    {
+        return (!m_pUnpackOperationState || !*m_pUnpackOperationState) && m_setUnpackContexts.isEmpty();
+    }
+
 private:
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
     qint64 _getZipSize(qint64 nArchiveOffset, qint64 nPayloadEnd, bool *pbHasSetupIni, PDSTRUCT *pPdStruct);
     INTERNAL_INFO m_internalInfo;
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);
+    QSharedPointer<bool> m_pUnpackOperationState;
+    QSharedPointer<UNPACK_DEFERRED_CLEANUP> m_pUnpackDeferredCleanup;
+    QSet<UNPACK_CONTEXT *> m_setUnpackContexts;
 };
 
 #endif  // XACTUALINSTALLER_H

@@ -8,6 +8,7 @@
 #include "xbinary.h"
 
 class XMSI;
+class XArchive;
 
 /* WiX detector and installed-payload extractor. */
 
@@ -21,9 +22,24 @@ public:
     };
 
     struct UNPACK_CONTEXT {
+        QPointer<QIODevice> pOuterSourceDevice;
+        quint64 nOwnerDeviceGeneration;
+        UNPACK_STATE *pOwnerState = nullptr;
         XMSI *pMSI;
         UNPACK_STATE state;
+        XArchive *pSourceValidator;
+        UNPACK_STATE sourceValidationState;
     };
+
+    struct UNPACK_LIFETIME_STATE {
+        UNPACK_LIFETIME_STATE() : bOperationInProgress(false), bOwnerAlive(true) {}
+        ~UNPACK_LIFETIME_STATE();
+        bool bOperationInProgress;
+        bool bOwnerAlive;
+        QSet<UNPACK_CONTEXT *> setContexts;
+    };
+
+    static bool deleteUnpackContext(UNPACK_CONTEXT *pContext);
 
     explicit XWiX(QIODevice *pDevice = nullptr, bool bIsImage = false, XADDR nModuleAddress = -1);
     ~XWiX() override;
@@ -43,10 +59,18 @@ public:
     virtual bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
 
+protected:
+    bool isDeviceReplacementAllowed() const override
+    {
+        return m_pUnpackLifetimeState && m_pUnpackLifetimeState->bOwnerAlive &&
+               !m_pUnpackLifetimeState->bOperationInProgress && m_pUnpackLifetimeState->setContexts.isEmpty();
+    }
+
 private:
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
     INTERNAL_INFO m_internalInfo;
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);
+    QSharedPointer<UNPACK_LIFETIME_STATE> m_pUnpackLifetimeState;
 };
 
 #endif  // XWIX_H

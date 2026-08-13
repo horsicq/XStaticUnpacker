@@ -7,6 +7,7 @@
 
 #include <QBuffer>
 #include <QSet>
+#include <QTemporaryFile>
 #include <algorithm>
 #if (QT_VERSION_MAJOR < 6) || defined(QT_CORE5COMPAT_LIB)
 #include <QTextCodec>
@@ -16,8 +17,31 @@
 
 #include "../XArchive/xcfbf.h"
 #include "xmsi.h"
+#include "../XArchive/xarchive.h"
 
 namespace {
+class WixOperationGuard {
+public:
+    explicit WixOperationGuard(const QSharedPointer<XWiX::UNPACK_LIFETIME_STATE> &pState) : m_pState(pState), m_bAcquired(false)
+    {
+        if (m_pState && m_pState->bOwnerAlive && !m_pState->bOperationInProgress) {
+            m_pState->bOperationInProgress = true;
+            m_bAcquired = true;
+        }
+    }
+    ~WixOperationGuard() { if (m_pState && m_bAcquired) m_pState->bOperationInProgress = false; }
+    bool isAcquired() const { return m_bAcquired; }
+private:
+    QSharedPointer<XWiX::UNPACK_LIFETIME_STATE> m_pState;
+    bool m_bAcquired;
+};
+
+class WixPublisher : public XArchive {
+public:
+    explicit WixPublisher(QIODevice *pDevice) : XArchive(pDevice) {}
+    using XArchive::publishUnpackOutput;
+};
+
 struct WIX_PROPERTY_ENTRY {
     quint32 nID;
     quint32 nOffset;
@@ -142,6 +166,11 @@ static bool wixDecodeAnsi(const QByteArray &baData, quint16 nCodePage, QString *
     return true;
 }
 
+static bool wixPropertyOffsetLessThan(const WIX_PROPERTY_ENTRY &a, const WIX_PROPERTY_ENTRY &b)
+{
+    return a.nOffset < b.nOffset;
+}
+
 static bool wixReadCreatingApplication(const QByteArray &baSummary, QString *pResult, XBinary::PDSTRUCT *pPdStruct)
 {
     if (!pResult || !XBinary::isPdStructNotCanceled(pPdStruct) || (baSummary.size() < 48)) return false;
@@ -187,9 +216,7 @@ static bool wixReadCreatingApplication(const QByteArray &baSummary, QString *pRe
         listProperties.append(entry);
     }
 
-    std::sort(listProperties.begin(), listProperties.end(), [](const WIX_PROPERTY_ENTRY &a, const WIX_PROPERTY_ENTRY &b) {
-        return a.nOffset < b.nOffset;
-    });
+    std::sort(listProperties.begin(), listProperties.end(), wixPropertyOffsetLessThan);
 
     qint32 nApplicationIndex = -1;
     qint32 nCodePageIndex = -1;
@@ -249,19 +276,49 @@ static bool wixReadCreatingApplication(const QByteArray &baSummary, QString *pRe
 }
 }  // namespace
 
+XWiX::UNPACK_LIFETIME_STATE::~UNPACK_LIFETIME_STATE()
+{
+    const QSet<UNPACK_CONTEXT *> contexts = setContexts;
+    setContexts.clear();
+    for (UNPACK_CONTEXT *pContext : contexts) XWiX::deleteUnpackContext(pContext);
+}
+
+bool XWiX::deleteUnpackContext(UNPACK_CONTEXT *pContext)
+{
+    if (!pContext) return true;
+    bool bResult = true;
+    if (pContext->pMSI) {
+        bResult = pContext->pMSI->finishUnpack(&pContext->state, nullptr);
+        delete pContext->pMSI;
+    }
+    if (pContext->pSourceValidator) {
+        pContext->pSourceValidator->releaseUnpackSource(&pContext->sourceValidationState);
+        delete pContext->pSourceValidator;
+    }
+    delete pContext;
+    return bResult;
+}
+
 XWiX::XWiX(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : XBinary(pDevice, bIsImage, nModuleAddress)
 {
+    m_pUnpackLifetimeState = QSharedPointer<UNPACK_LIFETIME_STATE>::create();
     setIsArchive(true);
 }
 
 XWiX::~XWiX()
 {
+    QSharedPointer<UNPACK_LIFETIME_STATE> pLifetime = m_pUnpackLifetimeState;
+    if (pLifetime) pLifetime->bOwnerAlive = false;
+    m_pUnpackLifetimeState.clear();
 }
 
 bool XWiX::isValid(PDSTRUCT *pPdStruct)
 {
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
-    return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
+    QPointer<XWiX> guardedThis(this);
+    const INTERNAL_INFO *pInfo =
+        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
+    return guardedThis && pInfo && pInfo->bIsValid;
 }
 
 bool XWiX::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
@@ -278,20 +335,48 @@ XWiX::INTERNAL_INFO XWiX::_getInternalInfo(PDSTRUCT *pPdStruct)
 // Cache format-specific parsing together with the XBinary memory map.
 bool XWiX::handleInternalInfo(PDSTRUCT *pPdStruct)
 {
-    if (!isInternalInfoHandled()) {
-        m_internalInfo = INTERNAL_INFO();
-        m_internalInfo = _getInternalInfo(pPdStruct);
-        if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
-            m_internalInfo = INTERNAL_INFO();
+    QPointer<XWiX> guardedThis(this);
+    const bool bAlreadyHandled = guardedThis->isInternalInfoHandled();
+    if (!guardedThis) return false;
+
+    if (!bAlreadyHandled) {
+        const quint64 nTransaction =
+            guardedThis->beginInternalInfoTransaction();
+        if (!nTransaction) return false;
+
+        // The transaction supplies the recursion sentinel. Keep every
+        // source-derived value local until the same binding is revalidated.
+        guardedThis->m_internalInfo = INTERNAL_INFO();
+        INTERNAL_INFO info = guardedThis->_getInternalInfo(pPdStruct);
+        if (!guardedThis) return false;
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
+            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+            guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
-        m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
-        if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
-            m_internalInfo = INTERNAL_INFO();
+
+        const auto memoryMap =
+            guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        if (!guardedThis) return false;
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
+            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+            guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
-        setIsInternalInfoHandled(true);
-        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+        info.memoryMap = memoryMap;
+
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction)) {
+            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+            return false;
+        }
+        guardedThis->m_internalInfo = info;
+        if (!guardedThis->commitInternalInfoTransaction(
+                nTransaction,
+                static_cast<XBinary::INTERNAL_INFO *>(
+                    &guardedThis->m_internalInfo))) {
+            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+            return false;
+        }
     }
 
     return true;
@@ -299,8 +384,11 @@ bool XWiX::handleInternalInfo(PDSTRUCT *pPdStruct)
 
 void *XWiX::getInternalInfo(PDSTRUCT *pPdStruct)
 {
-    handleInternalInfo(pPdStruct);
-    return &m_internalInfo;
+    QPointer<XWiX> guardedThis(this);
+    const bool bHandled = guardedThis->handleInternalInfo(pPdStruct);
+    if (!guardedThis || !bHandled) return nullptr;
+
+    return &guardedThis->m_internalInfo;
 }
 
 void XWiX::setInternalInfo(void *pInternalInfo)
@@ -397,69 +485,169 @@ QMap<XBinary::UNPACK_PROP, QVariant> XWiX::getDefaultUnpackProperties()
 
 bool XWiX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
-    if (!pState) return false;
-    if (pState->pContext && !finishUnpack(pState, nullptr)) return false;
-    if (!XBinary::isPdStructNotCanceled(pPdStruct) || !_detect(pPdStruct).bIsValid) return false;
+    if (!pState || !pState->baUnpackSourceToken.isEmpty()) return false;
+    QSharedPointer<UNPACK_LIFETIME_STATE> pLifetime = m_pUnpackLifetimeState;
+    WixOperationGuard operationGuard(pLifetime);
+    if (!operationGuard.isAcquired()) return false;
+    QPointer<XWiX> guardedThis(this);
+    if (pState->pContext) {
+        UNPACK_CONTEXT *pOldContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+        if (!pLifetime->setContexts.contains(pOldContext) || (pOldContext->pOwnerState != pState)) return false;
+        pLifetime->setContexts.remove(pOldContext);
+        pState->pContext = nullptr;
+        const bool bClean = deleteUnpackContext(pOldContext);
+        *pState = UNPACK_STATE();
+        if (!guardedThis || !pLifetime->bOwnerAlive || !bClean) return false;
+    }
+    if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
     *pState = UNPACK_STATE();
-    pState->nTotalSize = getSize();
     pState->mapUnpackProperties = mapProperties;
 
-    UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT;
-    pContext->pMSI = new XMSI(getDevice());
-    pContext->state = UNPACK_STATE();
-
-    if (!pContext->pMSI->initUnpack(&pContext->state, mapProperties, pPdStruct)) {
-        delete pContext->pMSI;
-        delete pContext;
+    QPointer<QIODevice> guardedSource(getDevice());
+    if (!guardedSource) return false;
+    XArchive *pSourceValidator = new XArchive(guardedSource.data());
+    UNPACK_STATE sourceValidationState = {};
+    if (!pSourceValidator->bindUnpackSource(&sourceValidationState, pPdStruct) || !guardedThis || !guardedSource) {
+        pSourceValidator->releaseUnpackSource(&sourceValidationState);
+        delete pSourceValidator;
+        return false;
+    }
+    XWiX detector(guardedSource.data(), isImage(), getModuleAddress());
+    const qint64 nTotalSize = guardedSource->size();
+    const INTERNAL_INFO info = detector._detect(pPdStruct);
+    if (!guardedThis || !guardedSource || (nTotalSize < 0) || !info.bIsValid ||
+        !pSourceValidator->isUnpackSourceCurrent(&sourceValidationState, pPdStruct) || !guardedThis || !guardedSource) {
+        pSourceValidator->releaseUnpackSource(&sourceValidationState);
+        delete pSourceValidator;
         return false;
     }
 
+    UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT;
+    pContext->pOuterSourceDevice = guardedSource;
+    pContext->nOwnerDeviceGeneration = getDeviceGeneration();
+    pContext->pMSI = new XMSI(guardedSource.data());
+    pContext->state = UNPACK_STATE();
+    pContext->pSourceValidator = pSourceValidator;
+    pContext->sourceValidationState = UNPACK_STATE();
+    if (!pContext->pSourceValidator->transferUnpackSourceOwnership(&sourceValidationState, &pContext->sourceValidationState)) {
+        pContext->pSourceValidator->releaseUnpackSource(&sourceValidationState);
+        deleteUnpackContext(pContext);
+        return false;
+    }
+
+    if (!pContext->pMSI->initUnpack(&pContext->state, mapProperties, pPdStruct) || !guardedThis || !guardedSource ||
+        !pContext->pSourceValidator->validateAndFinalizeUnpackSource(&pContext->sourceValidationState, pPdStruct) ||
+        !guardedThis || !guardedSource) {
+        deleteUnpackContext(pContext);
+        return false;
+    }
+
+    pState->nTotalSize = nTotalSize;
     pState->nNumberOfRecords = pContext->state.nNumberOfRecords;
     pState->nCurrentOffset = pContext->state.nCurrentOffset;
     pState->mapArchiveProperties = pContext->state.mapArchiveProperties;
+    pContext->pOwnerState = pState;
     pState->pContext = pContext;
+    pLifetime->setContexts.insert(pContext);
     return true;
 }
 
 XBinary::ARCHIVERECORD XWiX::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
     ARCHIVERECORD result = {};
-    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+    QSharedPointer<UNPACK_LIFETIME_STATE> pLifetime = m_pUnpackLifetimeState;
+    WixOperationGuard operationGuard(pLifetime);
+    if (!operationGuard.isAcquired()) return result;
+    QPointer<XWiX> guardedThis(this);
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
         (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
         return result;
     }
 
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    pContext->state.nCurrentIndex = pState->nCurrentIndex;
-    return pContext->pMSI->infoCurrent(&pContext->state, pPdStruct);
+    if (!pLifetime->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
+        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) ||
+        !pContext->pMSI || !pContext->pSourceValidator || (pContext->state.nCurrentIndex != pState->nCurrentIndex) ||
+        (pContext->state.nCurrentOffset != pState->nCurrentOffset) ||
+        (pContext->state.nNumberOfRecords != pState->nNumberOfRecords) ||
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis ||
+        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return result;
+    result = pContext->pMSI->infoCurrent(&pContext->state, pPdStruct);
+    if (!guardedThis || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return ARCHIVERECORD();
+    if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis ||
+        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return ARCHIVERECORD();
+    return result;
 }
 
 bool XWiX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
-    if (!pState || !pState->pContext || !pDevice || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+    QSharedPointer<UNPACK_LIFETIME_STATE> pLifetime = m_pUnpackLifetimeState;
+    WixOperationGuard operationGuard(pLifetime);
+    if (!operationGuard.isAcquired()) return false;
+    QPointer<XWiX> guardedThis(this);
+    QPointer<QIODevice> guardedOutput(pDevice);
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !guardedOutput || !guardedOutput->isOpen() ||
+        !guardedOutput->isWritable() || guardedOutput->isSequential() || !guardedThis || !guardedOutput ||
+        (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) || !XBinary::isResizeEnable(guardedOutput.data()) ||
+        !guardedThis || !guardedOutput || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
         (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
         return false;
     }
 
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    pContext->state.nCurrentIndex = pState->nCurrentIndex;
-    bool bResult = pContext->pMSI->unpackCurrent(&pContext->state, pDevice, pPdStruct);
+    if (!pLifetime->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
+        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) ||
+        !pContext->pMSI || !pContext->pSourceValidator || (pContext->state.nCurrentIndex != pState->nCurrentIndex) ||
+        (pContext->state.nCurrentOffset != pState->nCurrentOffset) ||
+        (pContext->state.nNumberOfRecords != pState->nNumberOfRecords) ||
+        XBinary::devicesAlias(pContext->pOuterSourceDevice.data(), guardedOutput.data()) || !guardedThis || !guardedOutput ||
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !guardedOutput ||
+        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return false;
+
+    QTemporaryFile stage;
+    if (!stage.open()) return false;
+    bool bResult = pContext->pMSI->unpackCurrent(&pContext->state, &stage, pPdStruct);
+    if (!bResult || !guardedThis || !guardedOutput || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) ||
+        (pState->pContext != pContext) ||
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !guardedOutput ||
+        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return false;
+
+    WixPublisher publisher(pContext->pOuterSourceDevice.data());
+    UNPACK_STATE publicationState = {};
+    if (!publisher.bindUnpackSource(&publicationState, pPdStruct) ||
+        !publisher.validateAndFinalizeUnpackSource(&publicationState, pPdStruct) || !guardedThis || !guardedOutput ||
+        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||
+        !publisher.publishUnpackOutput(&stage, guardedOutput.data(), &publicationState, pPdStruct) || !guardedThis || !guardedOutput ||
+        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return false;
     pState->nCurrentOffset = pContext->state.nCurrentOffset;
     pState->mapArchiveProperties = pContext->state.mapArchiveProperties;
-    return bResult;
+    return true;
 }
 
 bool XWiX::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
-    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+    QSharedPointer<UNPACK_LIFETIME_STATE> pLifetime = m_pUnpackLifetimeState;
+    WixOperationGuard operationGuard(pLifetime);
+    if (!operationGuard.isAcquired()) return false;
+    QPointer<XWiX> guardedThis(this);
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
         (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
         return false;
     }
 
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    pContext->state.nCurrentIndex = pState->nCurrentIndex;
+    if (!pLifetime->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
+        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) ||
+        !pContext->pMSI || !pContext->pSourceValidator || (pContext->state.nCurrentIndex != pState->nCurrentIndex) ||
+        (pContext->state.nCurrentOffset != pState->nCurrentOffset) ||
+        (pContext->state.nNumberOfRecords != pState->nNumberOfRecords) ||
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis ||
+        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return false;
     bool bResult = pContext->pMSI->moveToNext(&pContext->state, pPdStruct);
+    if (!guardedThis || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis ||
+        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return false;
     pState->nCurrentIndex = pContext->state.nCurrentIndex;
     pState->nCurrentOffset = pContext->state.nCurrentOffset;
     pState->mapArchiveProperties = pContext->state.mapArchiveProperties;
@@ -468,26 +656,23 @@ bool XWiX::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 
 bool XWiX::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
-    if (!pState) {
-        return false;
-    }
+    Q_UNUSED(pPdStruct)
+
+    if (!pState) return false;
+    QSharedPointer<UNPACK_LIFETIME_STATE> pLifetime = m_pUnpackLifetimeState;
+    WixOperationGuard operationGuard(pLifetime);
+    if (!operationGuard.isAcquired()) return false;
+    QPointer<XWiX> guardedThis(this);
 
     bool bResult = true;
     if (pState->pContext) {
         UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-        if (!pContext->pMSI->finishUnpack(&pContext->state, nullptr)) {
-            bResult = false;
-        }
-        delete pContext->pMSI;
-        delete pContext;
+        if (!pLifetime->setContexts.contains(pContext) || (pContext->pOwnerState != pState)) return false;
+        pLifetime->setContexts.remove(pContext);
         pState->pContext = nullptr;
+        bResult = deleteUnpackContext(pContext);
+        if (!guardedThis || !pLifetime->bOwnerAlive) return false;
     }
-
-    pState->nCurrentOffset = 0;
-    pState->nTotalSize = 0;
-    pState->nCurrentIndex = 0;
-    pState->nNumberOfRecords = 0;
-    pState->mapUnpackProperties.clear();
-    pState->mapArchiveProperties.clear();
+    *pState = UNPACK_STATE();
     return bResult;
 }

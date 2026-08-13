@@ -9,6 +9,8 @@
 
 #include "xbinary.h"
 
+class XArchive;
+
 class XNSIS : public XBinary {
     Q_OBJECT
 
@@ -68,6 +70,11 @@ public:
     static bool _fileEntryPosLess(const FILE_ENTRY &a, const FILE_ENTRY &b);
 
     struct UNPACK_CONTEXT {
+        QPointer<QIODevice> pOuterSourceDevice;
+        quint64 nOwnerDeviceGeneration;
+        UNPACK_STATE *pOwnerState = nullptr;
+        XArchive *pSourceValidator;
+        UNPACK_STATE sourceValidationState;
         // ---- first header ----
         qint64 nFirstHeaderOffset;   // offset of the 0x1C-byte first header
         qint64 nDataStreamOffset;    // nFirstHeaderOffset + 0x1C
@@ -104,6 +111,16 @@ public:
         qint64 nDataSize;            // size of the compressed data region
     };
 
+    struct UNPACK_LIFETIME_STATE {
+        UNPACK_LIFETIME_STATE() : bOperationInProgress(false), bOwnerAlive(true) {}
+        ~UNPACK_LIFETIME_STATE();
+        bool bOperationInProgress;
+        bool bOwnerAlive;
+        QSet<UNPACK_CONTEXT *> setContexts;
+    };
+
+    static void deleteUnpackContext(UNPACK_CONTEXT *pContext);
+
     explicit XNSIS(QIODevice *pDevice, bool bIsImage = false, XADDR nModuleAddress = -1);
     ~XNSIS() override;
 
@@ -122,6 +139,13 @@ public:
     virtual bool unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
+
+protected:
+    bool isDeviceReplacementAllowed() const override
+    {
+        return m_pUnpackLifetimeState && m_pUnpackLifetimeState->bOwnerAlive &&
+               !m_pUnpackLifetimeState->bOperationInProgress && m_pUnpackLifetimeState->setContexts.isEmpty();
+    }
 
 private:
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
@@ -160,6 +184,7 @@ private:
 
     // Reconstruct a patched uninstaller: apply the NSIS patch stream onto the installer's PE stub.
     static bool _uninstallerPatch(const QByteArray &baPatch, QByteArray *pDest);
+    QSharedPointer<UNPACK_LIFETIME_STATE> m_pUnpackLifetimeState;
 };
 
 #endif  // XNSIS_H

@@ -9,6 +9,7 @@
 
 #include <QFile>
 #include <QList>
+#include <QPointer>
 #include <QScopedPointer>
 
 #include "../XArchive/xarchive.h"
@@ -23,34 +24,46 @@ public:
     static XMaterializedUnpackGuard *bind(QIODevice *pDevice, XBinary::PDSTRUCT *pPdStruct = nullptr, bool bOwnDevice = false)
     {
         if (!pDevice) return nullptr;
-        QScopedPointer<QIODevice> pOwnedDevice(bOwnDevice ? pDevice : nullptr);
+        // Establish the lifetime guard before XArchive's constructor or
+        // source binding can invoke caller-controlled QIODevice callbacks.
+        // A QScopedPointer would retain a dangling address if such a callback
+        // destroys an owned device and would delete it a second time while
+        // unwinding the failed bind.
+        QPointer<QIODevice> guardedDevice(pDevice);
+        QPointer<QIODevice> guardedOwnedDevice(bOwnDevice ? pDevice : nullptr);
         QScopedPointer<XMaterializedUnpackGuard> pResult;
         try {
-            pResult.reset(new XMaterializedUnpackGuard(pDevice));
+            pResult.reset(new XMaterializedUnpackGuard(guardedDevice.data()));
         } catch (const std::bad_alloc &) {
+            if (guardedOwnedDevice) delete guardedOwnedDevice.data();
             return nullptr;
         }
-        if (bOwnDevice) pResult->m_pOwnedDevice.reset(pOwnedDevice.take());
-        if (!pResult || !pResult->m_archive.bindUnpackSource(&pResult->m_state, pPdStruct)) return nullptr;
+        if (bOwnDevice) {
+            pResult->m_ownedDevice.track(guardedOwnedDevice.data());
+        }
+        if (!guardedDevice ||
+            !pResult->m_archive.bindUnpackSource(&pResult->m_state,
+                                                pPdStruct)) {
+            return nullptr;
+        }
         pResult->m_bBound = true;
         return pResult.take();
     }
 
     static XMaterializedUnpackGuard *openFile(const QString &sFileName, XBinary::PDSTRUCT *pPdStruct = nullptr)
     {
-        QScopedPointer<QFile> pFile;
-        try {
-            pFile.reset(new QFile(sFileName));
-        } catch (const std::bad_alloc &) {
-            return nullptr;
-        }
+        QScopedPointer<QFile> pFile(new (std::nothrow) QFile(sFileName));
         if (!pFile || !pFile->open(QIODevice::ReadOnly)) return nullptr;
         return bind(pFile.take(), pPdStruct, true);
     }
 
     ~XMaterializedUnpackGuard()
     {
-        if (m_bBound) m_archive.releaseUnpackSource(&m_state);
+        if (m_bBound) {
+            m_archive.releaseUnpackSource(&m_state);
+            m_bBound = false;
+        }
+
     }
 
     bool validateAndFinalize(XBinary::PDSTRUCT *pPdStruct = nullptr)
@@ -78,6 +91,26 @@ public:
     }
 
 private:
+    class TRACKED_DEVICE_OWNER {
+    public:
+        TRACKED_DEVICE_OWNER() = default;
+
+        ~TRACKED_DEVICE_OWNER()
+        {
+            // QObject clears QPointer synchronously.  If a source callback
+            // already destroyed the device, there is nothing left to own.
+            QIODevice *pDevice = m_pDevice.data();
+            m_pDevice.clear();
+            delete pDevice;
+        }
+
+        void track(QIODevice *pDevice) { m_pDevice = pDevice; }
+
+    private:
+        Q_DISABLE_COPY(TRACKED_DEVICE_OWNER)
+        QPointer<QIODevice> m_pDevice;
+    };
+
     explicit XMaterializedUnpackGuard(QIODevice *pDevice)
         : m_archive(pDevice)
     {
@@ -85,7 +118,10 @@ private:
 
     Q_DISABLE_COPY(XMaterializedUnpackGuard)
 
-    QScopedPointer<QIODevice> m_pOwnedDevice;
+    // Keep ownership before the archive so reverse member destruction retains
+    // the original cleanup order: release the session, destroy XArchive, then
+    // delete a still-live owned device.
+    TRACKED_DEVICE_OWNER m_ownedDevice;
     XArchive m_archive;
     XBinary::UNPACK_STATE m_state = {};
     bool m_bBound = false;

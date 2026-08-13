@@ -39,15 +39,26 @@ public:
         qint64 nSize;
         QString sName;
         QString sExternalPath;
+        QByteArray baExternalFingerprint;
     };
 
     struct UNPACK_CONTEXT {
+        QPointer<QIODevice> pOuterSourceDevice;
+        quint64 nOwnerDeviceGeneration;
+        UNPACK_STATE *pOwnerState = nullptr;
         bool bPayloadMode;
         SubDevice *pSubDevice;
         XArchive *pArchive;
         UNPACK_STATE innerState;
+        XArchive *pSourceValidator;
+        UNPACK_STATE sourceValidationState;
         QList<CAB_CONTEXT *> listCabinets;
         QList<PAYLOAD_ENTRY> listEntries;
+    };
+
+    struct UNPACK_DEFERRED_CLEANUP {
+        ~UNPACK_DEFERRED_CLEANUP();
+        QSet<UNPACK_CONTEXT *> setContexts;
     };
 
     explicit XMSI(QIODevice *pDevice = nullptr, bool bIsImage = false, XADDR nModuleAddress = -1);
@@ -73,11 +84,20 @@ public:
     // and keeps normal external-CAB resolution restricted to the MSI directory.
     void setExternalCabinetData(const QMap<QString, QByteArray> &mapData);
 
+protected:
+    bool isDeviceReplacementAllowed() const override
+    {
+        return (!m_pUnpackOperationState || !*m_pUnpackOperationState) && m_setUnpackContexts.isEmpty();
+    }
+
 private:
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
     INTERNAL_INFO m_internalInfo;
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);
     QMap<QString, QByteArray> m_mapExternalCabinetData;
+    QSharedPointer<bool> m_pUnpackOperationState;
+    QSharedPointer<UNPACK_DEFERRED_CLEANUP> m_pUnpackDeferredCleanup;
+    QSet<UNPACK_CONTEXT *> m_setUnpackContexts;
 };
 
 #endif  // XMSI_H

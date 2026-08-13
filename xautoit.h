@@ -7,6 +7,11 @@
 
 #include "xbinary.h"
 
+#include <QSet>
+#include <QSharedPointer>
+
+class XMaterializedUnpackGuard;
+
 /* Extractor for AutoIt3-compiled PE files. Clean-room implementation derived
  * from the (GPL) libclamav autoit.c reference.
  *
@@ -39,7 +44,16 @@ public:
     };
 
     struct UNPACK_CONTEXT {
+        ~UNPACK_CONTEXT();
         QList<RECORD> listRecords;
+        QPointer<QIODevice> pSourceDevice;
+        UNPACK_STATE *pOwnerState;
+        QByteArray baToken;
+        quint64 nDeviceGeneration;
+        qint64 nSourceSize;
+        qint64 nCurrentOffset;
+        qint32 nCurrentIndex;
+        XMaterializedUnpackGuard *pSourceGuard = nullptr;
     };
 
     explicit XAUTOIT(QIODevice *pDevice = nullptr, bool bIsImage = false, XADDR nModuleAddress = -1);
@@ -60,7 +74,17 @@ public:
     virtual bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
 
+protected:
+    bool isDeviceReplacementAllowed() const override;
+
 private:
+    struct LIFETIME_STATE {
+        bool bOperationInProgress = false;
+        bool bOwnerAlive = true;
+        QSet<UNPACK_CONTEXT *> setContexts;
+        ~LIFETIME_STATE();
+    };
+    QSharedPointer<LIFETIME_STATE> m_pUnpackLifetimeState;
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
     INTERNAL_INFO m_internalInfo;
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);

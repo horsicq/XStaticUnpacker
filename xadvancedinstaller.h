@@ -8,6 +8,7 @@
 #include "xbinary.h"
 
 class XMSI;
+class XArchive;
 
 /* Detector + extractor for Advanced Installer (Caphyon) output. Two shapes:
  *  - the bootstrapper .exe, marked by the 10-byte EOF trailer "ADVINSTSFX";
@@ -34,10 +35,20 @@ public:
     };
 
     struct UNPACK_CONTEXT {
-        QIODevice *pOwnedDevice;
-        XMSI *pMSI;
-        UNPACK_STATE innerState;
-        bool bInnerInitialized;
+        QPointer<QIODevice> pOuterSourceDevice;
+        quint64 nOwnerDeviceGeneration = 0;
+        UNPACK_STATE *pOwnerState = nullptr;
+        QPointer<QIODevice> pOwnedDevice;
+        XMSI *pMSI = nullptr;
+        UNPACK_STATE innerState = {};
+        XArchive *pSourceValidator = nullptr;
+        UNPACK_STATE sourceValidationState = {};
+        bool bInnerInitialized = false;
+    };
+
+    struct UNPACK_DEFERRED_CLEANUP {
+        ~UNPACK_DEFERRED_CLEANUP();
+        QSet<UNPACK_CONTEXT *> setContexts;
     };
 
     explicit XAdvancedInstaller(QIODevice *pDevice = nullptr, bool bIsImage = false, XADDR nModuleAddress = -1);
@@ -57,6 +68,12 @@ public:
     virtual bool unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
+
+protected:
+    bool isDeviceReplacementAllowed() const override
+    {
+        return (!m_pUnpackOperationState || !*m_pUnpackOperationState) && m_setUnpackContexts.isEmpty();
+    }
 
 private:
     struct EXE_FOOTER {
@@ -85,6 +102,7 @@ private:
     INTERNAL_INFO m_internalInfo;
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);
     EXE_FOOTER _readExeFooter(PDSTRUCT *pPdStruct);
+    EXE_FOOTER _parseExeMarker(qint64 nSize, qint64 nFooterPrefixSize, const QByteArray &baMarker, qint64 nMarkerOffset, PDSTRUCT *pPdStruct);
     bool _readExeFiles(const EXE_FOOTER &footer, QList<EXE_FILE> *pListFiles, qint64 *pnMetadataEnd, PDSTRUCT *pPdStruct);
     bool _validateExeFooter(const EXE_FOOTER &footer, QList<EXE_FILE> *pListFiles, qint64 *pnMetadataEnd, PDSTRUCT *pPdStruct);
     QString _readUTF16Name(qint64 nOffset, quint32 nNumberOfCharacters, qint64 nLimit, PDSTRUCT *pPdStruct);
@@ -92,9 +110,13 @@ private:
     QString _readExternalMSIName(const EXE_FOOTER &footer, qint64 nMetadataEnd, PDSTRUCT *pPdStruct);
     QIODevice *_openExternalMSI(const QString &sName);
     bool _initMSIDelegate(UNPACK_STATE *pState, QIODevice *pSourceDevice, QIODevice *pOwnedDevice,
+                          XArchive *pSourceValidator, UNPACK_STATE *pSourceValidationState,
                           const QMap<QString, QByteArray> &mapExternalCabinets, const QMap<UNPACK_PROP, QVariant> &mapProperties,
                           PDSTRUCT *pPdStruct);
-    bool _deleteUnpackContext(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
+    static bool _deleteUnpackContext(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
+    QSharedPointer<bool> m_pUnpackOperationState;
+    QSharedPointer<UNPACK_DEFERRED_CLEANUP> m_pUnpackDeferredCleanup;
+    QSet<UNPACK_CONTEXT *> m_setUnpackContexts;
 };
 
 #endif  // XADVANCEDINSTALLER_H

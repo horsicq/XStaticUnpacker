@@ -10,10 +10,13 @@
 #include "../XArchive/xcfbf.h"
 
 #include <QBuffer>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QScopedValueRollback>
 #include <QSet>
+#include <QTemporaryFile>
 #include <QtEndian>
 #if (QT_VERSION_MAJOR >= 6) && !defined(QT_CORE5COMPAT_LIB)
 #include <QStringConverter>
@@ -408,6 +411,11 @@ static bool decodeInteger32(const QByteArray &baData, qint64 nOffset, qint64 *pn
     return true;
 }
 
+static bool compareColumnByNumber(const MSI_COLUMN &a, const MSI_COLUMN &b)
+{
+    return a.nNumber < b.nNumber;
+}
+
 static bool parseColumns(const QByteArray &baColumns, const MSI_STRING_POOL &pool, QMap<QString, QList<MSI_COLUMN> > *pMapColumns)
 {
     if (!pMapColumns || ((pool.nReferenceWidth != 2) && (pool.nReferenceWidth != 3))) {
@@ -458,8 +466,8 @@ static bool parseColumns(const QByteArray &baColumns, const MSI_STRING_POOL &poo
         pMapColumns->operator[](sTable.toCaseFolded().normalized(QString::NormalizationForm_C)).append(column);
     }
 
-    for (auto it = pMapColumns->begin(); it != pMapColumns->end(); ++it) {
-        std::sort(it.value().begin(), it.value().end(), [](const MSI_COLUMN &a, const MSI_COLUMN &b) { return a.nNumber < b.nNumber; });
+    for (QMap<QString, QList<MSI_COLUMN> >::iterator it = pMapColumns->begin(); it != pMapColumns->end(); ++it) {
+        std::sort(it.value().begin(), it.value().end(), compareColumnByNumber);
 
         QSet<QString> setColumnNames;
         for (qint32 i = 0; i < it.value().size(); i++) {
@@ -651,6 +659,12 @@ static bool isSafeRelativeWindowsPath(const QString &sPath)
     return true;
 }
 
+static bool compareFileRowBySequence(const MSI_FILE_ROW &a, const MSI_FILE_ROW &b)
+{
+    if (a.nSequence != b.nSequence) return a.nSequence < b.nSequence;
+    return a.nTableOrder < b.nTableOrder;
+}
+
 static bool parseFileTable(const QByteArray &baTable, const MSI_STRING_POOL &pool, QList<MSI_COLUMN> listColumns, QList<MSI_FILE_ROW> *pListFiles)
 {
     qint32 nRows = 0;
@@ -706,10 +720,7 @@ static bool parseFileTable(const QByteArray &baTable, const MSI_STRING_POOL &poo
         pListFiles->append(row);
     }
 
-    std::stable_sort(pListFiles->begin(), pListFiles->end(), [](const MSI_FILE_ROW &a, const MSI_FILE_ROW &b) {
-        if (a.nSequence != b.nSequence) return a.nSequence < b.nSequence;
-        return a.nTableOrder < b.nTableOrder;
-    });
+    std::stable_sort(pListFiles->begin(), pListFiles->end(), compareFileRowBySequence);
     return true;
 }
 
@@ -779,7 +790,7 @@ static bool parseDirectoryTable(const QByteArray &baTable, const MSI_STRING_POOL
     }
 
     qint32 nRootCount = 0;
-    for (auto it = pMapDirectories->constBegin(); it != pMapDirectories->constEnd(); ++it) {
+    for (QMap<QString, MSI_DIRECTORY_ROW>::const_iterator it = pMapDirectories->constBegin(); it != pMapDirectories->constEnd(); ++it) {
         const MSI_DIRECTORY_ROW &row = it.value();
         const bool bRoot = row.sParent.isEmpty() || (row.sParent.compare(row.sKey, Qt::CaseInsensitive) == 0);
         if (bRoot) {
@@ -855,7 +866,8 @@ static bool assignOutputNames(QList<MSI_FILE_ROW> *pListFiles, const QMap<QStrin
     for (MSI_FILE_ROW &file : *pListFiles) {
         QString sOutputName = file.sFileName;
         if (mapBaseNameCounts.value(file.sFileName.toCaseFolded().normalized(QString::NormalizationForm_C)) > 1) {
-            const auto componentIt = mapComponents.constFind(file.sComponent.toCaseFolded().normalized(QString::NormalizationForm_C));
+            const QMap<QString, MSI_COMPONENT_ROW>::const_iterator componentIt =
+                mapComponents.constFind(file.sComponent.toCaseFolded().normalized(QString::NormalizationForm_C));
             if (componentIt == mapComponents.constEnd()) {
                 return false;
             }
@@ -890,6 +902,11 @@ static bool assignOutputNames(QList<MSI_FILE_ROW> *pListFiles, const QMap<QStrin
     return true;
 }
 
+static bool compareMediaRowByDiskId(const MSI_MEDIA_ROW &a, const MSI_MEDIA_ROW &b)
+{
+    return a.nDiskId < b.nDiskId;
+}
+
 static bool parseMediaTable(const QByteArray &baTable, const MSI_STRING_POOL &pool, QList<MSI_COLUMN> listColumns, QList<MSI_MEDIA_ROW> *pListMedia)
 {
     qint32 nRows = 0;
@@ -922,7 +939,7 @@ static bool parseMediaTable(const QByteArray &baTable, const MSI_STRING_POOL &po
         pListMedia->append(row);
     }
 
-    std::sort(pListMedia->begin(), pListMedia->end(), [](const MSI_MEDIA_ROW &a, const MSI_MEDIA_ROW &b) { return a.nDiskId < b.nDiskId; });
+    std::sort(pListMedia->begin(), pListMedia->end(), compareMediaRowByDiskId);
 
     qint32 nPreviousDiskId = 0;
     qint32 nPreviousLastSequence = 0;
@@ -939,7 +956,7 @@ static bool parseMediaTable(const QByteArray &baTable, const MSI_STRING_POOL &po
 
 static bool mapValueCaseInsensitive(const QMap<QString, QByteArray> &mapData, const QString &sName, QByteArray *pResult)
 {
-    for (auto it = mapData.constBegin(); it != mapData.constEnd(); ++it) {
+    for (QMap<QString, QByteArray>::const_iterator it = mapData.constBegin(); it != mapData.constEnd(); ++it) {
         if (it.key().compare(sName, Qt::CaseInsensitive) == 0) {
             if (pResult) {
                 *pResult = it.value();
@@ -953,7 +970,7 @@ static bool mapValueCaseInsensitive(const QMap<QString, QByteArray> &mapData, co
 
 static bool mapValueCaseSensitive(const QMap<QString, QByteArray> &mapData, const QString &sName, QByteArray *pResult)
 {
-    auto it = mapData.constFind(sName);
+    QMap<QString, QByteArray>::const_iterator it = mapData.constFind(sName);
     if (it == mapData.constEnd()) {
         return false;
     }
@@ -971,6 +988,36 @@ static bool pathsEqual(const QString &sFirst, const QString &sSecond)
 #else
     return QDir::cleanPath(sFirst) == QDir::cleanPath(sSecond);
 #endif
+}
+
+static QByteArray fingerprintExternalFile(const QString &sFileName, qint64 nExpectedSize, XBinary::PDSTRUCT *pPdStruct)
+{
+    if (sFileName.isEmpty() || (nExpectedSize < 0) || !XBinary::isPdStructNotCanceled(pPdStruct)) return QByteArray();
+
+    const QFileInfo initialInfo(sFileName);
+    if (!initialInfo.isFile() || initialInfo.isSymLink() || (initialInfo.size() != nExpectedSize) ||
+        !pathsEqual(initialInfo.canonicalFilePath(), sFileName)) return QByteArray();
+
+    QFile file(sFileName);
+    if (!file.open(QIODevice::ReadOnly)) return QByteArray();
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    QByteArray baBuffer;
+    baBuffer.resize(1 << 20);
+    qint64 nReadTotal = 0;
+    while ((nReadTotal < nExpectedSize) && XBinary::isPdStructNotCanceled(pPdStruct)) {
+        const qint64 nRequest = qMin<qint64>(baBuffer.size(), nExpectedSize - nReadTotal);
+        const qint64 nRead = file.read(baBuffer.data(), nRequest);
+        if ((nRead <= 0) || (nRead > nRequest)) return QByteArray();
+        hash.addData(baBuffer.constData(), nRead);
+        nReadTotal += nRead;
+    }
+
+    const QFileInfo finalInfo(sFileName);
+    if ((nReadTotal != nExpectedSize) || !file.atEnd() || (file.size() != nExpectedSize) ||
+        !finalInfo.isFile() || finalInfo.isSymLink() || (finalInfo.size() != nExpectedSize) ||
+        !pathsEqual(initialInfo.canonicalFilePath(), finalInfo.canonicalFilePath()) ||
+        !XBinary::isPdStructNotCanceled(pPdStruct)) return QByteArray();
+    return hash.result();
 }
 
 static QString resolveCaseInsensitiveSibling(const QDir &sourceDirectory, const QString &sName)
@@ -1075,6 +1122,7 @@ static QString resolveCaseInsensitiveDescendant(const QDir &sourceRoot, const QS
 static QIODevice *openCabinetDevice(QIODevice *pMsiDevice, const QString &sCabinet, bool bEmbedded, const QMap<QString, QByteArray> &mapEmbeddedData,
                                     const QMap<QString, QByteArray> &mapExternalData)
 {
+    QPointer<QIODevice> guardedMsiDevice(pMsiDevice);
     QString sStorageName = bEmbedded ? sCabinet.mid(1) : sCabinet;
     QByteArray baCabinet;
 
@@ -1098,14 +1146,20 @@ static QIODevice *openCabinetDevice(QIODevice *pMsiDevice, const QString &sCabin
         return nullptr;
     }
 
-    QFile *pMsiFile = qobject_cast<QFile *>(pMsiDevice);
-    if (!pMsiFile || pMsiFile->fileName().isEmpty()) {
+    QFile *pMsiFile = dynamic_cast<QFile *>(guardedMsiDevice.data());
+    QPointer<QFile> guardedMsiFile(pMsiFile);
+    if (!guardedMsiDevice || !guardedMsiFile) {
         return nullptr;
     }
 
-    const QDir sourceDirectory = QFileInfo(pMsiFile->fileName()).absoluteDir();
+    const QString sMsiFileName = guardedMsiFile->fileName();
+    if (!guardedMsiDevice || !guardedMsiFile || sMsiFileName.isEmpty()) {
+        return nullptr;
+    }
+
+    const QDir sourceDirectory = QFileInfo(sMsiFileName).absoluteDir();
     const QString sCabinetCanonical = resolveCaseInsensitiveSibling(sourceDirectory, sStorageName);
-    if (sCabinetCanonical.isEmpty()) {
+    if (!guardedMsiDevice || !guardedMsiFile || sCabinetCanonical.isEmpty()) {
         return nullptr;
     }
 
@@ -1115,10 +1169,15 @@ static QIODevice *openCabinetDevice(QIODevice *pMsiDevice, const QString &sCabin
         return nullptr;
     }
 
+    if (!guardedMsiDevice || !guardedMsiFile) {
+        delete pCabinetFile;
+        return nullptr;
+    }
+
     return pCabinetFile;
 }
 
-static bool destroyCabinetContext(XMSI::CAB_CONTEXT *pCabinet, XBinary::PDSTRUCT *pPdStruct)
+static bool destroyCabinetContext(XMSI::CAB_CONTEXT *pCabinet)
 {
     if (!pCabinet) {
         return true;
@@ -1141,7 +1200,7 @@ static bool destroyCabinetContext(XMSI::CAB_CONTEXT *pCabinet, XBinary::PDSTRUCT
     return bResult;
 }
 
-static bool clearPayloadContexts(XMSI::UNPACK_CONTEXT *pContext, XBinary::PDSTRUCT *pPdStruct)
+static bool clearPayloadContexts(XMSI::UNPACK_CONTEXT *pContext)
 {
     if (!pContext) {
         return true;
@@ -1149,7 +1208,7 @@ static bool clearPayloadContexts(XMSI::UNPACK_CONTEXT *pContext, XBinary::PDSTRU
 
     bool bResult = true;
     for (XMSI::CAB_CONTEXT *pCabinet : pContext->listCabinets) {
-        if (!destroyCabinetContext(pCabinet, pPdStruct)) {
+        if (!destroyCabinetContext(pCabinet)) {
             bResult = false;
         }
     }
@@ -1179,16 +1238,23 @@ static qint32 matchingCabinetRecord(const QList<QString> &listCabinetNames, cons
     return nMatch;
 }
 
+static bool comparePayloadEntryBySequence(const XMSI::PAYLOAD_ENTRY &a, const XMSI::PAYLOAD_ENTRY &b)
+{
+    if (a.nSequence != b.nSequence) return a.nSequence < b.nSequence;
+    return a.nTableOrder < b.nTableOrder;
+}
+
 static BUILD_STATUS buildInstalledPayload(QIODevice *pMsiDevice, qint64 nMsiSize, const QMap<QString, QByteArray> &mapExternalData,
                                           const QMap<XBinary::UNPACK_PROP, QVariant> &mapProperties, XMSI::UNPACK_CONTEXT *pContext,
                                           XBinary::PDSTRUCT *pPdStruct)
 {
-    if (!pMsiDevice || !pContext || !XBinary::isPdStructNotCanceled(pPdStruct)) {
+    QPointer<QIODevice> guardedMsiDevice(pMsiDevice);
+    if (!guardedMsiDevice || !pContext || !XBinary::isPdStructNotCanceled(pPdStruct)) {
         return BUILD_STATUS_ERROR;
     }
 
     QSet<QString> setExternalKeys;
-    for (auto it = mapExternalData.constBegin(); it != mapExternalData.constEnd(); ++it) {
+    for (QMap<QString, QByteArray>::const_iterator it = mapExternalData.constBegin(); it != mapExternalData.constEnd(); ++it) {
         if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
             return BUILD_STATUS_ERROR;
         }
@@ -1209,8 +1275,8 @@ static BUILD_STATUS buildInstalledPayload(QIODevice *pMsiDevice, qint64 nMsiSize
                   << "directory";
 
     QMap<QString, QByteArray> mapTables;
-    if (!extractCfbfStreams(pMsiDevice, setTableNames, true, qMin(nMsiSize, MSI_MAX_TABLE_STREAM_SIZE), Qt::CaseInsensitive, &mapTables,
-                            pPdStruct)) {
+    if (!extractCfbfStreams(guardedMsiDevice.data(), setTableNames, true, qMin(nMsiSize, MSI_MAX_TABLE_STREAM_SIZE), Qt::CaseInsensitive, &mapTables,
+                            pPdStruct) || !guardedMsiDevice) {
         return BUILD_STATUS_ERROR;
     }
 
@@ -1306,7 +1372,7 @@ static BUILD_STATUS buildInstalledPayload(QIODevice *pMsiDevice, qint64 nMsiSize
         }
     }
 
-    for (auto it = mapExternalData.constBegin(); it != mapExternalData.constEnd(); ++it) {
+    for (QMap<QString, QByteArray>::const_iterator it = mapExternalData.constBegin(); it != mapExternalData.constEnd(); ++it) {
         qint32 nMatches = 0;
         for (const MSI_MEDIA_ROW &media : listMedia) {
             if (!media.sCabinet.startsWith('#') && (media.sCabinet.compare(it.key(), Qt::CaseInsensitive) == 0)) {
@@ -1320,7 +1386,8 @@ static BUILD_STATUS buildInstalledPayload(QIODevice *pMsiDevice, qint64 nMsiSize
 
     QMap<QString, QByteArray> mapEmbeddedData;
     if (!setDeclaredEmbeddedCabinets.isEmpty() &&
-        !extractCfbfStreams(pMsiDevice, setDeclaredEmbeddedCabinets, false, nMsiSize, Qt::CaseSensitive, &mapEmbeddedData, pPdStruct)) {
+        (!extractCfbfStreams(guardedMsiDevice.data(), setDeclaredEmbeddedCabinets, false, nMsiSize, Qt::CaseSensitive, &mapEmbeddedData, pPdStruct) ||
+         !guardedMsiDevice)) {
         return BUILD_STATUS_ERROR;
     }
 
@@ -1371,14 +1438,20 @@ static BUILD_STATUS buildInstalledPayload(QIODevice *pMsiDevice, qint64 nMsiSize
         }
 
         if (!listExternalFiles.isEmpty()) {
-            QFile *pMsiFile = qobject_cast<QFile *>(pMsiDevice);
-            if (!pMsiFile || pMsiFile->fileName().isEmpty() || !bHasComponentLayout) {
+            QFile *pMsiFile = dynamic_cast<QFile *>(guardedMsiDevice.data());
+            QPointer<QFile> guardedMsiFile(pMsiFile);
+            if (!guardedMsiDevice || !guardedMsiFile ||
+                !bHasComponentLayout) {
                 return BUILD_STATUS_ERROR;
             }
 
-            const QDir sourceRoot = QFileInfo(pMsiFile->fileName()).absoluteDir();
+            const QString sMsiFileName = guardedMsiFile->fileName();
+            if (!guardedMsiDevice || !guardedMsiFile ||
+                sMsiFileName.isEmpty()) return BUILD_STATUS_ERROR;
+            const QDir sourceRoot = QFileInfo(sMsiFileName).absoluteDir();
             for (const MSI_FILE_ROW &file : listExternalFiles) {
-                if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
+                if (!guardedMsiDevice || !guardedMsiFile ||
+                    !XBinary::isPdStructNotCanceled(pPdStruct)) {
                     return BUILD_STATUS_ERROR;
                 }
                 QStringList listSourceParts;
@@ -1388,7 +1461,7 @@ static BUILD_STATUS buildInstalledPayload(QIODevice *pMsiDevice, qint64 nMsiSize
                 if (!media.sCabinet.isEmpty() && ((file.nAttributes & 0x2000) != 0)) {
                     listSourceParts.clear();
                 } else {
-                    const auto componentIt =
+                    const QMap<QString, MSI_COMPONENT_ROW>::const_iterator componentIt =
                         mapComponents.constFind(file.sComponent.toCaseFolded().normalized(QString::NormalizationForm_C));
                     if ((componentIt == mapComponents.constEnd()) ||
                         !resolveDirectoryParts(mapDirectories, componentIt->sDirectory, true, &listSourceParts)) {
@@ -1402,6 +1475,11 @@ static BUILD_STATUS buildInstalledPayload(QIODevice *pMsiDevice, qint64 nMsiSize
                 if (sExternalPath.isEmpty() || !externalInfo.isFile() || externalInfo.isSymLink() || (externalInfo.size() != file.nSize)) {
                     return BUILD_STATUS_ERROR;
                 }
+                const QByteArray baFingerprint = fingerprintExternalFile(sExternalPath, file.nSize, pPdStruct);
+                if (baFingerprint.isEmpty() ||
+                    (baFingerprint != fingerprintExternalFile(sExternalPath, file.nSize, pPdStruct))) {
+                    return BUILD_STATUS_ERROR;
+                }
 
                 XMSI::PAYLOAD_ENTRY entry = {};
                 entry.nCabinetIndex = -1;
@@ -1411,14 +1489,16 @@ static BUILD_STATUS buildInstalledPayload(QIODevice *pMsiDevice, qint64 nMsiSize
                 entry.nSize = file.nSize;
                 entry.sName = file.sName;
                 entry.sExternalPath = sExternalPath;
+                entry.baExternalFingerprint = baFingerprint;
                 pContext->listEntries.append(entry);
             }
         }
 
         if (!listCompressedFiles.isEmpty()) {
             QIODevice *pCabinetDevice =
-                openCabinetDevice(pMsiDevice, media.sCabinet, media.sCabinet.startsWith('#'), mapEmbeddedData, mapExternalData);
-            if (!pCabinetDevice) {
+                openCabinetDevice(guardedMsiDevice.data(), media.sCabinet, media.sCabinet.startsWith('#'), mapEmbeddedData, mapExternalData);
+            if (!guardedMsiDevice || !pCabinetDevice) {
+                delete pCabinetDevice;
                 return BUILD_STATUS_ERROR;
             }
 
@@ -1428,7 +1508,7 @@ static BUILD_STATUS buildInstalledPayload(QIODevice *pMsiDevice, qint64 nMsiSize
             pCabinet->state = XBinary::UNPACK_STATE();
 
             if (!pCabinet->pArchive->initUnpack(&pCabinet->state, mapProperties, pPdStruct)) {
-                destroyCabinetContext(pCabinet, pPdStruct);
+                destroyCabinetContext(pCabinet);
                 return BUILD_STATUS_ERROR;
             }
 
@@ -1436,7 +1516,7 @@ static BUILD_STATUS buildInstalledPayload(QIODevice *pMsiDevice, qint64 nMsiSize
             QList<qint64> listCabinetSizes;
             for (qint32 i = 0; i < pCabinet->state.nNumberOfRecords; i++) {
                 if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
-                    destroyCabinetContext(pCabinet, pPdStruct);
+                    destroyCabinetContext(pCabinet);
                     return BUILD_STATUS_ERROR;
                 }
                 pCabinet->state.nCurrentIndex = i;
@@ -1446,7 +1526,7 @@ static BUILD_STATUS buildInstalledPayload(QIODevice *pMsiDevice, qint64 nMsiSize
             }
 
             if (listCabinetNames.size() < listCompressedFiles.size()) {
-                destroyCabinetContext(pCabinet, pPdStruct);
+                destroyCabinetContext(pCabinet);
                 return BUILD_STATUS_ERROR;
             }
 
@@ -1456,7 +1536,7 @@ static BUILD_STATUS buildInstalledPayload(QIODevice *pMsiDevice, qint64 nMsiSize
             for (qint32 i = 0; i < listCompressedFiles.size(); i++) {
                 qint32 nRecord = matchingCabinetRecord(listCabinetNames, listCompressedFiles, i, setUsedRecords);
                 if ((nRecord == -1) || (listCabinetSizes.at(nRecord) != listCompressedFiles.at(i).nSize)) {
-                    destroyCabinetContext(pCabinet, pPdStruct);
+                    destroyCabinetContext(pCabinet);
                     return BUILD_STATUS_ERROR;
                 }
                 listAssignments.append(nRecord);
@@ -1469,7 +1549,7 @@ static BUILD_STATUS buildInstalledPayload(QIODevice *pMsiDevice, qint64 nMsiSize
             // authored order inside the cabinet.
             for (qint32 i = 1; i < listAssignments.size(); i++) {
                 if (listAssignments.at(i) <= listAssignments.at(i - 1)) {
-                    destroyCabinetContext(pCabinet, pPdStruct);
+                    destroyCabinetContext(pCabinet);
                     return BUILD_STATUS_ERROR;
                 }
             }
@@ -1494,18 +1574,29 @@ static BUILD_STATUS buildInstalledPayload(QIODevice *pMsiDevice, qint64 nMsiSize
         return BUILD_STATUS_ERROR;
     }
 
-    std::sort(pContext->listEntries.begin(), pContext->listEntries.end(), [](const XMSI::PAYLOAD_ENTRY &a, const XMSI::PAYLOAD_ENTRY &b) {
-        if (a.nSequence != b.nSequence) return a.nSequence < b.nSequence;
-        return a.nTableOrder < b.nTableOrder;
-    });
+    std::sort(pContext->listEntries.begin(), pContext->listEntries.end(), comparePayloadEntryBySequence);
 
     return BUILD_STATUS_OK;
 }
 
-static bool unpackExternalPayloadFile(const XMSI::PAYLOAD_ENTRY &entry, QIODevice *pOutputDevice, qint64 *pnWritten,
-                                      XBinary::PDSTRUCT *pPdStruct)
+static bool failExternalOutput(bool bSeekableOutput, QIODevice *pOutputDevice, qint64 *pnWritten)
 {
-    if (!pOutputDevice || !pOutputDevice->isWritable() || !pnWritten || entry.sExternalPath.isEmpty() || (entry.nSize < 0)) {
+    if (bSeekableOutput) {
+        XBinary::resize(pOutputDevice, 0);
+        pOutputDevice->seek(0);
+        *pnWritten = 0;
+    }
+    return false;
+}
+
+static bool unpackExternalPayloadFile(const XMSI::PAYLOAD_ENTRY &entry, QIODevice *pOutputDevice, qint64 *pnWritten,
+                                       XBinary::PDSTRUCT *pPdStruct)
+{
+    QPointer<QIODevice> guardedOutput(pOutputDevice);
+    if (!guardedOutput || !guardedOutput->isOpen() || !guardedOutput->isWritable() || guardedOutput->isSequential() ||
+        (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) || !XBinary::isResizeEnable(guardedOutput.data()) ||
+        !pnWritten || entry.sExternalPath.isEmpty() || entry.baExternalFingerprint.isEmpty() || (entry.nSize < 0) ||
+        !XBinary::isPdStructNotCanceled(pPdStruct)) {
         return false;
     }
 
@@ -1519,25 +1610,23 @@ static bool unpackExternalPayloadFile(const XMSI::PAYLOAD_ENTRY &entry, QIODevic
     if (!file.open(QIODevice::ReadOnly)) {
         return false;
     }
+    if (XBinary::devicesAlias(&file, guardedOutput.data())) return false;
 
-    const bool bSeekableOutput = !pOutputDevice->isSequential();
-    auto failOutput = [&]() -> bool {
-        if (bSeekableOutput) {
-            XBinary::resize(pOutputDevice, 0);
-            pOutputDevice->seek(0);
+    QTemporaryFile stage;
+    if (!stage.open()) return false;
+
+    auto failOutput = [&guardedOutput, pnWritten]() -> bool {
+        if (guardedOutput) {
+            XBinary::resize(guardedOutput.data(), 0);
+            if (guardedOutput) guardedOutput->seek(0);
             *pnWritten = 0;
         }
         return false;
     };
 
-    *pnWritten = 0;
-    if (bSeekableOutput &&
-        (!pOutputDevice->seek(0) || ((pOutputDevice->size() != 0) && !XBinary::resize(pOutputDevice, 0)))) {
-        return false;
-    }
-
     QByteArray baBuffer;
     baBuffer.resize((qint32)qMin<qint64>(1 << 20, qMax<qint64>(1, entry.nSize)));
+    QCryptographicHash sourceHash(QCryptographicHash::Sha256);
     qint64 nRemaining = entry.nSize;
 
     while ((nRemaining > 0) && XBinary::isPdStructNotCanceled(pPdStruct)) {
@@ -1550,39 +1639,109 @@ static bool unpackExternalPayloadFile(const XMSI::PAYLOAD_ENTRY &entry, QIODevic
             }
             nRead += nResult;
         }
+        sourceHash.addData(baBuffer.constData(), nRead);
 
-        qint64 nWritten = 0;
-        while (nWritten < nRead) {
-            const qint64 nToWrite = nRead - nWritten;
-            const qint64 nResult = pOutputDevice->write(baBuffer.constData() + nWritten, nToWrite);
+        qint64 nStaged = 0;
+        while (nStaged < nRead) {
+            const qint64 nToWrite = nRead - nStaged;
+            const qint64 nResult = stage.write(baBuffer.constData() + nStaged, nToWrite);
             if ((nResult <= 0) || (nResult > nToWrite)) {
-                return failOutput();
+                return false;
             }
-            nWritten += nResult;
-            *pnWritten += nResult;
+            nStaged += nResult;
         }
         nRemaining -= nRead;
     }
 
-    const bool bResult = (nRemaining == 0) && (file.size() == entry.nSize) && file.atEnd() &&
-                         XBinary::isPdStructNotCanceled(pPdStruct);
-    return bResult ? true : failOutput();
+    QFileInfo finalInfo(entry.sExternalPath);
+    if ((nRemaining != 0) || (file.size() != entry.nSize) || !file.atEnd() ||
+        !finalInfo.isFile() || finalInfo.isSymLink() || (finalInfo.size() != entry.nSize) ||
+        !pathsEqual(finalInfo.canonicalFilePath(), entry.sExternalPath) ||
+        (sourceHash.result() != entry.baExternalFingerprint) ||
+        !XBinary::isPdStructNotCanceled(pPdStruct) || !guardedOutput ||
+        !stage.flush() || (stage.size() != entry.nSize) || !stage.seek(0)) {
+        return false;
+    }
+
+    *pnWritten = 0;
+    if (!guardedOutput->seek(0) || !guardedOutput || !XBinary::resize(guardedOutput.data(), 0) ||
+        !guardedOutput || !guardedOutput->seek(0)) {
+        return failOutput();
+    }
+
+    while (*pnWritten < entry.nSize) {
+        if (!guardedOutput || !XBinary::isPdStructNotCanceled(pPdStruct)) return failOutput();
+        const qint64 nToRead = qMin<qint64>(baBuffer.size(), entry.nSize - *pnWritten);
+        const qint64 nRead = stage.read(baBuffer.data(), nToRead);
+        if ((nRead <= 0) || (nRead > nToRead)) return failOutput();
+
+        qint64 nPublished = 0;
+        while (nPublished < nRead) {
+            if (!guardedOutput) return false;
+            const qint64 nToWrite = nRead - nPublished;
+            const qint64 nResult = guardedOutput->write(baBuffer.constData() + nPublished, nToWrite);
+            if ((nResult <= 0) || (nResult > nToWrite)) return failOutput();
+            nPublished += nResult;
+            *pnWritten += nResult;
+        }
+    }
+
+    if (!guardedOutput || (guardedOutput->size() != entry.nSize) ||
+        !guardedOutput->seek(entry.nSize) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        return failOutput();
+    }
+    return true;
 }
 }  // namespace
 
+XMSI::UNPACK_DEFERRED_CLEANUP::~UNPACK_DEFERRED_CLEANUP()
+{
+    const QSet<UNPACK_CONTEXT *> contexts = setContexts;
+    setContexts.clear();
+    for (UNPACK_CONTEXT *pContext : contexts) {
+        clearPayloadContexts(pContext);
+        if (pContext->pArchive) {
+            pContext->pArchive->finishUnpack(&pContext->innerState, nullptr);
+            delete pContext->pArchive;
+        }
+        if (pContext->pSourceValidator) {
+            pContext->pSourceValidator->releaseUnpackSource(&pContext->sourceValidationState);
+            delete pContext->pSourceValidator;
+        }
+        if (pContext->pSubDevice) {
+            pContext->pSubDevice->close();
+            delete pContext->pSubDevice;
+        }
+        delete pContext;
+    }
+}
+
 XMSI::XMSI(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : XBinary(pDevice, bIsImage, nModuleAddress)
 {
+    m_pUnpackDeferredCleanup = QSharedPointer<UNPACK_DEFERRED_CLEANUP>::create();
+    const QSharedPointer<UNPACK_DEFERRED_CLEANUP> pDeferredCleanup = m_pUnpackDeferredCleanup;
+    m_pUnpackOperationState = QSharedPointer<bool>(new bool(false), [pDeferredCleanup](bool *pValue) { delete pValue; });
     setIsArchive(true);
 }
 
 XMSI::~XMSI()
 {
+    if (m_pUnpackOperationState) *m_pUnpackOperationState = true;
+    if (m_pUnpackDeferredCleanup) {
+        m_pUnpackDeferredCleanup->setContexts.unite(m_setUnpackContexts);
+        m_setUnpackContexts.clear();
+    }
+    m_pUnpackDeferredCleanup.clear();
+    m_pUnpackOperationState.clear();
 }
 
 bool XMSI::isValid(PDSTRUCT *pPdStruct)
 {
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
-    return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
+    QPointer<XMSI> guardedThis(this);
+    const INTERNAL_INFO *pInfo =
+        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
+    return guardedThis && pInfo && pInfo->bIsValid;
 }
 
 bool XMSI::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
@@ -1598,20 +1757,48 @@ XMSI::INTERNAL_INFO XMSI::_getInternalInfo(PDSTRUCT *pPdStruct)
 
 bool XMSI::handleInternalInfo(PDSTRUCT *pPdStruct)
 {
-    if (!isInternalInfoHandled()) {
-        m_internalInfo = INTERNAL_INFO();
-        m_internalInfo = _getInternalInfo(pPdStruct);
-        if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
-            m_internalInfo = INTERNAL_INFO();
+    QPointer<XMSI> guardedThis(this);
+    const bool bAlreadyHandled = guardedThis->isInternalInfoHandled();
+    if (!guardedThis) return false;
+
+    if (!bAlreadyHandled) {
+        const quint64 nTransaction =
+            guardedThis->beginInternalInfoTransaction();
+        if (!nTransaction) return false;
+
+        // The transaction supplies the recursion sentinel. Keep every
+        // source-derived value local until the same binding is revalidated.
+        guardedThis->m_internalInfo = INTERNAL_INFO();
+        INTERNAL_INFO info = guardedThis->_getInternalInfo(pPdStruct);
+        if (!guardedThis) return false;
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
+            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+            guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
-        m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
-        if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
-            m_internalInfo = INTERNAL_INFO();
+
+        const auto memoryMap =
+            guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        if (!guardedThis) return false;
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
+            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+            guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
-        setIsInternalInfoHandled(true);
-        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+        info.memoryMap = memoryMap;
+
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction)) {
+            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+            return false;
+        }
+        guardedThis->m_internalInfo = info;
+        if (!guardedThis->commitInternalInfoTransaction(
+                nTransaction,
+                static_cast<XBinary::INTERNAL_INFO *>(
+                    &guardedThis->m_internalInfo))) {
+            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+            return false;
+        }
     }
 
     return true;
@@ -1619,8 +1806,11 @@ bool XMSI::handleInternalInfo(PDSTRUCT *pPdStruct)
 
 void *XMSI::getInternalInfo(PDSTRUCT *pPdStruct)
 {
-    handleInternalInfo(pPdStruct);
-    return &m_internalInfo;
+    QPointer<XMSI> guardedThis(this);
+    const bool bHandled = guardedThis->handleInternalInfo(pPdStruct);
+    if (!guardedThis || !bHandled) return nullptr;
+
+    return &guardedThis->m_internalInfo;
 }
 
 void XMSI::setInternalInfo(void *pInternalInfo)
@@ -1699,52 +1889,136 @@ void XMSI::setExternalCabinetData(const QMap<QString, QByteArray> &mapData)
 bool XMSI::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
-    if (pState->pContext && !finishUnpack(pState, nullptr)) return false;
+    QSharedPointer<bool> pOperationState = m_pUnpackOperationState;
+    if (!pOperationState || *pOperationState) return false;
+    QScopedValueRollback<bool> operationGuard(*pOperationState, true);
+    QPointer<XMSI> guardedThis(this);
+    if (!pState->baUnpackSourceToken.isEmpty()) return false;
+    if (pState->pContext) {
+        UNPACK_CONTEXT *pOldContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+        if (!m_setUnpackContexts.contains(pOldContext) || (pOldContext->pOwnerState != pState)) return false;
+        m_setUnpackContexts.remove(pOldContext);
+        pState->pContext = nullptr;
+        bool bFinishOK = clearPayloadContexts(pOldContext);
+        if (pOldContext->pArchive) {
+            bFinishOK = pOldContext->pArchive->finishUnpack(&pOldContext->innerState, nullptr) && bFinishOK;
+            delete pOldContext->pArchive;
+        }
+        if (pOldContext->pSourceValidator) {
+            pOldContext->pSourceValidator->releaseUnpackSource(&pOldContext->sourceValidationState);
+            delete pOldContext->pSourceValidator;
+        }
+        if (pOldContext->pSubDevice) {
+            pOldContext->pSubDevice->close();
+            delete pOldContext->pSubDevice;
+        }
+        delete pOldContext;
+        *pState = UNPACK_STATE();
+        if (!guardedThis || !bFinishOK) return false;
+    }
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
     *pState = UNPACK_STATE();
-    pState->nTotalSize = getSize();
+    QPointer<QIODevice> guardedSource(getDevice());
+    if (!guardedSource) return false;
+    XArchive initialSourceValidator(guardedSource.data());
+    UNPACK_STATE initialSourceState = {};
+    if (!initialSourceValidator.bindUnpackSource(&initialSourceState, pPdStruct) || !guardedThis || !guardedSource) return false;
+    XMSI detector(guardedSource.data(), isImage(), getModuleAddress());
+    const qint64 nTotalSize = guardedSource->size();
+    if (!guardedThis || !guardedSource || (nTotalSize < 0)) return false;
+    pState->nTotalSize = nTotalSize;
     pState->mapUnpackProperties = mapProperties;
 
-    const INTERNAL_INFO info = _detect(pPdStruct);
-    if (!info.bIsValid) return false;
+    const INTERNAL_INFO info = detector._detect(pPdStruct);
+    if (!guardedThis || !guardedSource || !info.bIsValid ||
+        !initialSourceValidator.isUnpackSourceCurrent(&initialSourceState, pPdStruct) || !guardedThis || !guardedSource) return false;
+
+    const QMap<QString, QByteArray> mapExternalCabinetData = m_mapExternalCabinetData;
 
     UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT;
+    pContext->pOuterSourceDevice = guardedSource;
+    pContext->nOwnerDeviceGeneration = getDeviceGeneration();
     pContext->bPayloadMode = true;
     pContext->pSubDevice = nullptr;
     pContext->pArchive = nullptr;
     pContext->innerState = UNPACK_STATE();
+    pContext->pSourceValidator = new XArchive(guardedSource.data());
+    pContext->sourceValidationState = UNPACK_STATE();
+
+    if (!pContext->pSourceValidator->bindUnpackSource(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !guardedSource) {
+        pContext->pSourceValidator->releaseUnpackSource(&pContext->sourceValidationState);
+        delete pContext->pSourceValidator;
+        delete pContext;
+        return false;
+    }
 
     BUILD_STATUS status = BUILD_STATUS_NOT_APPLICABLE;
     if (info.sVersion == QStringLiteral("database")) {
-        status = buildInstalledPayload(getDevice(), getSize(), m_mapExternalCabinetData, mapProperties, pContext, pPdStruct);
+        status = buildInstalledPayload(guardedSource.data(), nTotalSize, mapExternalCabinetData, mapProperties, pContext, pPdStruct);
     }
 
-    if (status == BUILD_STATUS_ERROR) {
-        clearPayloadContexts(pContext, pPdStruct);
+    if (!guardedThis || !guardedSource || (status == BUILD_STATUS_ERROR)) {
+        clearPayloadContexts(pContext);
+        pContext->pSourceValidator->releaseUnpackSource(&pContext->sourceValidationState);
+        delete pContext->pSourceValidator;
         delete pContext;
         return false;
     }
 
     if (status == BUILD_STATUS_OK) {
+        if (!pContext->pSourceValidator->validateAndFinalizeUnpackSource(&pContext->sourceValidationState, pPdStruct) ||
+            !guardedThis || !guardedSource) {
+            clearPayloadContexts(pContext);
+            pContext->pSourceValidator->releaseUnpackSource(&pContext->sourceValidationState);
+            delete pContext->pSourceValidator;
+            delete pContext;
+            return false;
+        }
         pState->nNumberOfRecords = pContext->listEntries.size();
+        pContext->pOwnerState = pState;
         pState->pContext = pContext;
+        m_setUnpackContexts.insert(pContext);
         return true;
+    }
+
+    if (!clearPayloadContexts(pContext) || !guardedThis || !guardedSource) {
+        pContext->pSourceValidator->releaseUnpackSource(&pContext->sourceValidationState);
+        delete pContext->pSourceValidator;
+        delete pContext;
+        return false;
     }
 
     // Non-database MSI containers (patches/transforms), or databases without
     // File/Media tables, retain the generic CFBF stream view.
     pContext->bPayloadMode = false;
-    pContext->pSubDevice = new SubDevice(getDevice(), 0, getSize());
+    pContext->pSubDevice = new SubDevice(guardedSource.data(), 0, nTotalSize);
     if (!pContext->pSubDevice->open(QIODevice::ReadOnly)) {
+        pContext->pSourceValidator->releaseUnpackSource(&pContext->sourceValidationState);
+        delete pContext->pSourceValidator;
         delete pContext->pSubDevice;
         delete pContext;
         return false;
     }
 
     pContext->pArchive = new XCFBF(pContext->pSubDevice);
-    if (!pContext->pArchive->initUnpack(&pContext->innerState, mapProperties, pPdStruct)) {
+    if (!pContext->pArchive->initUnpack(&pContext->innerState, mapProperties, pPdStruct) || !guardedThis || !guardedSource) {
+        pContext->pArchive->finishUnpack(&pContext->innerState, nullptr);
         delete pContext->pArchive;
+        pContext->pSourceValidator->releaseUnpackSource(&pContext->sourceValidationState);
+        delete pContext->pSourceValidator;
+        pContext->pSubDevice->close();
+        delete pContext->pSubDevice;
+        delete pContext;
+        return false;
+    }
+
+    if (!pContext->pSourceValidator->validateAndFinalizeUnpackSource(&pContext->sourceValidationState, pPdStruct) ||
+        !guardedThis || !guardedSource) {
+        pContext->pArchive->finishUnpack(&pContext->innerState, nullptr);
+        delete pContext->pArchive;
+        pContext->pSourceValidator->releaseUnpackSource(&pContext->sourceValidationState);
+        delete pContext->pSourceValidator;
         pContext->pSubDevice->close();
         delete pContext->pSubDevice;
         delete pContext;
@@ -1754,21 +2028,32 @@ bool XMSI::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     pState->nNumberOfRecords = pContext->innerState.nNumberOfRecords;
     pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
     pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
+    pContext->pOwnerState = pState;
     pState->pContext = pContext;
+    m_setUnpackContexts.insert(pContext);
     return true;
 }
 
 XBinary::ARCHIVERECORD XMSI::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
     ARCHIVERECORD result = {};
-    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+    QSharedPointer<bool> pOperationState = m_pUnpackOperationState;
+    if (!pOperationState || *pOperationState) return result;
+    QScopedValueRollback<bool> operationGuard(*pOperationState, true);
+    QPointer<XMSI> guardedThis(this);
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
         (pState->nCurrentIndex >= pState->nNumberOfRecords)) return result;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
+        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration())) return result;
+    if (!pContext->pSourceValidator ||
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
+        !guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return result;
 
     if (pContext->bPayloadMode) {
         if ((pState->nNumberOfRecords != pContext->listEntries.size()) ||
             (pState->nCurrentIndex >= pContext->listEntries.size())) return result;
-        const PAYLOAD_ENTRY &entry = pContext->listEntries.at(pState->nCurrentIndex);
+        const PAYLOAD_ENTRY entry = pContext->listEntries.at(pState->nCurrentIndex);
         if (entry.nCabinetIndex == -1) {
             if (entry.sExternalPath.isEmpty() || (entry.nSize < 0)) return result;
             result.nStreamOffset = 0;
@@ -1780,15 +2065,23 @@ XBinary::ARCHIVERECORD XMSI::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStru
         }
         if ((entry.nCabinetIndex < 0) || (entry.nCabinetIndex >= pContext->listCabinets.size())) return result;
         CAB_CONTEXT *pCabinet = pContext->listCabinets.at(entry.nCabinetIndex);
+        if (!pCabinet || !pCabinet->pArchive) return result;
         pCabinet->state.nCurrentIndex = entry.nCabinetRecordIndex;
         result = pCabinet->pArchive->infoCurrent(&pCabinet->state, pPdStruct);
+        if (!guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return ARCHIVERECORD();
+        if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
+            !guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return ARCHIVERECORD();
         result.mapProperties.insert(FPART_PROP_ORIGINALNAME, entry.sName);
         return result;
     }
 
-    if (!pContext->pArchive) return result;
-    pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
+    if (!pContext->pArchive || (pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
+        (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
+        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords)) return result;
     result = pContext->pArchive->infoCurrent(&pContext->innerState, pPdStruct);
+    if (!guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return ARCHIVERECORD();
+    if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
+        !guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return ARCHIVERECORD();
     QString sRawName = result.mapProperties.value(FPART_PROP_ORIGINALNAME).toString();
     result.mapProperties.insert(FPART_PROP_ORIGINALNAME, decodeMsiStreamName(sRawName));
     return result;
@@ -1796,26 +2089,72 @@ XBinary::ARCHIVERECORD XMSI::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStru
 
 bool XMSI::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
-    if (!pState || !pState->pContext || !pDevice || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+    QSharedPointer<bool> pOperationState = m_pUnpackOperationState;
+    if (!pOperationState || *pOperationState) return false;
+    QScopedValueRollback<bool> operationGuard(*pOperationState, true);
+    QPointer<XMSI> guardedThis(this);
+    QPointer<QIODevice> guardedOutput(pDevice);
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !guardedOutput || !guardedOutput->isOpen() ||
+        !guardedOutput->isWritable() || guardedOutput->isSequential() || !guardedThis || !guardedOutput ||
+        (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) ||
+        !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
         (pState->nCurrentIndex >= pState->nNumberOfRecords)) return false;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
+        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration())) return false;
+    if (XBinary::devicesAlias(pContext->pOuterSourceDevice.data(), guardedOutput.data()) || !guardedThis || !guardedOutput) return false;
+    if (!pContext->pSourceValidator ||
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
+        !guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
 
     if (pContext->bPayloadMode) {
         if ((pState->nNumberOfRecords != pContext->listEntries.size()) ||
             (pState->nCurrentIndex >= pContext->listEntries.size())) return false;
-        const PAYLOAD_ENTRY &entry = pContext->listEntries.at(pState->nCurrentIndex);
+        const PAYLOAD_ENTRY entry = pContext->listEntries.at(pState->nCurrentIndex);
         if (entry.nCabinetIndex == -1) {
-            return unpackExternalPayloadFile(entry, pDevice, &pState->nCurrentOffset, pPdStruct);
+            const bool bResult = unpackExternalPayloadFile(entry, guardedOutput.data(), &pState->nCurrentOffset, pPdStruct);
+            if (!guardedThis || !guardedOutput || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
+            if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
+                !guardedThis || !guardedOutput || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) {
+                if (guardedOutput) {
+                    XBinary::resize(guardedOutput.data(), 0);
+                    if (guardedOutput) guardedOutput->seek(0);
+                }
+                return false;
+            }
+            return bResult;
         }
         if ((entry.nCabinetIndex < 0) || (entry.nCabinetIndex >= pContext->listCabinets.size())) return false;
         CAB_CONTEXT *pCabinet = pContext->listCabinets.at(entry.nCabinetIndex);
+        if (!pCabinet || !pCabinet->pArchive) return false;
         pCabinet->state.nCurrentIndex = entry.nCabinetRecordIndex;
-        return pCabinet->pArchive->unpackCurrent(&pCabinet->state, pDevice, pPdStruct);
+        const bool bResult = pCabinet->pArchive->unpackCurrent(&pCabinet->state, guardedOutput.data(), pPdStruct);
+        if (!guardedThis || !guardedOutput || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
+        if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
+            !guardedThis || !guardedOutput || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) {
+            if (guardedOutput) {
+                XBinary::resize(guardedOutput.data(), 0);
+                if (guardedOutput) guardedOutput->seek(0);
+            }
+            return false;
+        }
+        pState->nCurrentOffset = pCabinet->state.nCurrentOffset;
+        return bResult;
     }
 
-    if (!pContext->pArchive) return false;
-    pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
-    bool bResult = pContext->pArchive->unpackCurrent(&pContext->innerState, pDevice, pPdStruct);
+    if (!pContext->pArchive || (pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
+        (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
+        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords)) return false;
+    bool bResult = pContext->pArchive->unpackCurrent(&pContext->innerState, guardedOutput.data(), pPdStruct);
+    if (!guardedThis || !guardedOutput || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
+    if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
+        !guardedThis || !guardedOutput || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) {
+        if (guardedOutput) {
+            XBinary::resize(guardedOutput.data(), 0);
+            if (guardedOutput) guardedOutput->seek(0);
+        }
+        return false;
+    }
     pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
     pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
     return bResult;
@@ -1823,21 +2162,42 @@ bool XMSI::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
 
 bool XMSI::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
-    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+    QSharedPointer<bool> pOperationState = m_pUnpackOperationState;
+    if (!pOperationState || *pOperationState) return false;
+    QScopedValueRollback<bool> operationGuard(*pOperationState, true);
+    QPointer<XMSI> guardedThis(this);
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
         (pState->nCurrentIndex >= pState->nNumberOfRecords)) return false;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
+        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration())) return false;
+    if (!pContext->pSourceValidator ||
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
+        !guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
 
     if (pContext->bPayloadMode) {
         if ((pState->nNumberOfRecords != pContext->listEntries.size()) ||
             (pState->nCurrentIndex >= pContext->listEntries.size())) return false;
+        const qint32 nOldIndex = pState->nCurrentIndex;
+        const qint64 nOldOffset = pState->nCurrentOffset;
         pState->nCurrentIndex++;
         pState->nCurrentOffset = 0;
-        return pState->nCurrentIndex < pState->nNumberOfRecords;
+        const bool bSourceCurrent = pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) &&
+                                    guardedThis && m_setUnpackContexts.contains(pContext) && (pState->pContext == pContext);
+        if (!bSourceCurrent && guardedThis && m_setUnpackContexts.contains(pContext) && (pState->pContext == pContext)) {
+            pState->nCurrentIndex = nOldIndex;
+            pState->nCurrentOffset = nOldOffset;
+        }
+        return bSourceCurrent && (pState->nCurrentIndex < pState->nNumberOfRecords);
     }
 
-    if (!pContext->pArchive) return false;
-    pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
+    if (!pContext->pArchive || (pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
+        (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
+        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords)) return false;
     bool bResult = pContext->pArchive->moveToNext(&pContext->innerState, pPdStruct);
+    if (!guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
+    if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
+        !guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
     pState->nCurrentIndex = pContext->innerState.nCurrentIndex;
     pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
     pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
@@ -1846,12 +2206,22 @@ bool XMSI::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 
 bool XMSI::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
+    Q_UNUSED(pPdStruct)
+
     if (!pState) return false;
+    if (!pState->baUnpackSourceToken.isEmpty()) return false;
+    QSharedPointer<bool> pOperationState = m_pUnpackOperationState;
+    if (!pOperationState || *pOperationState) return false;
+    QScopedValueRollback<bool> operationGuard(*pOperationState, true);
+    QPointer<XMSI> guardedThis(this);
 
     bool bResult = true;
     if (pState->pContext) {
         UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-        if (!clearPayloadContexts(pContext, pPdStruct)) {
+        if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState)) return false;
+        m_setUnpackContexts.remove(pContext);
+        pState->pContext = nullptr;
+        if (!clearPayloadContexts(pContext)) {
             bResult = false;
         }
 
@@ -1861,13 +2231,17 @@ bool XMSI::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
             }
             delete pContext->pArchive;
         }
+        if (pContext->pSourceValidator) {
+            pContext->pSourceValidator->releaseUnpackSource(&pContext->sourceValidationState);
+            delete pContext->pSourceValidator;
+        }
         if (pContext->pSubDevice) {
             pContext->pSubDevice->close();
             delete pContext->pSubDevice;
         }
 
         delete pContext;
-        pState->pContext = nullptr;
+        if (!guardedThis) return false;
     }
 
     pState->nCurrentOffset = 0;

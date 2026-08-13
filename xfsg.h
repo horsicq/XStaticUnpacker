@@ -7,6 +7,11 @@
 
 #include "xpe.h"
 
+#include <QSet>
+#include <QSharedPointer>
+
+class XMaterializedUnpackGuard;
+
 /* Static unpacker for FSG ("Fast Small Good") packed PE files, versions 1.33
  * and 2.0. Clean-room implementation: the FSG loader-stub layout and the
  * aPLib-style bit-stream format were understood from the (GPL) libclamav
@@ -45,13 +50,33 @@ public:
     virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
 
+protected:
+    bool isDeviceReplacementAllowed() const override;
+
 private:
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
     INTERNAL_INFO m_internalInfo;
     struct UNPACK_CONTEXT {
+        ~UNPACK_CONTEXT();
         QByteArray baData;
         QString sFileName;
+        QString sInfo;
+        QPointer<QIODevice> pSourceDevice;
+        UNPACK_STATE *pOwnerState;
+        QByteArray baToken;
+        quint64 nDeviceGeneration;
+        qint64 nSourceSize;
+        qint64 nCurrentOffset;
+        qint32 nCurrentIndex;
+        XMaterializedUnpackGuard *pSourceGuard = nullptr;
     };
+    struct LIFETIME_STATE {
+        bool bOperationInProgress = false;
+        bool bOwnerAlive = true;
+        QSet<UNPACK_CONTEXT *> setContexts;
+        ~LIFETIME_STATE();
+    };
+    QSharedPointer<LIFETIME_STATE> m_pUnpackLifetimeState;
     struct SECTIONINFO {
         quint32 nRva;
         quint32 nRsz;  // raw size (offset into the decompressed blob is implicit/sequential)
@@ -77,5 +102,3 @@ private:
 };
 
 #endif  // XFSG_H
-
-

@@ -5,7 +5,12 @@
 #ifndef XCREATEINSTALL_H
 #define XCREATEINSTALL_H
 
+#include <QSet>
+#include <QSharedPointer>
+
 #include "xbinary.h"
+
+class XMaterializedUnpackGuard;
 
 /* Detector + extractor for CreateInstall (Gentee-engine) installers. The
  * self-extracting PE carries a ".gentee" section plus the Gentee runtime strings
@@ -30,7 +35,17 @@ public:
     };
 
     struct UNPACK_CONTEXT {
+        ~UNPACK_CONTEXT();
         QList<FILE_ENTRY> listEntries;
+        QPointer<QIODevice> pSourceDevice;
+        UNPACK_STATE *pOwnerState = nullptr;
+        QByteArray baToken;
+        quint64 nDeviceGeneration = 0;
+        qint64 nSourceSize = 0;
+        qint64 nCurrentOffset = 0;
+        qint32 nCurrentIndex = 0;
+        XMaterializedUnpackGuard *pSourceGuard = nullptr;
+        QList<XMaterializedUnpackGuard *> listCompanionGuards;
     };
 
     explicit XCreateInstall(QIODevice *pDevice = nullptr, bool bIsImage = false, XADDR nModuleAddress = -1);
@@ -50,10 +65,21 @@ public:
     virtual bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
 
+protected:
+    bool isDeviceReplacementAllowed() const override;
+
 private:
+    struct LIFETIME_STATE {
+        bool bOperationInProgress = false;
+        bool bOwnerAlive = true;
+        QSet<UNPACK_CONTEXT *> setContexts;
+        ~LIFETIME_STATE();
+    };
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
     INTERNAL_INFO m_internalInfo;
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);
+    QSharedPointer<LIFETIME_STATE> m_pUnpackLifetimeState;
+    bool m_bTrustedSnapshot = false;
 };
 
 #endif  // XCREATEINSTALL_H

@@ -9,6 +9,8 @@
 #include "xpe.h"
 #include "xelf.h"
 
+class XArchive;
+
 class XUPX : public XBinary {
     Q_OBJECT
 
@@ -41,8 +43,23 @@ public:
     };
 
     struct UNPACK_CONTEXT {
+        QPointer<QIODevice> pOuterSourceDevice;
+        quint64 nOwnerDeviceGeneration;
+        UNPACK_STATE *pOwnerState = nullptr;
+        XArchive *pSourceValidator;
+        UNPACK_STATE sourceValidationState;
         QList<ARCHIVERECORD> listRecords;
     };
+
+    struct UNPACK_LIFETIME_STATE {
+        UNPACK_LIFETIME_STATE() : bOperationInProgress(false), bOwnerAlive(true) {}
+        ~UNPACK_LIFETIME_STATE();
+        bool bOperationInProgress;
+        bool bOwnerAlive;
+        QSet<UNPACK_CONTEXT *> setContexts;
+    };
+
+    static void deleteUnpackContext(UNPACK_CONTEXT *pContext);
 #pragma pack(push)
 #pragma pack(1)
     struct l_info {          // 12-byte trailer in header for loader
@@ -182,6 +199,13 @@ public:
     QString packerVersion(PDSTRUCT *pPdStruct = nullptr);
     QString compressionMethod(PDSTRUCT *pPdStruct = nullptr);
 
+protected:
+    bool isDeviceReplacementAllowed() const override
+    {
+        return m_pUnpackLifetimeState && m_pUnpackLifetimeState->bOwnerAlive &&
+               !m_pUnpackLifetimeState->bOperationInProgress && m_pUnpackLifetimeState->setContexts.isEmpty();
+    }
+
 private:
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
     INTERNAL_INFO m_internalInfo;
@@ -209,6 +233,7 @@ private:
     bool _unpackMach(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct);
     bool _unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pPdStruct);
     bool _runUPXDecompress(QIODevice *pDevice, PDSTRUCT *pPdStruct);
+    QSharedPointer<UNPACK_LIFETIME_STATE> m_pUnpackLifetimeState;
 };
 
 #endif  // XUPX_H

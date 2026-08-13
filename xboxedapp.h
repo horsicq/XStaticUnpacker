@@ -6,8 +6,11 @@
 #define XBOXEDAPP_H
 
 #include <QSet>
+#include <QSharedPointer>
 
 #include "xbinary.h"
+
+class XMaterializedUnpackGuard;
 
 /* Detector + VFS extractor for BoxedApp Packer (Softanics)
  * application-virtualizer output.
@@ -36,11 +39,20 @@ public:
     };
 
     struct UNPACK_CONTEXT {
-        UNPACK_CONTEXT() : nTotalOutput(0) {}
+        UNPACK_CONTEXT() : nTotalOutput(0), pOwnerState(nullptr), nDeviceGeneration(0), nSourceSize(0), nCurrentOffset(0), nCurrentIndex(0) {}
+        ~UNPACK_CONTEXT();
 
         QList<FILE_ENTRY> listEntries;
         QSet<QString> setNames;
-        qint64 nTotalOutput;
+        qint64 nTotalOutput = 0;
+        qint32 nCurrentIndex = 0;
+        qint64 nCurrentOffset = 0;
+        qint64 nSourceSize = 0;
+        XMaterializedUnpackGuard *pSourceGuard = nullptr;
+        quint64 nDeviceGeneration = 0;
+        QPointer<QIODevice> pSourceDevice;
+        UNPACK_STATE *pOwnerState = nullptr;
+        QByteArray baToken;
     };
 
     explicit XBoxedApp(QIODevice *pDevice = nullptr, bool bIsImage = false, XADDR nModuleAddress = -1);
@@ -60,12 +72,23 @@ public:
     virtual bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
 
+protected:
+    bool isDeviceReplacementAllowed() const override;
+
 private:
+    struct LIFETIME_STATE {
+        bool bOperationInProgress = false;
+        bool bOwnerAlive = true;
+        QSet<UNPACK_CONTEXT *> setContexts;
+        ~LIFETIME_STATE();
+    };
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
     INTERNAL_INFO m_internalInfo;
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);
     bool _scanRecords(const QByteArray &baRegion, const QSet<QString> &setDeclaredNames, UNPACK_CONTEXT *pContext,
                       PDSTRUCT *pPdStruct);
+    QSharedPointer<LIFETIME_STATE> m_pUnpackLifetimeState;
+    bool m_bTrustedSnapshot = false;
 };
 
 #endif  // XBOXEDAPP_H

@@ -7,6 +7,11 @@
 
 #include "xpe.h"
 
+#include <QSet>
+#include <QSharedPointer>
+
+class XMaterializedUnpackGuard;
+
 /* Static unpacker for NsPack-packed PE files. Clean-room implementation: the
  * NsPack loader-stub layout and its custom LZMA-style range decoder were
  * understood from the (GPL) libclamav unsp.c / pe.c reference, then
@@ -47,13 +52,33 @@ public:
     virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
 
+protected:
+    bool isDeviceReplacementAllowed() const override;
+
 private:
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
     INTERNAL_INFO m_internalInfo;
     struct UNPACK_CONTEXT {
+        ~UNPACK_CONTEXT();
         QByteArray baData;
         QString sFileName;
+        QString sInfo;
+        QPointer<QIODevice> pSourceDevice;
+        UNPACK_STATE *pOwnerState;
+        QByteArray baToken;
+        quint64 nDeviceGeneration;
+        qint64 nSourceSize;
+        qint64 nCurrentOffset;
+        qint32 nCurrentIndex;
+        XMaterializedUnpackGuard *pSourceGuard = nullptr;
     };
+    struct LIFETIME_STATE {
+        bool bOperationInProgress = false;
+        bool bOwnerAlive = true;
+        QSet<UNPACK_CONTEXT *> setContexts;
+        ~LIFETIME_STATE();
+    };
+    QSharedPointer<LIFETIME_STATE> m_pUnpackLifetimeState;
     struct NSP_STATE {
         const quint8 *pSrcCurr;
         const quint8 *pSrcEnd;

@@ -10,6 +10,8 @@
 
 #include "xbinary.h"
 
+class XArchive;
+
 class XInnoSetup : public XBinary {
     Q_OBJECT
 
@@ -63,6 +65,11 @@ public:
     };
 
     struct UNPACK_CONTEXT {
+        QPointer<QIODevice> pOuterSourceDevice;
+        quint64 nOwnerDeviceGeneration;
+        UNPACK_STATE *pOwnerState = nullptr;
+        XArchive *pSourceValidator;
+        UNPACK_STATE sourceValidationState;
         QList<ARCHIVERECORD> listAllRecords;
         bool bIsRealFormat;  // true = real InnoSetup, false = synthetic ISDF
         qint64 nSignatureOffset;
@@ -71,6 +78,16 @@ public:
         QList<FILE_ENTRY> listFileEntries;
         CHUNK_CACHE chunkCache;  // Cached decompressed chunk
     };
+
+    struct UNPACK_LIFETIME_STATE {
+        UNPACK_LIFETIME_STATE() : bOperationInProgress(false), bOwnerAlive(true) {}
+        ~UNPACK_LIFETIME_STATE();
+        bool bOperationInProgress;
+        bool bOwnerAlive;
+        QSet<UNPACK_CONTEXT *> setContexts;
+    };
+
+    static void deleteUnpackContext(UNPACK_CONTEXT *pContext);
 
     explicit XInnoSetup(QIODevice *pDevice, bool bIsImage = false, XADDR nModuleAddress = -1);
     ~XInnoSetup() override;
@@ -92,6 +109,13 @@ public:
     virtual bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
 
+protected:
+    bool isDeviceReplacementAllowed() const override
+    {
+        return m_pUnpackLifetimeState && m_pUnpackLifetimeState->bOwnerAlive &&
+               !m_pUnpackLifetimeState->bOperationInProgress && m_pUnpackLifetimeState->setContexts.isEmpty();
+    }
+
 private:
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
     INTERNAL_INFO m_internalInfo;
@@ -105,9 +129,10 @@ private:
     QByteArray _decompressLZMA1(const QByteArray &baData);
     QList<DATA_ENTRY> _parseDataEntries(const QByteArray &baBlock2);
     QList<FILE_ENTRY> _parseFileEntries(const QByteArray &baBlock1, qint32 nNumFiles);
-    bool _parseRealInnoSetup(UNPACK_CONTEXT *pContext, qint64 nSignatureOffset, PDSTRUCT *pPdStruct);
+    bool _parseRealInnoSetup(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
     QByteArray _decompressDataChunk(qint64 nChunkOffset, qint64 nChunkCompressedSize, PDSTRUCT *pPdStruct);
     static QString _readWideString(const QByteArray &baData, qint32 nOffset, qint32 *pnNewOffset);
+    QSharedPointer<UNPACK_LIFETIME_STATE> m_pUnpackLifetimeState;
 };
 
 #endif  // XINNOSETUP_H

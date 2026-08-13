@@ -9,6 +9,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QScopedPointer>
+#include <QScopedValueRollback>
 #include <QSet>
 
 #include <algorithm>
@@ -16,6 +18,7 @@
 
 #include "xmsi.h"
 #include "xpe.h"
+#include "../XArchive/xarchive.h"
 
 namespace {
 static bool isSafeAdvancedRecordName(const QString &sName)
@@ -97,19 +100,39 @@ static QString resolveCaseInsensitiveSibling(const QDir &baseDirectory, const QS
 }
 }  // namespace
 
+XAdvancedInstaller::UNPACK_DEFERRED_CLEANUP::~UNPACK_DEFERRED_CLEANUP()
+{
+    const QSet<UNPACK_CONTEXT *> contexts = setContexts;
+    setContexts.clear();
+    for (UNPACK_CONTEXT *pContext : contexts) XAdvancedInstaller::_deleteUnpackContext(pContext, nullptr);
+}
+
 XAdvancedInstaller::XAdvancedInstaller(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : XBinary(pDevice, bIsImage, nModuleAddress)
 {
+    m_pUnpackDeferredCleanup = QSharedPointer<UNPACK_DEFERRED_CLEANUP>::create();
+    const QSharedPointer<UNPACK_DEFERRED_CLEANUP> pDeferredCleanup = m_pUnpackDeferredCleanup;
+    m_pUnpackOperationState = QSharedPointer<bool>(new bool(false), [pDeferredCleanup](bool *pValue) { delete pValue; });
     setIsArchive(true);
 }
 
 XAdvancedInstaller::~XAdvancedInstaller()
 {
+    if (m_pUnpackOperationState) *m_pUnpackOperationState = true;
+    if (m_pUnpackDeferredCleanup) {
+        m_pUnpackDeferredCleanup->setContexts.unite(m_setUnpackContexts);
+        m_setUnpackContexts.clear();
+    }
+    m_pUnpackDeferredCleanup.clear();
+    m_pUnpackOperationState.clear();
 }
 
 bool XAdvancedInstaller::isValid(PDSTRUCT *pPdStruct)
 {
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
-    return static_cast<INTERNAL_INFO *>(getInternalInfo(pPdStruct))->bIsValid;
+    QPointer<XAdvancedInstaller> guardedThis(this);
+    const INTERNAL_INFO *pInfo =
+        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
+    return guardedThis && pInfo && pInfo->bIsValid;
 }
 
 bool XAdvancedInstaller::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
@@ -126,20 +149,48 @@ XAdvancedInstaller::INTERNAL_INFO XAdvancedInstaller::_getInternalInfo(PDSTRUCT 
 // Cache format-specific parsing together with the XBinary memory map.
 bool XAdvancedInstaller::handleInternalInfo(PDSTRUCT *pPdStruct)
 {
-    if (!isInternalInfoHandled()) {
-        m_internalInfo = INTERNAL_INFO();
-        m_internalInfo = _getInternalInfo(pPdStruct);
-        if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
-            m_internalInfo = INTERNAL_INFO();
+    QPointer<XAdvancedInstaller> guardedThis(this);
+    const bool bAlreadyHandled = guardedThis->isInternalInfoHandled();
+    if (!guardedThis) return false;
+
+    if (!bAlreadyHandled) {
+        const quint64 nTransaction =
+            guardedThis->beginInternalInfoTransaction();
+        if (!nTransaction) return false;
+
+        // The transaction supplies the recursion sentinel. Keep every
+        // source-derived value local until the same binding is revalidated.
+        guardedThis->m_internalInfo = INTERNAL_INFO();
+        INTERNAL_INFO info = guardedThis->_getInternalInfo(pPdStruct);
+        if (!guardedThis) return false;
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
+            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+            guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
-        m_internalInfo.memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
-        if (!XBinary::isPdStructNotCanceled(pPdStruct)) {
-            m_internalInfo = INTERNAL_INFO();
+
+        const auto memoryMap =
+            guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        if (!guardedThis) return false;
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
+            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+            guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
-        setIsInternalInfoHandled(true);
-        XBinary::setInternalInfo(static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo));
+        info.memoryMap = memoryMap;
+
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction)) {
+            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+            return false;
+        }
+        guardedThis->m_internalInfo = info;
+        if (!guardedThis->commitInternalInfoTransaction(
+                nTransaction,
+                static_cast<XBinary::INTERNAL_INFO *>(
+                    &guardedThis->m_internalInfo))) {
+            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+            return false;
+        }
     }
 
     return true;
@@ -147,8 +198,11 @@ bool XAdvancedInstaller::handleInternalInfo(PDSTRUCT *pPdStruct)
 
 void *XAdvancedInstaller::getInternalInfo(PDSTRUCT *pPdStruct)
 {
-    handleInternalInfo(pPdStruct);
-    return &m_internalInfo;
+    QPointer<XAdvancedInstaller> guardedThis(this);
+    const bool bHandled = guardedThis->handleInternalInfo(pPdStruct);
+    if (!guardedThis || !bHandled) return nullptr;
+
+    return &guardedThis->m_internalInfo;
 }
 
 void XAdvancedInstaller::setInternalInfo(void *pInternalInfo)
@@ -169,6 +223,104 @@ XBinary::FT XAdvancedInstaller::getFileType()
     return FT_ARCHIVE;
 }
 
+static quint32 aiReadFooter32(const QByteArray &baFooter, qint32 nOffset)
+{
+    return XBinary::_read_uint32(baFooter.data() + nOffset, false);
+}
+
+static void aiAppendMarkerOffset(QList<qint64> *pListMarkerOffsets, qint64 nFooterPrefixSize, qint64 nMarkerSize, qint64 nSize,
+                                 qint64 nMarkerOffset)
+{
+    if ((nMarkerOffset >= nFooterPrefixSize) && ((nMarkerOffset + nMarkerSize) <= nSize) &&
+        !pListMarkerOffsets->contains(nMarkerOffset)) {
+        pListMarkerOffsets->append(nMarkerOffset);
+    }
+}
+
+static bool aiIsValidCertificateTable(XAdvancedInstaller *pBinary, const XBinary::OFFSETSIZE &signRegion, qint64 nSize,
+                                      XBinary::PDSTRUCT *pPdStruct)
+{
+    if ((signRegion.nSize < 8) || (signRegion.nOffset < 0) || (signRegion.nOffset & 7) ||
+        (signRegion.nOffset > nSize) || (signRegion.nSize > (nSize - signRegion.nOffset)) ||
+        ((signRegion.nOffset + signRegion.nSize) != nSize)) {
+        return false;
+    }
+
+    qint64 nCurrentOffset = signRegion.nOffset;
+    qint64 nRemaining = signRegion.nSize;
+    qint32 nRecords = 0;
+    while (nRemaining > 0) {
+        if (!XBinary::isPdStructNotCanceled(pPdStruct) || (nRemaining < 8) || (++nRecords > 4096)) {
+            return false;
+        }
+        QByteArray baCertificateHeader = pBinary->read_array_process(nCurrentOffset, 8, pPdStruct);
+        if (baCertificateHeader.size() != 8) return false;
+
+        const quint32 nCertificateLength = XBinary::_read_uint32(baCertificateHeader.data(), false);
+        const quint16 nRevision = XBinary::_read_uint16(baCertificateHeader.data() + 4, false);
+        const quint16 nCertificateType = XBinary::_read_uint16(baCertificateHeader.data() + 6, false);
+        if ((nCertificateLength < 8) || (nCertificateLength > (quint64)nRemaining) ||
+            ((nRevision != 0x0100) && (nRevision != 0x0200)) || (nCertificateType < 1) || (nCertificateType > 4)) {
+            return false;
+        }
+
+        const qint64 nAlignedLength = ((qint64)nCertificateLength + 7) & ~(qint64)7;
+        if ((nAlignedLength < nCertificateLength) || (nAlignedLength > nRemaining)) return false;
+        nCurrentOffset += nAlignedLength;
+        nRemaining -= nAlignedLength;
+    }
+    return nRecords > 0;
+}
+
+XAdvancedInstaller::EXE_FOOTER XAdvancedInstaller::_parseExeMarker(qint64 nSize, qint64 nFooterPrefixSize, const QByteArray &baMarker,
+                                                                   qint64 nMarkerOffset, PDSTRUCT *pPdStruct)
+{
+    EXE_FOOTER result = {};
+    const qint64 nFooterOffset = nMarkerOffset - nFooterPrefixSize;
+    if ((nFooterOffset < 0) || ((nMarkerOffset + baMarker.size()) > nSize) ||
+        (read_array_process(nMarkerOffset, baMarker.size(), pPdStruct) != baMarker)) {
+        return EXE_FOOTER();
+    }
+
+    QByteArray baFooter = read_array_process(nFooterOffset, nFooterPrefixSize, pPdStruct);
+    if (baFooter.size() != nFooterPrefixSize) return EXE_FOOTER();
+
+    result.nFooterOffset = nFooterOffset;
+    result.nMarkerOffset = nMarkerOffset;
+    result.nMode = aiReadFooter32(baFooter, 0);
+    result.nExternalNameOffset = aiReadFooter32(baFooter, 4);
+    result.nNumberOfFiles = aiReadFooter32(baFooter, 8);
+    result.nFormatVersion = aiReadFooter32(baFooter, 12);
+    result.nMetadataEndOffset = aiReadFooter32(baFooter, 16);
+    result.nInfoOffset = aiReadFooter32(baFooter, 20);
+    result.nFileDataOffset = aiReadFooter32(baFooter, 24);
+
+    for (qint32 i = 28; i < 60; i++) {
+        const char ch = baFooter.at(i);
+        if (!(((ch >= '0') && (ch <= '9')) || ((ch >= 'A') && (ch <= 'F')) || ((ch >= 'a') && (ch <= 'f')))) {
+            return EXE_FOOTER();
+        }
+    }
+
+    // These fields are stable for the version-100 SFX container. Requiring
+    // a coherent, in-file layout prevents a trailer string alone from
+    // detecting.
+    if ((result.nMode > 1) || (result.nFormatVersion != 100) || (result.nNumberOfFiles == 0) ||
+        (result.nNumberOfFiles > 4096) || (result.nFileDataOffset >= result.nInfoOffset) ||
+        (result.nInfoOffset >= (quint64)nFooterOffset) || (result.nMetadataEndOffset != (quint64)nFooterOffset)) {
+        return EXE_FOOTER();
+    }
+
+    if (result.nMode == 0) {
+        if (result.nExternalNameOffset != (quint64)nFooterOffset) return EXE_FOOTER();
+    } else if ((result.nExternalNameOffset < result.nInfoOffset) || (result.nExternalNameOffset >= (quint64)nFooterOffset)) {
+        return EXE_FOOTER();
+    }
+
+    result.bIsValid = true;
+    return result;
+}
+
 XAdvancedInstaller::EXE_FOOTER XAdvancedInstaller::_readExeFooter(PDSTRUCT *pPdStruct)
 {
     const qint64 nSize = getSize();
@@ -176,64 +328,7 @@ XAdvancedInstaller::EXE_FOOTER XAdvancedInstaller::_readExeFooter(PDSTRUCT *pPdS
     const QByteArray baMarker("ADVINSTSFX", 10);
     if (nSize < (nFooterPrefixSize + baMarker.size())) return EXE_FOOTER();
 
-    auto parseMarker = [&](qint64 nMarkerOffset) -> EXE_FOOTER {
-        EXE_FOOTER result = {};
-        const qint64 nFooterOffset = nMarkerOffset - nFooterPrefixSize;
-        if ((nFooterOffset < 0) || ((nMarkerOffset + baMarker.size()) > nSize) ||
-            (read_array_process(nMarkerOffset, baMarker.size(), pPdStruct) != baMarker)) {
-            return EXE_FOOTER();
-        }
-
-        QByteArray baFooter = read_array_process(nFooterOffset, nFooterPrefixSize, pPdStruct);
-        if (baFooter.size() != nFooterPrefixSize) return EXE_FOOTER();
-
-        auto read32 = [&](qint32 nOffset) -> quint32 {
-            return XBinary::_read_uint32(baFooter.data() + nOffset, false);
-        };
-
-        result.nFooterOffset = nFooterOffset;
-        result.nMarkerOffset = nMarkerOffset;
-        result.nMode = read32(0);
-        result.nExternalNameOffset = read32(4);
-        result.nNumberOfFiles = read32(8);
-        result.nFormatVersion = read32(12);
-        result.nMetadataEndOffset = read32(16);
-        result.nInfoOffset = read32(20);
-        result.nFileDataOffset = read32(24);
-
-        for (qint32 i = 28; i < 60; i++) {
-            const char ch = baFooter.at(i);
-            if (!(((ch >= '0') && (ch <= '9')) || ((ch >= 'A') && (ch <= 'F')) || ((ch >= 'a') && (ch <= 'f')))) {
-                return EXE_FOOTER();
-            }
-        }
-
-        // These fields are stable for the version-100 SFX container. Requiring
-        // a coherent, in-file layout prevents a trailer string alone from
-        // detecting.
-        if ((result.nMode > 1) || (result.nFormatVersion != 100) || (result.nNumberOfFiles == 0) ||
-            (result.nNumberOfFiles > 4096) || (result.nFileDataOffset >= result.nInfoOffset) ||
-            (result.nInfoOffset >= (quint64)nFooterOffset) || (result.nMetadataEndOffset != (quint64)nFooterOffset)) {
-            return EXE_FOOTER();
-        }
-
-        if (result.nMode == 0) {
-            if (result.nExternalNameOffset != (quint64)nFooterOffset) return EXE_FOOTER();
-        } else if ((result.nExternalNameOffset < result.nInfoOffset) || (result.nExternalNameOffset >= (quint64)nFooterOffset)) {
-            return EXE_FOOTER();
-        }
-
-        result.bIsValid = true;
-        return result;
-    };
-
     QList<qint64> listMarkerOffsets;
-    auto appendMarkerOffset = [&](qint64 nMarkerOffset) {
-        if ((nMarkerOffset >= nFooterPrefixSize) && ((nMarkerOffset + baMarker.size()) <= nSize) &&
-            !listMarkerOffsets.contains(nMarkerOffset)) {
-            listMarkerOffsets.append(nMarkerOffset);
-        }
-    };
 
     // Unsigned bootstrappers end in the marker. If Authenticode signing was
     // applied after the container was built, the certificate table starts
@@ -242,40 +337,7 @@ XAdvancedInstaller::EXE_FOOTER XAdvancedInstaller::_readExeFooter(PDSTRUCT *pPdS
     XPE pe(getDevice(), isImage(), getModuleAddress());
     if (pe.isValid(pPdStruct)) {
         OFFSETSIZE signRegion = pe.getSignOffsetSize();
-        auto isValidCertificateTable = [&]() -> bool {
-            if ((signRegion.nSize < 8) || (signRegion.nOffset < 0) || (signRegion.nOffset & 7) ||
-                (signRegion.nOffset > nSize) || (signRegion.nSize > (nSize - signRegion.nOffset)) ||
-                ((signRegion.nOffset + signRegion.nSize) != nSize)) {
-                return false;
-            }
-
-            qint64 nCurrentOffset = signRegion.nOffset;
-            qint64 nRemaining = signRegion.nSize;
-            qint32 nRecords = 0;
-            while (nRemaining > 0) {
-                if (!XBinary::isPdStructNotCanceled(pPdStruct) || (nRemaining < 8) || (++nRecords > 4096)) {
-                    return false;
-                }
-                QByteArray baCertificateHeader = read_array_process(nCurrentOffset, 8, pPdStruct);
-                if (baCertificateHeader.size() != 8) return false;
-
-                const quint32 nCertificateLength = XBinary::_read_uint32(baCertificateHeader.data(), false);
-                const quint16 nRevision = XBinary::_read_uint16(baCertificateHeader.data() + 4, false);
-                const quint16 nCertificateType = XBinary::_read_uint16(baCertificateHeader.data() + 6, false);
-                if ((nCertificateLength < 8) || (nCertificateLength > (quint64)nRemaining) ||
-                    ((nRevision != 0x0100) && (nRevision != 0x0200)) || (nCertificateType < 1) || (nCertificateType > 4)) {
-                    return false;
-                }
-
-                const qint64 nAlignedLength = ((qint64)nCertificateLength + 7) & ~(qint64)7;
-                if ((nAlignedLength < nCertificateLength) || (nAlignedLength > nRemaining)) return false;
-                nCurrentOffset += nAlignedLength;
-                nRemaining -= nAlignedLength;
-            }
-            return nRecords > 0;
-        };
-
-        if (isValidCertificateTable()) {
+        if (aiIsValidCertificateTable(this, signRegion, nSize, pPdStruct)) {
             listLogicalEnds.append(signRegion.nOffset);
         }
     }
@@ -300,7 +362,7 @@ XAdvancedInstaller::EXE_FOOTER XAdvancedInstaller::_readExeFooter(PDSTRUCT *pPdS
                 }
             }
             if (bZeroPadding && (read_array_process(nMarkerOffset, baMarker.size(), pPdStruct) == baMarker)) {
-                appendMarkerOffset(nMarkerOffset);
+                aiAppendMarkerOffset(&listMarkerOffsets, nFooterPrefixSize, baMarker.size(), nSize, nMarkerOffset);
             }
         }
     }
@@ -318,7 +380,7 @@ XAdvancedInstaller::EXE_FOOTER XAdvancedInstaller::_readExeFooter(PDSTRUCT *pPdS
             while (nBefore > 0) {
                 qint64 nRelativeMarker = baTail.lastIndexOf(baMarker, nBefore - 1);
                 if (nRelativeMarker < 0) break;
-                appendMarkerOffset(nSearchOffset + nRelativeMarker);
+                aiAppendMarkerOffset(&listMarkerOffsets, nFooterPrefixSize, baMarker.size(), nSize, nSearchOffset + nRelativeMarker);
                 nBefore = nRelativeMarker;
             }
         }
@@ -326,7 +388,7 @@ XAdvancedInstaller::EXE_FOOTER XAdvancedInstaller::_readExeFooter(PDSTRUCT *pPdS
 
     EXE_FOOTER selectedFooter = {};
     for (qint64 nMarkerOffset : listMarkerOffsets) {
-        EXE_FOOTER result = parseMarker(nMarkerOffset);
+        EXE_FOOTER result = _parseExeMarker(nSize, nFooterPrefixSize, baMarker, nMarkerOffset, pPdStruct);
         if (result.bIsValid) {
             if (!_validateExeFooter(result, nullptr, nullptr, pPdStruct)) continue;
 
@@ -339,6 +401,12 @@ XAdvancedInstaller::EXE_FOOTER XAdvancedInstaller::_readExeFooter(PDSTRUCT *pPdS
     }
 
     return selectedFooter;
+}
+
+static bool aiRegionLess(const QPair<qint64, qint64> &a, const QPair<qint64, qint64> &b)
+{
+    if (a.first != b.first) return a.first < b.first;
+    return a.second < b.second;
 }
 
 QString XAdvancedInstaller::_readUTF16Name(qint64 nOffset, quint32 nNumberOfCharacters, qint64 nLimit, PDSTRUCT *pPdStruct)
@@ -419,10 +487,7 @@ bool XAdvancedInstaller::_readExeFiles(const EXE_FOOTER &footer, QList<EXE_FILE>
         pListFiles->append(file);
     }
 
-    std::sort(listRegions.begin(), listRegions.end(), [](const QPair<qint64, qint64> &a, const QPair<qint64, qint64> &b) {
-        if (a.first != b.first) return a.first < b.first;
-        return a.second < b.second;
-    });
+    std::sort(listRegions.begin(), listRegions.end(), aiRegionLess);
     if (listRegions.isEmpty() || (listRegions.first().first != footer.nFileDataOffset) ||
         (listRegions.last().second != footer.nInfoOffset)) {
         return false;
@@ -529,15 +594,41 @@ bool XAdvancedInstaller::_validateExeFooter(const EXE_FOOTER &footer, QList<EXE_
 
 QIODevice *XAdvancedInstaller::_openExternalMSI(const QString &sName)
 {
-    QFile *pContainerFile = qobject_cast<QFile *>(getDevice());
-    if (!pContainerFile || sName.isEmpty()) return nullptr;
+    QPointer<XAdvancedInstaller> guardedThis(this);
+    QPointer<QIODevice> guardedDevice(getDevice());
+    const quint64 nGeneration = getDeviceGeneration();
+    if (!guardedThis || !guardedDevice || sName.isEmpty()) return nullptr;
 
-    QFileInfo containerInfo(pContainerFile->fileName());
+    // qobject_cast invokes the caller-controlled virtual meta-object hooks.
+    // RTTI performs only the type query; the typed QPointer then guards the
+    // QFile-specific inspection.
+    QFile *pContainerFile = dynamic_cast<QFile *>(guardedDevice.data());
+    QPointer<QFile> guardedContainerFile(pContainerFile);
+    if (!guardedThis || !guardedDevice || !guardedContainerFile ||
+        (getDeviceGeneration() != nGeneration) ||
+        (getDevice() != guardedDevice.data())) return nullptr;
+
+    const QString sContainerFileName = guardedContainerFile->fileName();
+    if (!guardedThis || !guardedDevice || !guardedContainerFile ||
+        (getDeviceGeneration() != nGeneration) ||
+        (getDevice() != guardedDevice.data())) return nullptr;
+
+    QFileInfo containerInfo(sContainerFileName);
     const QString sCandidateCanonical = resolveCaseInsensitiveSibling(containerInfo.absoluteDir(), sName);
-    if (sCandidateCanonical.isEmpty()) return nullptr;
+    if (!guardedThis || !guardedDevice || !guardedContainerFile ||
+        (getDeviceGeneration() != nGeneration) ||
+        (getDevice() != guardedDevice.data()) ||
+        sCandidateCanonical.isEmpty()) return nullptr;
 
     QFile *pResult = new QFile(sCandidateCanonical);
     if (!pResult->open(QIODevice::ReadOnly)) {
+        delete pResult;
+        return nullptr;
+    }
+
+    if (!guardedThis || !guardedDevice || !guardedContainerFile ||
+        (getDeviceGeneration() != nGeneration) ||
+        (getDevice() != guardedDevice.data())) {
         delete pResult;
         return nullptr;
     }
@@ -547,8 +638,10 @@ QIODevice *XAdvancedInstaller::_openExternalMSI(const QString &sName)
 
 bool XAdvancedInstaller::_deleteUnpackContext(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
 {
+    Q_UNUSED(pPdStruct)
     if (!pContext) return true;
 
+    QPointer<QIODevice> guardedOwnedDevice(pContext->pOwnedDevice);
     bool bResult = true;
     if (pContext->pMSI) {
         if (pContext->bInnerInitialized && !pContext->pMSI->finishUnpack(&pContext->innerState, nullptr)) {
@@ -557,9 +650,14 @@ bool XAdvancedInstaller::_deleteUnpackContext(UNPACK_CONTEXT *pContext, PDSTRUCT
         delete pContext->pMSI;
     }
 
-    if (pContext->pOwnedDevice) {
-        if (pContext->pOwnedDevice->isOpen()) pContext->pOwnedDevice->close();
-        delete pContext->pOwnedDevice;
+    if (pContext->pSourceValidator) {
+        pContext->pSourceValidator->releaseUnpackSource(&pContext->sourceValidationState);
+        delete pContext->pSourceValidator;
+    }
+
+    if (guardedOwnedDevice) {
+        if (guardedOwnedDevice->isOpen()) guardedOwnedDevice->close();
+        if (guardedOwnedDevice) delete guardedOwnedDevice.data();
     }
 
     delete pContext;
@@ -567,34 +665,73 @@ bool XAdvancedInstaller::_deleteUnpackContext(UNPACK_CONTEXT *pContext, PDSTRUCT
 }
 
 bool XAdvancedInstaller::_initMSIDelegate(UNPACK_STATE *pState, QIODevice *pSourceDevice, QIODevice *pOwnedDevice,
-                                           const QMap<QString, QByteArray> &mapExternalCabinets,
-                                           const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
+                                            XArchive *pSourceValidator, UNPACK_STATE *pSourceValidationState,
+                                            const QMap<QString, QByteArray> &mapExternalCabinets,
+                                            const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
-    if (!pState || !pSourceDevice || !XBinary::isPdStructNotCanceled(pPdStruct)) {
-        if (pOwnedDevice) {
-            if (pOwnedDevice->isOpen()) pOwnedDevice->close();
-            delete pOwnedDevice;
+    QPointer<XAdvancedInstaller> guardedThis(this);
+    QPointer<QIODevice> guardedSource(pSourceDevice);
+    QPointer<QIODevice> guardedOwnedDevice(pOwnedDevice);
+    if (!pState || !guardedSource || !pSourceValidator || !pSourceValidationState ||
+        pSourceValidationState->baUnpackSourceToken.isEmpty() || !XBinary::isPdStructNotCanceled(pPdStruct) ||
+        !pSourceValidator->isUnpackSourceCurrent(pSourceValidationState, pPdStruct) || !guardedThis || !guardedSource) {
+        if (guardedOwnedDevice) {
+            if (guardedOwnedDevice->isOpen()) guardedOwnedDevice->close();
+            if (guardedOwnedDevice) delete guardedOwnedDevice.data();
+        }
+        if (pSourceValidator) {
+            pSourceValidator->releaseUnpackSource(pSourceValidationState);
+            delete pSourceValidator;
         }
         return false;
     }
 
-    UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT;
+    UNPACK_CONTEXT *pContext = new (std::nothrow) UNPACK_CONTEXT();
+    if (!pContext) {
+        if (guardedOwnedDevice) {
+            if (guardedOwnedDevice->isOpen()) guardedOwnedDevice->close();
+            if (guardedOwnedDevice) delete guardedOwnedDevice.data();
+        }
+        pSourceValidator->releaseUnpackSource(pSourceValidationState);
+        delete pSourceValidator;
+        return false;
+    }
+    pContext->pOuterSourceDevice = getDevice();
+    pContext->nOwnerDeviceGeneration = getDeviceGeneration();
     pContext->pOwnedDevice = pOwnedDevice;
-    pContext->pMSI = new XMSI(pSourceDevice);
-    pContext->innerState = UNPACK_STATE();
-    pContext->bInnerInitialized = false;
+    pContext->pSourceValidator = pSourceValidator;
+    if (!pContext->pSourceValidator->transferUnpackSourceOwnership(pSourceValidationState, &pContext->sourceValidationState)) {
+        pContext->pSourceValidator->releaseUnpackSource(pSourceValidationState);
+        _deleteUnpackContext(pContext, pPdStruct);
+        return false;
+    }
+    pContext->pMSI = new (std::nothrow) XMSI(pSourceDevice);
+    if (!pContext->pMSI) {
+        _deleteUnpackContext(pContext, pPdStruct);
+        return false;
+    }
     pContext->pMSI->setExternalCabinetData(mapExternalCabinets);
 
-    if (!pContext->pMSI->initUnpack(&pContext->innerState, mapProperties, pPdStruct)) {
+    if (!pContext->pOuterSourceDevice || !guardedThis || !guardedSource) {
         _deleteUnpackContext(pContext, pPdStruct);
         return false;
     }
 
-    pContext->bInnerInitialized = true;
+    const bool bInnerInitialized = pContext->pMSI->initUnpack(&pContext->innerState, mapProperties, pPdStruct);
+    pContext->bInnerInitialized = bInnerInitialized;
+    if (!bInnerInitialized || !guardedThis || !guardedSource ||
+        !pContext->pSourceValidator->validateAndFinalizeUnpackSource(&pContext->sourceValidationState, pPdStruct) ||
+        !guardedThis || !guardedSource) {
+        _deleteUnpackContext(pContext, pPdStruct);
+        return false;
+    }
+
     pState->nNumberOfRecords = pContext->innerState.nNumberOfRecords;
     pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
     pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
+    pContext->pOwnerState = pState;
     pState->pContext = pContext;
+    m_setUnpackContexts.insert(pContext);
     return true;
 }
 
@@ -606,48 +743,93 @@ QMap<XBinary::UNPACK_PROP, QVariant> XAdvancedInstaller::getDefaultUnpackPropert
 bool XAdvancedInstaller::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
-    if (pState->pContext && !finishUnpack(pState, nullptr)) return false;
+    QSharedPointer<bool> pOperationState = m_pUnpackOperationState;
+    if (!pOperationState || *pOperationState) return false;
+    QScopedValueRollback<bool> operationGuard(*pOperationState, true);
+    QPointer<XAdvancedInstaller> guardedThis(this);
+    if (!pState->baUnpackSourceToken.isEmpty()) return false;
+    if (pState->pContext) {
+        UNPACK_CONTEXT *pOldContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+        if (!m_setUnpackContexts.contains(pOldContext) || (pOldContext->pOwnerState != pState)) return false;
+        m_setUnpackContexts.remove(pOldContext);
+        pState->pContext = nullptr;
+        const bool bFinishOK = _deleteUnpackContext(pOldContext, nullptr);
+        *pState = UNPACK_STATE();
+        if (!guardedThis || !bFinishOK) return false;
+    }
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
+    QPointer<QIODevice> guardedSource(getDevice());
+    if (!guardedSource) return false;
+    QScopedPointer<XArchive> initialSourceValidator(new XArchive(guardedSource.data()));
+    UNPACK_STATE initialSourceState = {};
+    if (!initialSourceValidator->bindUnpackSource(&initialSourceState, pPdStruct) || !guardedThis || !guardedSource) return false;
+    XAdvancedInstaller detector(guardedSource.data(), isImage(), getModuleAddress());
+    const qint64 nTotalSize = guardedSource->size();
+    if (!guardedThis || !guardedSource || (nTotalSize < 0)) return false;
+
     pState->nCurrentOffset = 0;
-    pState->nTotalSize = getSize();
+    pState->nTotalSize = nTotalSize;
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = 0;
     pState->pContext = nullptr;
     pState->mapUnpackProperties = mapProperties;
     pState->mapArchiveProperties.clear();
 
-    INTERNAL_INFO info = _detect(pPdStruct);
-    if (!info.bIsValid) return false;
+    INTERNAL_INFO info = detector._detect(pPdStruct);
+    if (!guardedThis || !guardedSource || !info.bIsValid ||
+        !initialSourceValidator->isUnpackSourceCurrent(&initialSourceState, pPdStruct) || !guardedThis || !guardedSource) return false;
 
     if (info.subType == SUBTYPE_MSI) {
-        return _initMSIDelegate(pState, getDevice(), nullptr, QMap<QString, QByteArray>(), mapProperties, pPdStruct);
+        if (!initialSourceValidator->isUnpackSourceCurrent(&initialSourceState, pPdStruct) || !guardedThis || !guardedSource) return false;
+        return _initMSIDelegate(pState, guardedSource.data(), nullptr, initialSourceValidator.take(), &initialSourceState,
+                                QMap<QString, QByteArray>(), mapProperties, pPdStruct);
     }
     if (info.subType != SUBTYPE_EXE) return false;
 
-    EXE_FOOTER footer = _readExeFooter(pPdStruct);
+    EXE_FOOTER footer = detector._readExeFooter(pPdStruct);
+    if (!guardedThis || !guardedSource) return false;
     QList<EXE_FILE> listFiles;
     qint64 nMetadataEnd = 0;
-    if (!footer.bIsValid || !_validateExeFooter(footer, &listFiles, &nMetadataEnd, pPdStruct)) return false;
+    if (!footer.bIsValid || !detector._validateExeFooter(footer, &listFiles, &nMetadataEnd, pPdStruct) || !guardedThis || !guardedSource) return false;
 
     if (footer.nMode == 1) {
         if ((listFiles.size() != 1) || !listFiles.first().sName.endsWith(QStringLiteral(".ini"), Qt::CaseInsensitive) ||
             (listFiles.first().nXorFlag != 0)) {
             return false;
         }
-        QString sExternalMSIName = _readExternalMSIName(footer, nMetadataEnd, pPdStruct);
-        QIODevice *pExternalMSI = _openExternalMSI(sExternalMSIName);
-        if (!pExternalMSI) return false;
+        QString sExternalMSIName = detector._readExternalMSIName(footer, nMetadataEnd, pPdStruct);
+        if (!guardedThis || !guardedSource) return false;
+        QIODevice *pExternalMSI = detector._openExternalMSI(sExternalMSIName);
+        if (!guardedThis || !pExternalMSI) {
+            delete pExternalMSI;
+            return false;
+        }
 
         XAdvancedInstaller externalInstaller(pExternalMSI);
-        INTERNAL_INFO externalInfo = *static_cast<INTERNAL_INFO *>(externalInstaller.getInternalInfo(pPdStruct));
-        if (!externalInfo.bIsValid || (externalInfo.subType != SUBTYPE_MSI)) {
+        const INTERNAL_INFO *pExternalInfo =
+            static_cast<const INTERNAL_INFO *>(
+                externalInstaller.getInternalInfo(pPdStruct));
+        if (!guardedThis || !pExternalInfo) {
+            pExternalMSI->close();
+            delete pExternalMSI;
+            return false;
+        }
+        const INTERNAL_INFO externalInfo = *pExternalInfo;
+        if (!guardedThis || !externalInfo.bIsValid || (externalInfo.subType != SUBTYPE_MSI)) {
             pExternalMSI->close();
             delete pExternalMSI;
             return false;
         }
 
-        return _initMSIDelegate(pState, pExternalMSI, pExternalMSI, QMap<QString, QByteArray>(), mapProperties, pPdStruct);
+        if (!initialSourceValidator->isUnpackSourceCurrent(&initialSourceState, pPdStruct) || !guardedThis || !guardedSource) {
+            pExternalMSI->close();
+            delete pExternalMSI;
+            return false;
+        }
+
+        return _initMSIDelegate(pState, pExternalMSI, pExternalMSI, initialSourceValidator.take(), &initialSourceState,
+                                QMap<QString, QByteArray>(), mapProperties, pPdStruct);
     }
 
     QByteArray baMSI;
@@ -661,13 +843,13 @@ bool XAdvancedInstaller::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP
 
         if (file.sName.endsWith(QStringLiteral(".msi"), Qt::CaseInsensitive) && baMSI.isEmpty()) {
             if ((++nMSIRecords != 1) || (file.nXorFlag != 2)) return false;
-            baMSI = _readExeFile(file, pPdStruct);
-            if (baMSI.isEmpty()) return false;
+            baMSI = detector._readExeFile(file, pPdStruct);
+            if (!guardedThis || !guardedSource || baMSI.isEmpty()) return false;
         } else if (file.sName.endsWith(QStringLiteral(".cab"), Qt::CaseInsensitive)) {
             if (file.nXorFlag != 2) return false;
             QString sCabinetName = QFileInfo(file.sName).fileName();
             bool bDuplicate = false;
-            for (auto it = mapExternalCabinets.constBegin(); it != mapExternalCabinets.constEnd(); ++it) {
+            for (QMap<QString, QByteArray>::const_iterator it = mapExternalCabinets.constBegin(); it != mapExternalCabinets.constEnd(); ++it) {
                 if (it.key().compare(sCabinetName, Qt::CaseInsensitive) == 0) {
                     bDuplicate = true;
                     break;
@@ -677,8 +859,8 @@ bool XAdvancedInstaller::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP
                 sCabinetName.contains('\\') || sCabinetName.contains(':') || bDuplicate) {
                 return false;
             }
-            QByteArray baCabinet = _readExeFile(file, pPdStruct);
-            if (baCabinet.isEmpty()) return false;
+            QByteArray baCabinet = detector._readExeFile(file, pPdStruct);
+            if (!guardedThis || !guardedSource || baCabinet.isEmpty()) return false;
             mapExternalCabinets.insert(sCabinetName, baCabinet);
         } else if (file.sName.endsWith(QStringLiteral(".ini"), Qt::CaseInsensitive)) {
             if ((++nINIRecords != 1) || (file.nXorFlag != 0)) return false;
@@ -696,32 +878,79 @@ bool XAdvancedInstaller::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP
         return false;
     }
 
-    return _initMSIDelegate(pState, pMSIBuffer, pMSIBuffer, mapExternalCabinets, mapProperties, pPdStruct);
+    if (!initialSourceValidator->isUnpackSourceCurrent(&initialSourceState, pPdStruct) || !guardedThis || !guardedSource) {
+        pMSIBuffer->close();
+        delete pMSIBuffer;
+        return false;
+    }
+
+    return _initMSIDelegate(pState, pMSIBuffer, pMSIBuffer, initialSourceValidator.take(), &initialSourceState,
+                            mapExternalCabinets, mapProperties, pPdStruct);
 }
 
 XBinary::ARCHIVERECORD XAdvancedInstaller::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
     ARCHIVERECORD result = {};
-    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+    QSharedPointer<bool> pOperationState = m_pUnpackOperationState;
+    if (!pOperationState || *pOperationState) return result;
+    QScopedValueRollback<bool> operationGuard(*pOperationState, true);
+    QPointer<XAdvancedInstaller> guardedThis(this);
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
         (pState->nCurrentIndex >= pState->nNumberOfRecords)) return result;
 
-    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
-    if (!pContext->pMSI || !pContext->bInnerInitialized) return result;
+    UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
+        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) ||
+        !pContext->pMSI || !pContext->bInnerInitialized ||
+        (pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
+        (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
+        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords)) return result;
+    if (!pContext->pSourceValidator ||
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
+        !guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return result;
 
-    pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
-    return pContext->pMSI->infoCurrent(&pContext->innerState, pPdStruct);
+    result = pContext->pMSI->infoCurrent(&pContext->innerState, pPdStruct);
+    if (!guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return ARCHIVERECORD();
+    if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
+        !guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return ARCHIVERECORD();
+    return result;
 }
 
 bool XAdvancedInstaller::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
-    if (!pState || !pState->pContext || !pDevice || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+    QSharedPointer<bool> pOperationState = m_pUnpackOperationState;
+    if (!pOperationState || *pOperationState) return false;
+    QScopedValueRollback<bool> operationGuard(*pOperationState, true);
+    QPointer<XAdvancedInstaller> guardedThis(this);
+    QPointer<QIODevice> guardedOutput(pDevice);
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !guardedOutput || !guardedOutput->isOpen() ||
+        !guardedOutput->isWritable() || guardedOutput->isSequential() || !guardedThis || !guardedOutput ||
+        (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) ||
+        !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
         (pState->nCurrentIndex >= pState->nNumberOfRecords)) return false;
 
-    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
-    if (!pContext->pMSI || !pContext->bInnerInitialized) return false;
+    UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
+        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) ||
+        !pContext->pMSI || !pContext->bInnerInitialized ||
+        (pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
+        (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
+        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords)) return false;
+    if (XBinary::devicesAlias(pContext->pOuterSourceDevice.data(), guardedOutput.data()) || !guardedThis || !guardedOutput) return false;
+    if (!pContext->pSourceValidator ||
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
+        !guardedThis || !guardedOutput || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
 
-    pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
-    bool bResult = pContext->pMSI->unpackCurrent(&pContext->innerState, pDevice, pPdStruct);
+    bool bResult = pContext->pMSI->unpackCurrent(&pContext->innerState, guardedOutput.data(), pPdStruct);
+    if (!guardedThis || !guardedOutput || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
+    if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
+        !guardedThis || !guardedOutput || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) {
+        if (guardedOutput) {
+            XBinary::resize(guardedOutput.data(), 0);
+            if (guardedOutput) guardedOutput->seek(0);
+        }
+        return false;
+    }
     pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
     pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
     return bResult;
@@ -729,14 +958,28 @@ bool XAdvancedInstaller::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice,
 
 bool XAdvancedInstaller::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
-    if (!pState || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+    QSharedPointer<bool> pOperationState = m_pUnpackOperationState;
+    if (!pOperationState || *pOperationState) return false;
+    QScopedValueRollback<bool> operationGuard(*pOperationState, true);
+    QPointer<XAdvancedInstaller> guardedThis(this);
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
         (pState->nCurrentIndex >= pState->nNumberOfRecords)) return false;
 
-    UNPACK_CONTEXT *pContext = (UNPACK_CONTEXT *)pState->pContext;
-    if (!pContext->pMSI || !pContext->bInnerInitialized) return false;
+    UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
+        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) ||
+        !pContext->pMSI || !pContext->bInnerInitialized ||
+        (pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
+        (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
+        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords)) return false;
+    if (!pContext->pSourceValidator ||
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
+        !guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
 
-    pContext->innerState.nCurrentIndex = pState->nCurrentIndex;
     bool bResult = pContext->pMSI->moveToNext(&pContext->innerState, pPdStruct);
+    if (!guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
+    if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
+        !guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
     pState->nCurrentIndex = pContext->innerState.nCurrentIndex;
     pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
     pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;
@@ -746,11 +989,20 @@ bool XAdvancedInstaller::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 bool XAdvancedInstaller::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
+    if (!pState->baUnpackSourceToken.isEmpty()) return false;
+    QSharedPointer<bool> pOperationState = m_pUnpackOperationState;
+    if (!pOperationState || *pOperationState) return false;
+    QScopedValueRollback<bool> operationGuard(*pOperationState, true);
+    QPointer<XAdvancedInstaller> guardedThis(this);
 
     bool bResult = true;
     if (pState->pContext) {
-        bResult = _deleteUnpackContext((UNPACK_CONTEXT *)pState->pContext, pPdStruct);
+        UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
+        if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState)) return false;
+        m_setUnpackContexts.remove(pContext);
         pState->pContext = nullptr;
+        bResult = _deleteUnpackContext(pContext, pPdStruct);
+        if (!guardedThis) return false;
     }
 
     pState->nCurrentOffset = 0;
@@ -762,6 +1014,86 @@ bool XAdvancedInstaller::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     return bResult;
 }
 
+static QString aiNormalizeVersion(const QString &sText)
+{
+    QString sVersion;
+    for (QChar character : sText) {
+        if (character.isDigit() || (character == '.')) {
+            sVersion.append(character);
+        } else {
+            break;
+        }
+    }
+
+    QStringList listParts = sVersion.split('.', Qt::KeepEmptyParts);
+    bool bMajor = false;
+    bool bMinor = false;
+    if ((listParts.size() >= 2) && !listParts.at(0).isEmpty() && !listParts.at(1).isEmpty()) {
+        listParts.at(0).toUInt(&bMajor);
+        listParts.at(1).toUInt(&bMinor);
+    }
+    return (bMajor && bMinor) ? (listParts.at(0) + "." + listParts.at(1)) : QString();
+}
+
+// Read the version token after the "Advanced Installer " string (e.g. "23.9").
+static QString aiReadVersion(XAdvancedInstaller *pBinary, qint64 nSize, XBinary::PDSTRUCT *pPdStruct)
+{
+    QString sFallback;
+    qint64 nPos = pBinary->find_ansiString(0, nSize, "Advanced Installer ", pPdStruct);
+    if (nPos != -1) {
+        QString sTail = pBinary->read_ansiString(nPos + 19, 32).trimmed();  // after "Advanced Installer "
+        QString sVersion = aiNormalizeVersion(sTail);
+        if (!sVersion.isEmpty()) return sVersion;
+
+        for (QChar character : sTail) {
+            if (character.isDigit()) {
+                sFallback.append(character);
+            } else {
+                break;
+            }
+        }
+    }
+
+    // Version-100 bootstrappers and some MSI custom-action resources store
+    // the authoring version as a UTF-16 value near an "Advanced Installer"
+    // label.
+    qint64 nSearchOffset = 0;
+    const QString sUnicodeLabel = QStringLiteral("Advanced Installer");
+    while (nSearchOffset < nSize) {
+        nPos = pBinary->find_unicodeString(nSearchOffset, nSize - nSearchOffset, sUnicodeLabel, false, pPdStruct);
+        if (nPos == -1) break;
+
+        qint64 nScanStart = nPos + (qint64)sUnicodeLabel.size() * 2;
+        qint64 nScanEnd = qMin(nSize - 2, nScanStart + 256);
+        for (qint64 nCandidateOffset = nScanStart; nCandidateOffset <= nScanEnd; nCandidateOffset += 2) {
+            quint16 nCharacter = pBinary->read_uint16(nCandidateOffset, false);
+            quint16 nPrevious = (nCandidateOffset >= 2) ? pBinary->read_uint16(nCandidateOffset - 2, false) : 0;
+            if ((nCharacter < '0') || (nCharacter > '9') || ((nPrevious != 0) && !QChar(nPrevious).isSpace())) {
+                continue;
+            }
+
+            QString sCandidate;
+            qint64 nAfter = nCandidateOffset;
+            while ((nAfter <= nScanEnd) && (sCandidate.size() < 32)) {
+                quint16 nValue = pBinary->read_uint16(nAfter, false);
+                if (((nValue < '0') || (nValue > '9')) && (nValue != '.')) break;
+                sCandidate.append(QChar(nValue));
+                nAfter += 2;
+            }
+
+            quint16 nTerminator = (nAfter <= (nSize - 2)) ? pBinary->read_uint16(nAfter, false) : 0;
+            QString sVersion = aiNormalizeVersion(sCandidate);
+            if (!sVersion.isEmpty() && ((nTerminator == 0) || QChar(nTerminator).isSpace())) {
+                return sVersion;
+            }
+        }
+
+        nSearchOffset = nPos + 2;
+    }
+
+    return sFallback;
+}
+
 XAdvancedInstaller::INTERNAL_INFO XAdvancedInstaller::_detect(PDSTRUCT *pPdStruct)
 {
     INTERNAL_INFO result = {};
@@ -769,84 +1101,6 @@ XAdvancedInstaller::INTERNAL_INFO XAdvancedInstaller::_detect(PDSTRUCT *pPdStruc
 
     const qint64 nSize = getSize();
     if (nSize < 0x40) return result;
-
-    // Read the version token after the "Advanced Installer " string (e.g. "23.9").
-    auto readVersion = [&]() -> QString {
-        auto normalizeVersion = [](const QString &sText) -> QString {
-            QString sVersion;
-            for (QChar character : sText) {
-                if (character.isDigit() || (character == '.')) {
-                    sVersion.append(character);
-                } else {
-                    break;
-                }
-            }
-
-            QStringList listParts = sVersion.split('.', Qt::KeepEmptyParts);
-            bool bMajor = false;
-            bool bMinor = false;
-            if ((listParts.size() >= 2) && !listParts.at(0).isEmpty() && !listParts.at(1).isEmpty()) {
-                listParts.at(0).toUInt(&bMajor);
-                listParts.at(1).toUInt(&bMinor);
-            }
-            return (bMajor && bMinor) ? (listParts.at(0) + "." + listParts.at(1)) : QString();
-        };
-
-        QString sFallback;
-        qint64 nPos = find_ansiString(0, nSize, "Advanced Installer ", pPdStruct);
-        if (nPos != -1) {
-            QString sTail = read_ansiString(nPos + 19, 32).trimmed();  // after "Advanced Installer "
-            QString sVersion = normalizeVersion(sTail);
-            if (!sVersion.isEmpty()) return sVersion;
-
-            for (QChar character : sTail) {
-                if (character.isDigit()) {
-                    sFallback.append(character);
-                } else {
-                    break;
-                }
-            }
-        }
-
-        // Version-100 bootstrappers and some MSI custom-action resources store
-        // the authoring version as a UTF-16 value near an "Advanced Installer"
-        // label.
-        qint64 nSearchOffset = 0;
-        const QString sUnicodeLabel = QStringLiteral("Advanced Installer");
-        while (nSearchOffset < nSize) {
-            nPos = find_unicodeString(nSearchOffset, nSize - nSearchOffset, sUnicodeLabel, false, pPdStruct);
-            if (nPos == -1) break;
-
-            qint64 nScanStart = nPos + (qint64)sUnicodeLabel.size() * 2;
-            qint64 nScanEnd = qMin(nSize - 2, nScanStart + 256);
-            for (qint64 nCandidateOffset = nScanStart; nCandidateOffset <= nScanEnd; nCandidateOffset += 2) {
-                quint16 nCharacter = read_uint16(nCandidateOffset, false);
-                quint16 nPrevious = (nCandidateOffset >= 2) ? read_uint16(nCandidateOffset - 2, false) : 0;
-                if ((nCharacter < '0') || (nCharacter > '9') || ((nPrevious != 0) && !QChar(nPrevious).isSpace())) {
-                    continue;
-                }
-
-                QString sCandidate;
-                qint64 nAfter = nCandidateOffset;
-                while ((nAfter <= nScanEnd) && (sCandidate.size() < 32)) {
-                    quint16 nValue = read_uint16(nAfter, false);
-                    if (((nValue < '0') || (nValue > '9')) && (nValue != '.')) break;
-                    sCandidate.append(QChar(nValue));
-                    nAfter += 2;
-                }
-
-                quint16 nTerminator = (nAfter <= (nSize - 2)) ? read_uint16(nAfter, false) : 0;
-                QString sVersion = normalizeVersion(sCandidate);
-                if (!sVersion.isEmpty() && ((nTerminator == 0) || QChar(nTerminator).isSpace())) {
-                    return sVersion;
-                }
-            }
-
-            nSearchOffset = nPos + 2;
-        }
-
-        return sFallback;
-    };
 
     // EXE bootstrapper: validated version-100 "ADVINSTSFX" footer.
     EXE_FOOTER footer = _readExeFooter(pPdStruct);
@@ -856,7 +1110,7 @@ XAdvancedInstaller::INTERNAL_INFO XAdvancedInstaller::_detect(PDSTRUCT *pPdStruc
 
         result.bIsValid = true;
         result.subType = SUBTYPE_EXE;
-        result.sVersion = readVersion();
+        result.sVersion = aiReadVersion(this, nSize, pPdStruct);
         return result;
     }
 
@@ -866,7 +1120,7 @@ XAdvancedInstaller::INTERNAL_INFO XAdvancedInstaller::_detect(PDSTRUCT *pPdStruc
         if (bAI) {
             result.bIsValid = true;
             result.subType = SUBTYPE_MSI;
-            result.sVersion = readVersion();
+            result.sVersion = aiReadVersion(this, nSize, pPdStruct);
             return result;
         }
     }
