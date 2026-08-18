@@ -145,7 +145,13 @@ void XIExpress::setInternalInfo(void *pInternalInfo)
 
 XBinary::FT XIExpress::getFileType()
 {
-    return FT_ARCHIVE;
+    XPE pe(getDevice());
+
+    if (pe.isValid() && pe.is64()) {
+        return FT_PE64_IEXPRESS;
+    }
+
+    return FT_PE32_IEXPRESS;
 }
 
 static bool iexFindStubString(XIExpress *pThis, qint64 nCabinetOffset, qint64 nCabinetEnd, qint64 nTotalSize, XBinary::PDSTRUCT *pPdStruct,

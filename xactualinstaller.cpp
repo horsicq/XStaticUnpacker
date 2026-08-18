@@ -181,7 +181,13 @@ void XActualInstaller::setInternalInfo(void *pInternalInfo)
 
 XBinary::FT XActualInstaller::getFileType()
 {
-    return FT_ARCHIVE;
+    XPE pe(getDevice());
+
+    if (pe.isValid() && pe.is64()) {
+        return FT_PE64_ACTUALINSTALLER;
+    }
+
+    return FT_PE32_ACTUALINSTALLER;
 }
 
 static bool actualLocalRangeLessThan(const QPair<qint64, qint64> &a, const QPair<qint64, qint64> &b)

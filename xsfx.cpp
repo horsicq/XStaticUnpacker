@@ -9,6 +9,7 @@
 
 #include "subdevice.h"
 #include "xmsdos.h"
+#include "xpe.h"
 #include "../XArchive/xsevenzip.h"
 #include "../XArchive/xrar.h"
 #include "../XArchive/xcab.h"
@@ -144,7 +145,13 @@ void XSFX::setInternalInfo(void *pInternalInfo)
 
 XBinary::FT XSFX::getFileType()
 {
-    return FT_ARCHIVE;
+    XPE pe(getDevice());
+
+    if (pe.isValid() && pe.is64()) {
+        return FT_PE64_SFX;
+    }
+
+    return FT_PE32_SFX;
 }
 
 QString XSFX::getArch()

@@ -142,7 +142,13 @@ void XWinRarSfx::setInternalInfo(void *pInternalInfo)
 
 XBinary::FT XWinRarSfx::getFileType()
 {
-    return FT_ARCHIVE;
+    XPE pe(getDevice());
+
+    if (pe.isValid() && pe.is64()) {
+        return FT_PE64_WINRARSFX;
+    }
+
+    return FT_PE32_WINRARSFX;
 }
 
 XWinRarSfx::INTERNAL_INFO XWinRarSfx::_detect(PDSTRUCT *pPdStruct)

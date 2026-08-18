@@ -10,6 +10,7 @@
 #include "Algos/xucldecoder.h"
 #include "Algos/xalgo_local.h"
 #include "xmach.h"
+#include "xpe.h"
 
 #include <algorithm>
 #include <QBuffer>
@@ -190,7 +191,29 @@ static bool applyPEFilter(unsigned char *pData, qint64 nDataSize, quint8 nFilter
         return true;
     }
 
-    if (nFilter == 0x14) {
+    // 16-bit calltrick, filter/ct.h CT16().  PackCom::getFilters() offers
+    // {0x06,0x03,0x04,0x01,0x05,0x02} and picks whichever compresses best, so a
+    // dos/com file with any calls at all normally lands here; without these the
+    // whole dos/com branch bails out on real programs.
+    //
+    // CT16 walks b over [buf, buf+len-3), and on a match does b += 1 before
+    // taking a = b - buf, so a is the offset of the *operand*, ie. index + 1.
+    // Unfilter is `set(b, get(b) + (0 - a - addvalue))`; the _bswap_le variants
+    // read big-endian and write little-endian, exactly like the 32-bit cases
+    // below.  addvalue is PackCom::getCallTrickOffset() == 0x100.
+    if ((nFilter >= 0x01) && (nFilter <= 0x06)) {
+        const bool bMatchE8 = (nFilter == 0x01) || (nFilter == 0x03) || (nFilter == 0x04) || (nFilter == 0x06);
+        const bool bMatchE9 = (nFilter == 0x02) || (nFilter == 0x03) || (nFilter == 0x05) || (nFilter == 0x06);
+        const bool bBigEndianSource = (nFilter >= 0x04);
+
+        for (qint64 i = 0; i < (nDataSize - 3); i++) {
+            if ((bMatchE8 && (pData[i] == 0xe8)) || (bMatchE9 && (pData[i] == 0xe9))) {
+                quint16 nJC = XBinary::_read_uint16((char *)pData + i + 1, bBigEndianSource);
+                XBinary::_write_uint16((char *)pData + i + 1, (quint16)(nJC - (quint32)(i + 1) - nAddValue));
+                i += 2;
+            }
+        }
+    } else if (nFilter == 0x14) {
         for (qint64 i = 0; i < (nDataSize - 5); i++) {
             if (pData[i] == 0xe8) {
                 quint32 nJC = XBinary::_read_uint32((char *)pData + i + 1, true);
@@ -890,6 +913,18 @@ void XUPX::setInternalInfo(void *pInternalInfo)
 
 XBinary::FT XUPX::getFileType()
 {
+    // UPX packs PE/ELF/Mach/DOS; only the PE variants have dedicated file
+    // types. Non-PE UPX keeps the generic FT_UPX.
+    XPE pe(getDevice());
+
+    if (pe.isValid()) {
+        if (pe.is64()) {
+            return FT_PE64_UPX;
+        }
+
+        return FT_PE32_UPX;
+    }
+
     return XBinary::FT_UPX;
 }
 
@@ -1181,6 +1216,20 @@ bool XUPX::_unpackToFile(QIODevice *pDevice, PDSTRUCT *pPdStruct)
             bResult = _unpackMach(pDevice, info, pPdStruct);
         } else if (_isDOSFileType(info.fileType) || _isDOSFormat(info.format)) {
             bResult = _unpackDOS(pDevice, info, pPdStruct);
+        }
+    }
+
+    // u_file_size is the size of the file that was fed to upx.  It is the same
+    // number infoCurrent() advertises as FPART_PROP_UNCOMPRESSEDSIZE, so writing a
+    // different number of bytes means the container rebuild lost (or invented)
+    // something - a truncated header, a dropped overlay, stray padding.  That used
+    // to pass silently; report it instead of handing back a file that does not
+    // match what this very class promised.
+    if (bResult && info.u_file_size && pDevice && (!pDevice->isSequential())) {
+        const qint64 nWritten = pDevice->size();
+
+        if (nWritten != (qint64)info.u_file_size) {
+            _errorMessage(QString("UPX: rebuilt file size %1 does not match the recorded original size %2").arg(nWritten).arg(info.u_file_size), pPdStruct);
         }
     }
 
@@ -2084,11 +2133,21 @@ bool XUPX::_unpackPE(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *pP
         }
     }
 
+    // The original IMAGE_NT_HEADERS are stored verbatim in the packed stream (see
+    // the ih32/ih64 read from pExtraInfo above), so every field the packer did not
+    // deliberately destroy is already correct here.  Only clear the two directories
+    // whose *payload* the packer really did throw away:
+    //   DEBUG        - upx overwrites the debug data with zeros (PeFile::stripDebug),
+    //                  so keeping the pointer would advertise a blob of zeros.
+    //   BOUND_IMPORT - invalidated by the import rewrite; it is never rebuilt.
+    // IAT and CheckSum used to be cleared here as well.  That mirrored upx's own
+    // unpacker, but it discarded information that survived packing: the IAT
+    // directory simply describes the FirstThunk arrays that rebuildImports() has
+    // just restored, and CheckSum is the untouched original value.  Zeroing them
+    // cost 3-4 bytes of fidelity per file for no benefit.
     XPE_DEF::IMAGE_DATA_DIRECTORY idd = {};
     peNew.setOptionalHeader_DataDirectory(XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_DEBUG, &idd);
-    peNew.setOptionalHeader_DataDirectory(XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_IAT, &idd);
     peNew.setOptionalHeader_DataDirectory(XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT, &idd);
-    peNew.setOptionalHeader_CheckSum(0);
 
     if (pe.isOverlayPresent(pPdStruct)) {
         const qint64 nOverlayOffset = pe.getOverlayOffset(pPdStruct);
@@ -2962,13 +3021,25 @@ bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
         }
 
         quint16 nRelocSize = XBinary::_read_uint16((char *)baUnpacked.data() + nPayloadSize - 2, false);
+
+        // The packer stores u_len = image_size + relocsize (p_exe.cpp:421), and
+        // relocsize counts its own trailing size field (p_exe.cpp:406-407).  So
+        // the relocation blob starts at the *original* u_len minus relocsize -
+        // which is why p_exe.cpp:612 captures relocstart before the u_len -= 2,
+        // and subtracts relocsize from that rather than from the decremented
+        // value.  Anchor on the original length here for the same reason.
+        const quint32 nRelocEnd = nPayloadSize;
         nPayloadSize -= 2;
 
         if ((nRelocSize < 11) || (nRelocSize > 0x6000) || (nRelocSize >= nImageTail) || (nRelocSize > nPayloadSize)) {
             return _runUPXDecompress(pDevice, pPdStruct);
         }
 
-        const quint32 nRelocStart = nPayloadSize - nRelocSize;
+        // nRelocSize <= nPayloadSize keeps this at 2 or above, and nRelocSize >= 11
+        // leaves room for the 4 byte ones/seg_high header below.  nPayloadSize
+        // stays the end of the relocation stream, ie. the size field is excluded,
+        // and bounds the decode loop.
+        const quint32 nRelocStart = nRelocEnd - nRelocSize;
         quint16 nOnes = XBinary::_read_uint16((char *)baUnpacked.data() + nRelocStart, false);
         quint16 nSegHigh = XBinary::_read_uint16((char *)baUnpacked.data() + nRelocStart + 2, false);
         quint32 nCursor = nRelocStart + 4;
@@ -3029,6 +3100,12 @@ bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
                 nCursor++;
             }
         }
+
+        // The load image ends where the relocation blob begins: upx writes
+        // ptr_udiff_bytes(relocstart, obuf) bytes of image and sizes the output
+        // header from the same value (p_exe.cpp:668, 708).  Without this the
+        // whole optimized relocation blob would be appended as trailing garbage.
+        nPayloadSize = nRelocStart;
     }
 
     XMSDOS_DEF::EXE_file oh = {};
@@ -3047,10 +3124,36 @@ bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
         nRelocTableSize = baRelocs.size();
     }
 
-    quint32 nOutputLen = sizeof(XMSDOS_DEF::EXE_file) + nRelocTableSize + nPayloadSize;
+    // Header size.  upx itself always emits the minimum header (2 paragraphs plus
+    // the relocation table), which loses any padding the original linker reserved.
+    // The original *file* size is not lost though: upx records it in the pack
+    // header as u_file_size (p_filesize).  Everything after the header - the load
+    // image and the overlay - is reproduced byte for byte, so the size of the
+    // original header follows by subtraction.  Only accept the result when it is
+    // self-consistent (paragraph aligned and at least as large as the header we
+    // have to write anyway); otherwise fall back to upx's minimum layout.
+    const quint32 nMinHeaderSize = sizeof(XMSDOS_DEF::EXE_file) + nRelocTableSize;
+    const quint64 nOverlaySize = ((quint64)getSize() > nExeSize) ? ((quint64)getSize() - nExeSize) : 0;
+    quint32 nOutHeaderSize = nMinHeaderSize;
+
+    if (info.u_file_size) {
+        const quint64 nBodySize = (quint64)nPayloadSize + nOverlaySize;
+
+        if ((quint64)info.u_file_size >= nBodySize) {
+            const quint64 nCandidate = (quint64)info.u_file_size - nBodySize;
+
+            if ((nCandidate >= nMinHeaderSize) && (nCandidate <= 0xffffULL * 16) && ((nCandidate % 16) == 0)) {
+                nOutHeaderSize = (quint32)nCandidate;
+            }
+        }
+    }
+
+    const quint32 nHeaderPadding = nOutHeaderSize - nMinHeaderSize;
+
+    quint32 nOutputLen = nOutHeaderSize + nPayloadSize;
     oh.exe_len_mod_512 = nOutputLen & 0x1ff;
     oh.exe_pages = (nOutputLen + 0x1ff) >> 9;
-    oh.exe_par_dir = 2 + (nRelocNum / 4);
+    oh.exe_par_dir = (quint16)(nOutHeaderSize / 16);
     oh.exe_max_BSS = ih.exe_max_BSS;
     oh.exe_min_BSS = ih.exe_min_BSS;
     oh.exe_SP = ih.exe_SP;
@@ -3104,7 +3207,17 @@ bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
 
     oh.exe_IP = nIP & 0xffff;
     oh.exe_CS = (nIP >> 16) & 0xffff;
-    oh.exe_rle_table = sizeof(XMSDOS_DEF::EXE_file);
+    // The relocation table is written directly behind the 32-byte MZ header, so
+    // that is where e_lfarlc has to point whenever there is one.  With no
+    // relocations the field is a don't-care for the loader and its original value
+    // is not recorded anywhere in the packed stream; point it at the end of the
+    // reconstructed header, which is the usual linker convention for e_crlc == 0
+    // and degenerates to the old sizeof(EXE_file) whenever no padding was recovered.
+    if (nRelocNum || (nOutHeaderSize > 0xffff)) {
+        oh.exe_rle_table = sizeof(XMSDOS_DEF::EXE_file);
+    } else {
+        oh.exe_rle_table = (quint16)nOutHeaderSize;
+    }
     oh.exe_iov = 0;
     oh.exe_sym_tab = 0;
 
@@ -3114,6 +3227,10 @@ bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
 
     if (!baRelocs.isEmpty()) {
         baResult.append(baRelocs);
+    }
+
+    if (nHeaderPadding) {
+        baResult.append(QByteArray(nHeaderPadding, 0));
     }
 
     baResult.append(baUnpacked.constData(), nPayloadSize);

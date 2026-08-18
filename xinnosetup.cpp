@@ -5,6 +5,7 @@
 
 #include "xinnosetup.h"
 
+#include "xpe.h"
 #include "xstoredecoder.h"
 #include "xlzmadecoder.h"
 
@@ -107,6 +108,17 @@ QString XInnoSetup::structIDToFtString(quint32 nID)
 quint32 XInnoSetup::ftStringToStructID(const QString &sFtString)
 {
     return XCONVERT_ftStringToId(sFtString, _TABLE_XINNOSETUP_STRUCTID, sizeof(_TABLE_XINNOSETUP_STRUCTID) / sizeof(XBinary::XCONVERT));
+}
+
+XBinary::FT XInnoSetup::getFileType()
+{
+    XPE pe(getDevice());
+
+    if (pe.isValid() && pe.is64()) {
+        return FT_PE64_INNOSETUP;
+    }
+
+    return FT_PE32_INNOSETUP;
 }
 
 bool XInnoSetup::isValid(PDSTRUCT *pPdStruct)

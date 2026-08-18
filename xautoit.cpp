@@ -5,6 +5,7 @@
 
 #include "xautoit.h"
 #include "xmaterializedunpackguard.h"
+#include "xpe.h"
 
 #include <QScopedPointer>
 #include <QScopedValueRollback>
@@ -111,7 +112,13 @@ bool XAUTOIT::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 
 XBinary::FT XAUTOIT::getFileType()
 {
-    return FT_ARCHIVE;
+    XPE pe(getDevice());
+
+    if (pe.isValid() && pe.is64()) {
+        return FT_PE64_AUTOIT;
+    }
+
+    return FT_PE32_AUTOIT;
 }
 
 // ---------------------------------------------------------------------------

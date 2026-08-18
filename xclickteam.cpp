@@ -156,7 +156,13 @@ void XClickteam::setInternalInfo(void *pInternalInfo)
 
 XBinary::FT XClickteam::getFileType()
 {
-    return FT_ARCHIVE;
+    XPE pe(getDevice());
+
+    if (pe.isValid() && pe.is64()) {
+        return FT_PE64_CLICKTEAM;
+    }
+
+    return FT_PE32_CLICKTEAM;
 }
 
 static inline quint32 ctRd32(const quint8 *p);

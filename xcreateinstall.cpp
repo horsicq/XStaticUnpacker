@@ -164,7 +164,13 @@ void XCreateInstall::setInternalInfo(void *pInternalInfo)
 
 XBinary::FT XCreateInstall::getFileType()
 {
-    return FT_ARCHIVE;
+    XPE pe(getDevice());
+
+    if (pe.isValid() && pe.is64()) {
+        return FT_PE64_CREATEINSTALL;
+    }
+
+    return FT_PE32_CREATEINSTALL;
 }
 
 static inline quint32 ciRd32(const quint8 *p)

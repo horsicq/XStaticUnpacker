@@ -190,7 +190,13 @@ void X7ZSFX::setInternalInfo(void *pInternalInfo)
 
 XBinary::FT X7ZSFX::getFileType()
 {
-    return FT_ARCHIVE;
+    XPE pe(getDevice());
+
+    if (pe.isValid() && pe.is64()) {
+        return FT_PE64_7ZSFX;
+    }
+
+    return FT_PE32_7ZSFX;
 }
 
 X7ZSFX::INTERNAL_INFO X7ZSFX::_detect(PDSTRUCT *pPdStruct)

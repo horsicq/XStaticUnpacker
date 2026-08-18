@@ -182,7 +182,13 @@ void XSmartInstall::setInternalInfo(void *pInternalInfo)
 
 XBinary::FT XSmartInstall::getFileType()
 {
-    return FT_ARCHIVE;
+    XPE pe(getDevice());
+
+    if (pe.isValid() && pe.is64()) {
+        return FT_PE64_SMARTINSTALL;
+    }
+
+    return FT_PE32_SMARTINSTALL;
 }
 
 static inline quint32 siRd32(const quint8 *p)

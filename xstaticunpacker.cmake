@@ -1,5 +1,10 @@
 include_directories(${CMAKE_CURRENT_LIST_DIR})
 
+# Signals to lower layers (e.g. XFormats) that the XStaticUnpacker classes are
+# compiled into this target, so they may reference them (packer/installer
+# FT_PE32_*/FT_CFBF_* handle-method file types).
+add_definitions(-DUSE_STATICUNPACKER)
+
 if (WITH_XEMULATOR)
     add_definitions(-DUSE_XEMULATOR)
 

@@ -16,6 +16,7 @@
 
 #include "xnsis.h"
 
+#include "xpe.h"
 #include "../XArchive/xarchive.h"
 
 #include <QByteArray>
@@ -266,6 +267,17 @@ QString XNSIS::structIDToFtString(quint32 nID)
 quint32 XNSIS::ftStringToStructID(const QString &sFtString)
 {
     return XCONVERT_ftStringToId(sFtString, _TABLE_XNSIS_STRUCTID, sizeof(_TABLE_XNSIS_STRUCTID) / sizeof(XBinary::XCONVERT));
+}
+
+XBinary::FT XNSIS::getFileType()
+{
+    XPE pe(getDevice());
+
+    if (pe.isValid() && pe.is64()) {
+        return FT_PE64_NSIS;
+    }
+
+    return FT_PE32_NSIS;
 }
 
 bool XNSIS::isValid(PDSTRUCT *pPdStruct)

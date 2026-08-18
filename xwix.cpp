@@ -406,7 +406,7 @@ void XWiX::setInternalInfo(void *pInternalInfo)
 
 XBinary::FT XWiX::getFileType()
 {
-    return FT_ARCHIVE;
+    return FT_CFBF_WIX;
 }
 
 XWiX::INTERNAL_INFO XWiX::_detect(PDSTRUCT *pPdStruct)

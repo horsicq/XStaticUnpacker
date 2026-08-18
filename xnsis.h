@@ -125,6 +125,7 @@ public:
     ~XNSIS() override;
 
     bool isValid(PDSTRUCT *pPdStruct = nullptr) override;
+    virtual FT getFileType() override;
     virtual bool handleInternalInfo(PDSTRUCT *pPdStruct) override;
     virtual void *getInternalInfo(PDSTRUCT *pPdStruct = nullptr) override;
     virtual void setInternalInfo(void *pInternalInfo) override;

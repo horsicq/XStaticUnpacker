@@ -132,7 +132,7 @@ bool XPETITE::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 
 XBinary::FT XPETITE::getFileType()
 {
-    return FT_BINARY;
+    return FT_PE32_PETITE;
 }
 
 QString XPETITE::getVersion()

@@ -457,7 +457,13 @@ void XInstallSimple::setInternalInfo(void *pInternalInfo)
 
 XBinary::FT XInstallSimple::getFileType()
 {
-    return FT_ARCHIVE;
+    XPE pe(getDevice());
+
+    if (pe.isValid() && pe.is64()) {
+        return FT_PE64_INSTALLSIMPLE;
+    }
+
+    return FT_PE32_INSTALLSIMPLE;
 }
 
 XInstallSimple::INTERNAL_INFO XInstallSimple::_detect(PDSTRUCT *pPdStruct)

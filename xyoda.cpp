@@ -81,7 +81,7 @@ bool XYODA::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 
 XBinary::FT XYODA::getFileType()
 {
-    return FT_BINARY;
+    return FT_PE32_YODA;
 }
 
 QString XYODA::getVersion()

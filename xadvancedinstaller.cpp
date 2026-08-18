@@ -220,7 +220,13 @@ void XAdvancedInstaller::setInternalInfo(void *pInternalInfo)
 
 XBinary::FT XAdvancedInstaller::getFileType()
 {
-    return FT_ARCHIVE;
+    XPE pe(getDevice());
+
+    if (pe.isValid() && pe.is64()) {
+        return FT_PE64_ADVANCEDINSTALLER;
+    }
+
+    return FT_PE32_ADVANCEDINSTALLER;
 }
 
 static quint32 aiReadFooter32(const QByteArray &baFooter, qint32 nOffset)

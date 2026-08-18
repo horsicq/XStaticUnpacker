@@ -98,7 +98,7 @@ bool XFSG::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 
 XBinary::FT XFSG::getFileType()
 {
-    return FT_BINARY;
+    return FT_PE32_FSG;
 }
 
 QString XFSG::getVersion()

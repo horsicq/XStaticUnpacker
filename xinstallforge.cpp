@@ -314,7 +314,13 @@ void XInstallForge::setInternalInfo(void *pInternalInfo)
 
 XBinary::FT XInstallForge::getFileType()
 {
-    return FT_ARCHIVE;
+    XPE pe(getDevice());
+
+    if (pe.isValid() && pe.is64()) {
+        return FT_PE64_INSTALLFORGE;
+    }
+
+    return FT_PE32_INSTALLFORGE;
 }
 
 XInstallForge::INTERNAL_INFO XInstallForge::_detect(PDSTRUCT *pPdStruct)

@@ -76,7 +76,7 @@ bool XNSPACK::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 
 XBinary::FT XNSPACK::getFileType()
 {
-    return FT_BINARY;
+    return FT_PE32_NSPACK;
 }
 
 XNSPACK::INTERNAL_INFO XNSPACK::_getInternalInfo(PDSTRUCT *pPdStruct)

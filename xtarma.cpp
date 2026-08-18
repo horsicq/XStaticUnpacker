@@ -192,7 +192,13 @@ void XTarma::setInternalInfo(void *pInternalInfo)
 
 XBinary::FT XTarma::getFileType()
 {
-    return FT_ARCHIVE;
+    XPE pe(getDevice());
+
+    if (pe.isValid() && pe.is64()) {
+        return FT_PE64_TARMA;
+    }
+
+    return FT_PE32_TARMA;
 }
 
 // Match a PE section by exact name (8-byte COFF field, NUL-padded).

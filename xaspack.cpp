@@ -102,7 +102,7 @@ bool XASPACK::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 
 XBinary::FT XASPACK::getFileType()
 {
-    return FT_BINARY;
+    return FT_PE32_ASPACK;
 }
 
 QString XASPACK::getVersion()

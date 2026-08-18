@@ -164,7 +164,13 @@ void XEnigmaVB::setInternalInfo(void *pInternalInfo)
 
 XBinary::FT XEnigmaVB::getFileType()
 {
-    return FT_ARCHIVE;
+    XPE pe(getDevice());
+
+    if (pe.isValid() && pe.is64()) {
+        return FT_PE64_ENIGMAVB;
+    }
+
+    return FT_PE32_ENIGMAVB;
 }
 
 XEnigmaVB::INTERNAL_INFO XEnigmaVB::_detect(PDSTRUCT *pPdStruct)

@@ -78,7 +78,7 @@ bool XMEW::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 
 XBinary::FT XMEW::getFileType()
 {
-    return FT_BINARY;
+    return FT_PE32_MEW;
 }
 
 XMEW::INTERNAL_INFO XMEW::_getInternalInfo(PDSTRUCT *pPdStruct)

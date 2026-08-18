@@ -147,7 +147,13 @@ void XBoxedApp::setInternalInfo(void *pInternalInfo)
 
 XBinary::FT XBoxedApp::getFileType()
 {
-    return FT_ARCHIVE;
+    XPE pe(getDevice());
+
+    if (pe.isValid() && pe.is64()) {
+        return FT_PE64_BOXEDAPP;
+    }
+
+    return FT_PE32_BOXEDAPP;
 }
 
 static const qint64 BA_MAX_CONTAINER_SIZE = 512ll << 20;

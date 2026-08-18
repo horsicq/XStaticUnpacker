@@ -1828,7 +1828,7 @@ void XMSI::setInternalInfo(void *pInternalInfo)
 
 XBinary::FT XMSI::getFileType()
 {
-    return FT_ARCHIVE;
+    return FT_CFBF_MSI;
 }
 
 XMSI::INTERNAL_INFO XMSI::_detect(PDSTRUCT *pPdStruct)
