@@ -129,10 +129,17 @@ private:
     QByteArray _stripCRCChunks(const QByteArray &baData);
     QByteArray _decompressLZMA1(const QByteArray &baData);
     QList<DATA_ENTRY> _parseDataEntries(const QByteArray &baBlock2);
-    QList<FILE_ENTRY> _parseFileEntries(const QByteArray &baBlock1, qint32 nNumFiles);
+    // bUnicode selects UTF-16 WideString (Inno >= 5.3.0 Unicode builds, all 6.x) vs single-byte
+    // AnsiString (Inno < 5.3.0, e.g. 5.1.x) parsing of the setup-0 file-entry array.
+    QList<FILE_ENTRY> _parseFileEntries(const QByteArray &baBlock1, qint32 nNumFiles, bool bUnicode);
+    QList<FILE_ENTRY> _parseFileEntriesAnsi(const QByteArray &baBlock1, qint32 nNumFiles);
     bool _parseRealInnoSetup(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
     QByteArray _decompressDataChunk(qint64 nChunkOffset, qint64 nChunkCompressedSize, PDSTRUCT *pPdStruct);
     static QString _readWideString(const QByteArray &baData, qint32 nOffset, qint32 *pnNewOffset);
+    static QString _readAnsiString(const QByteArray &baData, qint32 nOffset, qint32 *pnNewOffset);
+    static QString _readSetupString(const QByteArray &baData, qint32 nOffset, qint32 *pnNewOffset, bool bUnicode);
+    // True when the 64-byte setup-0 version identifier marks a Unicode build ("... (u)").
+    static bool _isUnicodeVersionId(const QByteArray &baVersionId);
     QSharedPointer<UNPACK_LIFETIME_STATE> m_pUnpackLifetimeState;
 };
 

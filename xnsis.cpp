@@ -203,6 +203,31 @@ static QString nsisReducedName(const QString &sPrefix, bool bHasPrefix, const QS
     return s;
 }
 
+// The SetOutPath ($OUTDIR) directory a file is extracted to, reduced the same way as
+// nsisReducedName (strip a leading "$INSTDIR"/"$INSTDIR\", normalise separators). "$INSTDIR"
+// itself (the install root) reduces to an empty path.
+static QString nsisReducedPath(const QString &sPrefix, bool bHasPrefix)
+{
+    if (!bHasPrefix) {
+        return QString();
+    }
+
+    QString s = sPrefix;
+    const QString sRemove = "$INSTDIR\\";
+
+    if (s.startsWith(sRemove, Qt::CaseInsensitive)) {
+        s = s.mid(sRemove.length());
+        if (s.startsWith('\\')) {
+            s = s.mid(1);
+        }
+    } else if (s.compare(QString("$INSTDIR"), Qt::CaseInsensitive) == 0) {
+        s.clear();
+    }
+
+    s.replace('\\', '/');
+    return s;
+}
+
 static void *nsisSzAlloc(ISzAllocPtr, size_t nSize)
 {
     return malloc(nSize);
@@ -1370,6 +1395,7 @@ bool XNSIS::_readEntries(UNPACK_CONTEXT *pContext, quint32 nEntriesOffset, quint
                     bHasPrefix = true;
                 }
                 entry.sFileName = nsisReducedName(sPrefix, bHasPrefix, sName);
+                entry.sPath = nsisReducedPath(sPrefix, bHasPrefix);
                 entry.nPos = params[2];
                 entry.nMTimeLow = params[3];
                 entry.nMTimeHigh = params[4];
@@ -1391,6 +1417,7 @@ bool XNSIS::_readEntries(UNPACK_CONTEXT *pContext, quint32 nEntriesOffset, quint
                     bHasPrefix = true;
                 }
                 entry.sFileName = nsisReducedName(sPrefix, bHasPrefix, sName);
+                entry.sPath = nsisReducedPath(sPrefix, bHasPrefix);
                 entry.nPos = params[1];
                 entry.bIsUninstaller = true;
                 pContext->listEntries.append(entry);
@@ -1601,6 +1628,10 @@ XBinary::ARCHIVERECORD XNSIS::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStr
     result.nStreamSize = pContext->nDataSize;
 
     result.mapProperties[FPART_PROP_ORIGINALNAME] = entry.sFileName.isEmpty() ? QString("file_%1").arg(nIndex, 4, 10, QChar('0')) : entry.sFileName;
+    // Native SetOutPath directory (kept separate from the full name; surfaced only in advanced mode).
+    if (!entry.sPath.isEmpty()) {
+        result.mapProperties[FPART_PROP_OPTIONAL_PATH] = entry.sPath;
+    }
     result.mapProperties[FPART_PROP_UNCOMPRESSEDSIZE] = (qint64)(entry.bSizeDefined ? entry.nSize : 0);
     result.mapProperties[FPART_PROP_HANDLEMETHOD] = pContext->compressMethod;
     result.mapProperties[FPART_PROP_ISFOLDER] = false;

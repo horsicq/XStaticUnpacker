@@ -967,6 +967,89 @@ QString XInnoSetup::_readWideString(const QByteArray &baData, qint32 nOffset, qi
     return sResult;
 }
 
+QString XInnoSetup::_readAnsiString(const QByteArray &baData, qint32 nOffset, qint32 *pnNewOffset)
+{
+    // Delphi AnsiString format (Inno < 5.3.0): uint32 length_in_bytes, then single-byte chars.
+    if (nOffset + 4 > baData.size()) {
+        if (pnNewOffset) {
+            *pnNewOffset = nOffset;
+        }
+
+        return QString();
+    }
+
+    quint32 nByteLen = qFromLittleEndian<quint32>((const uchar *)(baData.constData() + nOffset));
+
+    if (nByteLen == 0) {
+        if (pnNewOffset) {
+            *pnNewOffset = nOffset + 4;
+        }
+
+        return QString();
+    }
+
+    if ((nByteLen > 0x1000000) || (nOffset + 4 + (qint32)nByteLen > baData.size())) {
+        if (pnNewOffset) {
+            *pnNewOffset = nOffset;
+        }
+
+        return QString();
+    }
+
+    // Filenames are effectively ASCII; Latin-1 is a lossless byte->codepoint mapping that is a
+    // safe approximation of the installer's ANSI code page for path listing purposes.
+    QString sResult = QString::fromLatin1(baData.constData() + nOffset + 4, (qint32)nByteLen);
+
+    if (pnNewOffset) {
+        *pnNewOffset = nOffset + 4 + nByteLen;
+    }
+
+    return sResult;
+}
+
+QString XInnoSetup::_readSetupString(const QByteArray &baData, qint32 nOffset, qint32 *pnNewOffset, bool bUnicode)
+{
+    if (bUnicode) {
+        return _readWideString(baData, nOffset, pnNewOffset);
+    }
+
+    return _readAnsiString(baData, nOffset, pnNewOffset);
+}
+
+bool XInnoSetup::_isUnicodeVersionId(const QByteArray &baVersionId)
+{
+    // The 64-byte identifier is null-padded; view only up to the first null.
+    QString sId = QString::fromLatin1(baVersionId.constData(), qMin(64, baVersionId.size()));
+
+    qint32 nNul = sId.indexOf(QChar('\0'));
+    if (nNul >= 0) {
+        sId = sId.left(nNul);
+    }
+    sId = sId.trimmed();
+
+    // Unicode builds (Inno >= 5.3.0 Unicode variant) append " (u)", e.g.
+    // "Inno Setup Setup Data (5.5.0) (u)". ANSI builds (all < 5.3.0) do not.
+    if (sId.endsWith(QString("(u)"))) {
+        return true;
+    }
+
+    // Inno Setup 6.x is Unicode-only; from ~6.4 the "(u)" marker was dropped, so a bare
+    // "(6.x.y)" identifier is still Unicode. Parse the major version from "(X.Y.Z)".
+    qint32 nOpen = sId.indexOf(QChar('('));
+    qint32 nDot = (nOpen >= 0) ? sId.indexOf(QChar('.'), nOpen) : -1;
+
+    if ((nOpen >= 0) && (nDot > nOpen + 1)) {
+        bool bOk = false;
+        qint32 nMajor = sId.mid(nOpen + 1, nDot - nOpen - 1).toInt(&bOk);
+
+        if (bOk && (nMajor >= 6)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 QList<XInnoSetup::DATA_ENTRY> XInnoSetup::_parseDataEntries(const QByteArray &baBlock2)
 {
     QList<DATA_ENTRY> listResult;
@@ -977,12 +1060,16 @@ QList<XInnoSetup::DATA_ENTRY> XInnoSetup::_parseDataEntries(const QByteArray &ba
     //   [20-27] int64 OriginalSize
     //   [28-35] int64 ChunkCompressedSize
     //   [36-67] SHA-256 hash (32 bytes)
+    // The 32-byte hash slot [36-67] holds SHA-256 (Inno >= 5.3.9/6.x). Older releases store a
+    // shorter digest, shrinking the entry: Inno 4.2.0..5.3.8 uses MD5 (16 bytes) -> entry 69 bytes
+    // ([36-51] MD5, [52-59] FileTime, [60-67] FileVersion, [68] Flags).
     // Tail varies by version:
     //   v6.4.0.1: [68-75] FileTime, [76-83] FileVersion, [84-86] Flags = 87 bytes total
     //   v6.0.0:   [68-73] 6 bytes misc/flags = 74 bytes total
+    //   v5.1.x:   MD5 digest, 69 bytes total
 
     // Auto-detect entry size: try known sizes and pick the one that divides evenly
-    const qint32 anKnownSizes[] = {87, 74};
+    const qint32 anKnownSizes[] = {87, 74, 69};
     const qint32 nKnownSizeCount = sizeof(anKnownSizes) / sizeof(qint32);
     qint32 nEntrySize = 0;
     qint32 nBlockSize = baBlock2.size();
@@ -1028,9 +1115,13 @@ QList<XInnoSetup::DATA_ENTRY> XInnoSetup::_parseDataEntries(const QByteArray &ba
     return listResult;
 }
 
-QList<XInnoSetup::FILE_ENTRY> XInnoSetup::_parseFileEntries(const QByteArray &baBlock1, qint32 nNumFiles)
+QList<XInnoSetup::FILE_ENTRY> XInnoSetup::_parseFileEntries(const QByteArray &baBlock1, qint32 nNumFiles, bool bUnicode)
 {
     QList<FILE_ENTRY> listResult;
+
+    if (!bUnicode) {
+        return _parseFileEntriesAnsi(baBlock1, nNumFiles);
+    }
 
     // Strategy: search for {app}\ or {tmp}\ patterns in UTF-16LE, then score
     // each candidate by trial-parsing forward. The candidate producing the most
@@ -1326,6 +1417,150 @@ QList<XInnoSetup::FILE_ENTRY> XInnoSetup::_parseFileEntries(const QByteArray &ba
     return listResult;
 }
 
+QList<XInnoSetup::FILE_ENTRY> XInnoSetup::_parseFileEntriesAnsi(const QByteArray &baBlock1, qint32 nNumFiles)
+{
+    QList<FILE_ENTRY> listResult;
+
+    const char *pData = baBlock1.constData();
+    const qint32 nSize = baBlock1.size();
+
+    if (nSize < 16) {
+        return listResult;
+    }
+
+    // Inno 5.1.x (ANSI) file entry begins: [uint32 source_len][source][uint32 dest_len][dest]
+    // [uint32 install_font_len][install_font] ... numeric block. Compiled installers store an
+    // empty source and a "{constant}\path" destination, so entries are located by that
+    // empty-source + brace-destination boundary; the two strings that follow reach the numeric
+    // block that carries the location index.
+
+    struct RAWENTRY {
+        qint32 nStringsEnd;
+        QString sDest;
+    };
+
+    QList<RAWENTRY> listRaw;
+
+    qint32 nPos = 0;
+
+    while (nPos + 8 < nSize) {
+        quint32 nSrcLen = qFromLittleEndian<quint32>((const uchar *)(pData + nPos));
+
+        if (nSrcLen != 0) {
+            nPos++;
+            continue;  // require empty source (typical for compiled installers)
+        }
+
+        qint32 nDestLenOff = nPos + 4;
+        quint32 nDestLen = qFromLittleEndian<quint32>((const uchar *)(pData + nDestLenOff));
+
+        if ((nDestLen < 3) || (nDestLen > 4096) || (nDestLenOff + 4 + (qint32)nDestLen > nSize)) {
+            nPos++;
+            continue;
+        }
+
+        if (pData[nDestLenOff + 4] != '{') {
+            nPos++;
+            continue;  // destination must begin with a "{constant}"
+        }
+
+        QString sDest = QString::fromLatin1(pData + nDestLenOff + 4, (qint32)nDestLen);
+
+        if (!(sDest.contains(QChar('\\')) || sDest.contains(QChar('/')))) {
+            nPos++;
+            continue;  // skip the bare "{app}" default-dir string in the header area
+        }
+
+        qint32 nDestEnd = nDestLenOff + 4 + (qint32)nDestLen;
+
+        // Optional install_font_name (present in 5.x); tolerate its absence.
+        qint32 nStringsEnd = nDestEnd;
+
+        if (nDestEnd + 4 <= nSize) {
+            quint32 nFontLen = qFromLittleEndian<quint32>((const uchar *)(pData + nDestEnd));
+
+            if ((nFontLen <= 4096) && (nDestEnd + 4 + (qint32)nFontLen <= nSize)) {
+                nStringsEnd = nDestEnd + 4 + (qint32)nFontLen;
+            }
+        }
+
+        RAWENTRY entry;
+        entry.nStringsEnd = nStringsEnd;
+        entry.sDest = sDest;
+        listRaw.append(entry);
+
+        nPos = nDestEnd;  // continue scanning after the destination for the next entry
+    }
+
+    if (listRaw.isEmpty()) {
+        return listResult;
+    }
+
+    // The raw candidate list also catches non-file strings that share the "{const}\path" shape:
+    // the header's DefaultDirName and the Start-Menu icon entries that follow the files. Real file
+    // entries are distinguished by a location index (uint32 into the data-entry array) that runs
+    // 0,1,2,... in storage order. Find the offset and the longest such consecutive run; that run is
+    // exactly the file-entry array, and everything outside it is discarded.
+    qint32 nBestOff = -1;
+    qint32 nBestStart = -1;
+    qint32 nBestRun = 0;
+
+    for (qint32 nLocOff = 0; nLocOff + 4 <= 96; nLocOff += 4) {
+        qint32 i = 0;
+
+        while (i < listRaw.count()) {
+            qint32 p = listRaw.at(i).nStringsEnd + nLocOff;
+
+            if ((p + 4 > nSize) || (qFromLittleEndian<quint32>((const uchar *)(pData + p)) != 0)) {
+                i++;
+                continue;  // a file-entry run starts at location 0
+            }
+
+            qint32 nRun = 1;
+            qint32 k = i + 1;
+            quint32 nExpect = 1;
+
+            while (k < listRaw.count()) {
+                qint32 pk = listRaw.at(k).nStringsEnd + nLocOff;
+
+                if ((pk + 4 > nSize) || (qFromLittleEndian<quint32>((const uchar *)(pData + pk)) != nExpect)) {
+                    break;
+                }
+
+                nRun++;
+                nExpect++;
+                k++;
+            }
+
+            if (nRun > nBestRun) {
+                nBestRun = nRun;
+                nBestStart = i;
+                nBestOff = nLocOff;
+            }
+
+            i = (k > i) ? k : (i + 1);
+        }
+    }
+
+    if ((nBestStart < 0) || (nBestRun <= 0)) {
+        return listResult;
+    }
+
+    for (qint32 r = 0; r < nBestRun; r++) {
+        qint32 idx = nBestStart + r;
+
+        FILE_ENTRY fileEntry = {};
+        fileEntry.sDestName = listRaw.at(idx).sDest;
+
+        qint32 p = listRaw.at(idx).nStringsEnd + nBestOff;
+        fileEntry.nLocationEntry = (p + 4 <= nSize) ? (qint32)qFromLittleEndian<quint32>((const uchar *)(pData + p)) : -1;
+
+        listResult.append(fileEntry);
+    }
+
+    return listResult;
+}
+
 bool XInnoSetup::_parseRealInnoSetup(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
 {
     // Find the offset table (rDlPtS magic)
@@ -1348,6 +1583,11 @@ bool XInnoSetup::_parseRealInnoSetup(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStru
     if (nSetup0Offset + 64 > nFileSize) {
         return false;
     }
+
+    // Unicode (UTF-16 WideString) vs ANSI (single-byte) string encoding is a build-time property
+    // marked in the version identifier: Unicode builds append " (u)". Inno < 5.3.0 is always ANSI.
+    QByteArray baVersionId = read_array(nSetup0Offset, 64);
+    bool bUnicode = _isUnicodeVersionId(baVersionId);
 
     // Read Block Stream 1 (file entries + setup header)
     qint64 nBlock1Offset = nSetup0Offset + 64;
@@ -1377,7 +1617,7 @@ bool XInnoSetup::_parseRealInnoSetup(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStru
     qint32 nNumDataEntries = listDataEntries.count();
 
     // Parse file entries from Block 1
-    QList<FILE_ENTRY> listFileEntries = _parseFileEntries(baBlock1, nNumDataEntries);
+    QList<FILE_ENTRY> listFileEntries = _parseFileEntries(baBlock1, nNumDataEntries, bUnicode);
 
     if (listFileEntries.isEmpty()) {
         return false;

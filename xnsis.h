@@ -55,6 +55,7 @@ public:
     // A single extractable file (built from an EW_EXTRACTFILE / EW_WRITEUNINSTALLER instruction)
     struct FILE_ENTRY {
         QString sFileName;         // reduced (relative) name
+        QString sPath;             // reduced SetOutPath ($OUTDIR) directory this file is extracted to
         quint32 nPos;              // position of the file inside the data block
         quint32 nSize;             // uncompressed size (if known)
         bool bSizeDefined;         // whether nSize is known before extraction
