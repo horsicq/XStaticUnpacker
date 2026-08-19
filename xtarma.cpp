@@ -1217,17 +1217,17 @@ bool XTarma::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) ||
         (pState->nCurrentIndex != pContext->nCurrentIndex) || (pState->nCurrentOffset != pContext->nCurrentOffset) ||
         (pState->nNumberOfRecords != pContext->listEntries.size()) || (pState->nTotalSize != pContext->nSourceSize) ||
-        (pContext->nCurrentIndex < 0) || (pContext->nCurrentIndex >= pContext->listEntries.size() - 1)) return false;
+        (pContext->nCurrentIndex < 0) || (pContext->nCurrentIndex >= pContext->listEntries.size())) return false;
     if (!XMaterializedUnpackGuard::areCurrent(pContext->pSourceGuard, pContext->listCompanionGuards, pPdStruct) || !guardedThis ||
         !pLifetimeState->bOwnerAlive || !pLifetimeState->setContexts.contains(pContext) ||
         (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
         (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pContext->nCurrentIndex >= pContext->listEntries.size() - 1)) return false;
+        (pContext->nCurrentIndex >= pContext->listEntries.size())) return false;
     ++pContext->nCurrentIndex;
     pContext->nCurrentOffset = 0;
     pState->nCurrentIndex = pContext->nCurrentIndex;
     pState->nCurrentOffset = 0;
-    return true;
+    return (pContext->nCurrentIndex < pContext->listEntries.size());
 }
 
 bool XTarma::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)

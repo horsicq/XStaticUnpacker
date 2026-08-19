@@ -166,6 +166,7 @@ private:
                       PDSTRUCT *pPdStruct);
     bool _lzmaDecode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, QByteArray *pResult);
     bool _inflateRaw(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, QByteArray *pResult);
+    bool _bzip2Decode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, QByteArray *pResult);
 
     // header parse
     bool _parseHeader(UNPACK_CONTEXT *pContext);

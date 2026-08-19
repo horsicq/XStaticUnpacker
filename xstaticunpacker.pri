@@ -40,6 +40,8 @@ contains(XCONFIG, use_xemulator) {
 HEADERS += \
     $$PWD/xinnosetup.h \
     $$PWD/xnsis.h \
+    $$PWD/nsis_bzip2/nsis_bzip2.h \
+    $$PWD/nsis_bzip2/nsis_bzip2_private.h \
     $$PWD/xupx.h \
     $$PWD/xsfx.h \
     $$PWD/xfsg.h \
@@ -67,6 +69,7 @@ HEADERS += \
 SOURCES += \
     $$PWD/xinnosetup.cpp \
     $$PWD/xnsis.cpp \
+    $$PWD/nsis_bzip2/nsis_bzip2.c \
     $$PWD/xupx.cpp \
     $$PWD/xsfx.cpp \
     $$PWD/xfsg.cpp \

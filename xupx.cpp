@@ -249,7 +249,14 @@ static bool applyPEFilter(unsigned char *pData, qint64 nDataSize, quint8 nFilter
                 i += 4;
             }
         }
-    } else if (nFilter == 0x49) {
+    } else if ((nFilter == 0x49) || (nFilter == 0x46) || (nFilter == 0x36)) {
+        // 0x49 is ctok32_e8e9_bswap_le; 0x36 and 0x46 are ctoj32_e8e9_bswap_le,
+        // which is the same loop without the optional jcc match (filter_impl.cpp
+        // instantiates both from the same body, and the table comment spells the
+        // distinction out).  The `9 <= (0x0f & nFilter)` term below is upstream's
+        // own COND, so it already collapses to the ctoj condition for 0x36/0x46 -
+        // only this dispatch was too narrow.  upx picks 0x46 for --brute and
+        // --ultra-brute, so without it every brute-packed PE failed to unpack.
         quint32 nCTO = ((quint32)nFilterCTO) << 24;
         quint32 nLastCall = 0;
 
@@ -809,9 +816,31 @@ XUPX::INTERNAL_INFO XUPX::_read_packheader(char *pInfoData, qint32 nDataSize, bo
         }
     }
 
-    if ((result.version > 10) && (result.off_filter < (quint32)nDataSize)) {
-        result.filter = (quint8)pInfoData[result.off_filter];
+    // packhead.cpp: the filter id is only a stored header byte from version 10
+    // on.  Older headers have no such byte - they record "a filter was applied"
+    // in the high bit of level, and the id is implied by the format.  Two bugs
+    // lived here: the version test was `> 10` where upstream uses `>= 10`, so
+    // version 10 files never picked up their filter, and the pre-10 branch was
+    // missing entirely, so those kept filter 0.  Either way the E8/E9 operands
+    // were left filtered.  Between them that covered every UPX 0.60-0.84 sample
+    // in F:\tests\packers\UPX.
+    if (result.version >= 10) {
+        if (result.off_filter < (quint32)nDataSize) {
+            result.filter = (quint8)pInfoData[result.off_filter];
+        }
+    } else if ((result.level & 128) == 0) {
+        result.filter = 0;
+    } else {
+        result.level &= 127;
+
+        if ((result.format == UPX_F_DOS_COM) || (result.format == UPX_F_DOS_SYS)) {
+            result.filter = 0x06;
+        } else {
+            result.filter = 0x26;
+        }
     }
+
+    result.level &= 15;
 
     return result;
 }
@@ -2935,7 +2964,15 @@ bool XUPX::_unpackDOS(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
         baOutput.resize(nOutputSize);
 
         if (info.filter) {
-            if (!applyPEFilter((unsigned char *)baOutput.data(), baOutput.size(), info.filter, info.filter_cto, 0x100)) {
+            // PackSys derives from PackCom and inherits the whole unpack path,
+            // overriding exactly one thing: getCallTrickOffset() is 0x100 for
+            // dos/com (the image loads at 0x100) but 0 for dos/sys (loads at 0).
+            // Using 0x100 for both leaves every filtered call operand in a .sys
+            // 0x100 too low - and the file still comes out the right length, so
+            // it fails silently rather than loudly.
+            const quint32 nCallTrickOffset = (info.format == UPX_F_DOS_SYS) ? 0 : 0x100;
+
+            if (!applyPEFilter((unsigned char *)baOutput.data(), baOutput.size(), info.filter, info.filter_cto, nCallTrickOffset)) {
                 return _runUPXDecompress(pDevice, pPdStruct);
             }
         }

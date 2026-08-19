@@ -125,13 +125,14 @@ private:
 
     // Real InnoSetup format parsing
     OFFSET_TABLE _findOffsetTable(PDSTRUCT *pPdStruct);
-    QByteArray _readBlockStream(qint64 nOffset, qint64 *pnConsumed, PDSTRUCT *pPdStruct);
+    QByteArray _readBlockStream(qint64 nOffset, qint64 *pnConsumed, PDSTRUCT *pPdStruct, bool b64BitStoredSize = false);
     QByteArray _stripCRCChunks(const QByteArray &baData);
     QByteArray _decompressLZMA1(const QByteArray &baData);
     QList<DATA_ENTRY> _parseDataEntries(const QByteArray &baBlock2);
     // bUnicode selects UTF-16 WideString (Inno >= 5.3.0 Unicode builds, all 6.x) vs single-byte
     // AnsiString (Inno < 5.3.0, e.g. 5.1.x) parsing of the setup-0 file-entry array.
-    QList<FILE_ENTRY> _parseFileEntries(const QByteArray &baBlock1, qint32 nNumFiles, bool bUnicode);
+    QList<FILE_ENTRY> _parseFileEntries(const QByteArray &baBlock1, qint32 nNumFiles, bool bUnicode, bool bRev2 = false);
+    QList<FILE_ENTRY> _parseFileEntriesRev2(const QByteArray &baBlock1, qint32 nNumFiles);
     QList<FILE_ENTRY> _parseFileEntriesAnsi(const QByteArray &baBlock1, qint32 nNumFiles);
     bool _parseRealInnoSetup(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
     QByteArray _decompressDataChunk(qint64 nChunkOffset, qint64 nChunkCompressedSize, PDSTRUCT *pPdStruct);

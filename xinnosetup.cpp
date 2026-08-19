@@ -796,18 +796,26 @@ XInnoSetup::OFFSET_TABLE XInnoSetup::_findOffsetTable(PDSTRUCT *pPdStruct)
 
     qint64 nDataOffset = nTableOffset + g_nRDlPtSMagicSize;
 
-    if (nDataOffset + 40 > nFileSize) {
+    if (nDataOffset + 44 > nFileSize) {
         return result;
     }
 
     result.nTableOffset = nTableOffset;
     result.nRevision = read_uint32(nDataOffset + 0, false);
-    // +4: unknown field
-    // +8: exe compressed size or related
-    // +12: exe uncompressed size or related
-    // +16: checksum
-    result.nHeaderOffset = read_uint32(nDataOffset + 20, false);  // Absolute offset of setup-0 header
-    result.nDataOffset = read_uint32(nDataOffset + 24, false);    // Absolute offset of data stream
+    if (result.nRevision >= 2) {
+        // Inno Setup >= 6.4.0 (incl. 6.7.x / 7.0.x): TotalSize/OffsetEXE/OffsetHeader/
+        // OffsetData are widened to 64-bit, so the table layout is:
+        //  +0 u32 revision(=2); +4 u64 TotalSize; +12 u64 OffsetEXE; +20 u32 UncompSizeEXE;
+        //  +24 u32 CRCEXE; +28 u64 OffsetHeader; +36 u64 OffsetData; +44 u32 tableCRC.
+        // The low dword suffices for the < 4 GiB installers we support.
+        result.nHeaderOffset = read_uint32(nDataOffset + 28, false);  // Absolute offset of setup-0 header
+        result.nDataOffset = read_uint32(nDataOffset + 36, false);    // Absolute offset of data stream
+    } else {
+        // Inno Setup <= 6.3.x (incl. all 5.x): 32-bit fields.
+        // +4: unused(0); +8: exe_offset; +12: exe_compressed_size; +16: checksum
+        result.nHeaderOffset = read_uint32(nDataOffset + 20, false);  // Absolute offset of setup-0 header
+        result.nDataOffset = read_uint32(nDataOffset + 24, false);    // Absolute offset of data stream
+    }
     result.bIsValid = true;
 
     return result;
@@ -877,19 +885,22 @@ QByteArray XInnoSetup::_decompressLZMA1(const QByteArray &baData)
     return bufOutput.data();
 }
 
-QByteArray XInnoSetup::_readBlockStream(qint64 nOffset, qint64 *pnConsumed, PDSTRUCT *pPdStruct)
+QByteArray XInnoSetup::_readBlockStream(qint64 nOffset, qint64 *pnConsumed, PDSTRUCT *pPdStruct, bool b64BitStoredSize)
 {
     Q_UNUSED(pPdStruct)
 
     // Block stream format:
     // uint32 CRC32 of (stored_size + compressed_flag)
-    // uint32 stored_size
+    // uint32/uint64 stored_size  (widened to 64-bit in Inno Setup >= 6.4.0, revision 2)
     // uint8  compressed_flag (1 = LZMA1 compressed)
     // <stored_size bytes of CRC-chunked data>
 
     qint64 nFileSize = getSize();
 
-    if (nOffset + 9 > nFileSize) {
+    // Header size: rev-1 = CRC(4) + size(4) + flag(1) = 9; rev-2 = CRC(4) + size(8) + flag(1) = 13.
+    const qint64 nHeaderSize = b64BitStoredSize ? 13 : 9;
+
+    if (nOffset + nHeaderSize > nFileSize) {
         if (pnConsumed) {
             *pnConsumed = 0;
         }
@@ -899,10 +910,10 @@ QByteArray XInnoSetup::_readBlockStream(qint64 nOffset, qint64 *pnConsumed, PDST
 
     // Read header
     // quint32 nHeaderCRC = read_uint32(nOffset, false);  // Not used for validation currently
-    quint32 nStoredSize = read_uint32(nOffset + 4, false);
-    quint8 nCompressedFlag = read_uint8(nOffset + 8);
+    quint64 nStoredSize = b64BitStoredSize ? read_uint64(nOffset + 4, false) : read_uint32(nOffset + 4, false);
+    quint8 nCompressedFlag = read_uint8(nOffset + nHeaderSize - 1);
 
-    qint64 nConsumed = 9 + (qint64)nStoredSize;
+    qint64 nConsumed = nHeaderSize + (qint64)nStoredSize;
 
     if (nOffset + nConsumed > nFileSize) {
         if (pnConsumed) {
@@ -913,7 +924,7 @@ QByteArray XInnoSetup::_readBlockStream(qint64 nOffset, qint64 *pnConsumed, PDST
     }
 
     // Read the stored data
-    QByteArray baStoredData = read_array(nOffset + 9, nStoredSize);
+    QByteArray baStoredData = read_array(nOffset + nHeaderSize, (qint64)nStoredSize);
 
     // Strip per-chunk CRC32 prefixes
     QByteArray baPayload = _stripCRCChunks(baStoredData);
@@ -1068,8 +1079,12 @@ QList<XInnoSetup::DATA_ENTRY> XInnoSetup::_parseDataEntries(const QByteArray &ba
     //   v6.0.0:   [68-73] 6 bytes misc/flags = 74 bytes total
     //   v5.1.x:   MD5 digest, 69 bytes total
 
-    // Auto-detect entry size: try known sizes and pick the one that divides evenly
-    const qint32 anKnownSizes[] = {87, 74, 69};
+    // Auto-detect entry size: try known sizes and pick the one that divides evenly.
+    //   89: Inno >= 6.4.x revision-2 data format. The TSetupFileLocationEntry StartOffset
+    //       widened from LongInt (4) to Int64 (8), shifting ChunkSubOffset/OriginalSize/
+    //       ChunkCompressedSize/SHA256 by +4, and Flags shrank from 3 to 1 byte (89 = 87 + 4 - 2).
+    //   87: v6.4.0.1   74: v6.0.0   69: v5.1.x (MD5 digest)
+    const qint32 anKnownSizes[] = {89, 87, 74, 69};
     const qint32 nKnownSizeCount = sizeof(anKnownSizes) / sizeof(qint32);
     qint32 nEntrySize = 0;
     qint32 nBlockSize = baBlock2.size();
@@ -1089,6 +1104,10 @@ QList<XInnoSetup::DATA_ENTRY> XInnoSetup::_parseDataEntries(const QByteArray &ba
         return listResult;
     }
 
+    // The revision-2 (>= 6.4.x) entry carries an 8-byte StartOffset, shifting every field
+    // after the two slice ints by +4 relative to the pre-6.4 layout.
+    const qint32 nShift = (nEntrySize >= 89) ? 4 : 0;
+
     qint32 nNumEntries = nBlockSize / nEntrySize;
 
     for (qint32 i = 0; i < nNumEntries; i++) {
@@ -1096,13 +1115,19 @@ QList<XInnoSetup::DATA_ENTRY> XInnoSetup::_parseDataEntries(const QByteArray &ba
         const char *pEntry = baBlock2.constData() + nBase;
 
         DATA_ENTRY entry = {};
-        entry.nChunkSubOffset = qFromLittleEndian<qint64>((const uchar *)(pEntry + 12));
-        entry.nOriginalSize = qFromLittleEndian<qint64>((const uchar *)(pEntry + 20));
-        entry.nChunkCompressedSize = qFromLittleEndian<qint64>((const uchar *)(pEntry + 28));
-        entry.baSHA256 = baBlock2.mid(nBase + 36, 32);
+        entry.nChunkSubOffset = qFromLittleEndian<qint64>((const uchar *)(pEntry + 12 + nShift));
+        entry.nOriginalSize = qFromLittleEndian<qint64>((const uchar *)(pEntry + 20 + nShift));
+        entry.nChunkCompressedSize = qFromLittleEndian<qint64>((const uchar *)(pEntry + 28 + nShift));
+        entry.baSHA256 = baBlock2.mid(nBase + 36 + nShift, 32);
 
         // Version-specific tail fields
-        if (nEntrySize >= 87) {
+        if (nShift > 0) {
+            // Revision-2 tail: FileTime[72-79], FileVersionMS[80-83], FileVersionLS[84-87], Flags[88].
+            entry.nFileTime = qFromLittleEndian<quint64>((const uchar *)(pEntry + 72));
+            entry.nFileVersionMS = qFromLittleEndian<quint32>((const uchar *)(pEntry + 80));
+            entry.nFileVersionLS = qFromLittleEndian<quint32>((const uchar *)(pEntry + 84));
+            entry.nFlags = (quint8)pEntry[88];
+        } else if (nEntrySize >= 87) {
             entry.nFileTime = qFromLittleEndian<quint64>((const uchar *)(pEntry + 68));
             entry.nFileVersionMS = qFromLittleEndian<quint32>((const uchar *)(pEntry + 76));
             entry.nFileVersionLS = qFromLittleEndian<quint32>((const uchar *)(pEntry + 80));
@@ -1115,12 +1140,90 @@ QList<XInnoSetup::DATA_ENTRY> XInnoSetup::_parseDataEntries(const QByteArray &ba
     return listResult;
 }
 
-QList<XInnoSetup::FILE_ENTRY> XInnoSetup::_parseFileEntries(const QByteArray &baBlock1, qint32 nNumFiles, bool bUnicode)
+QList<XInnoSetup::FILE_ENTRY> XInnoSetup::_parseFileEntriesRev2(const QByteArray &baBlock1, qint32 nNumFiles)
+{
+    // Inno Setup >= 6.4.0 extended TSetupFileEntry with file-signature / download fields
+    // (extra WideStrings plus a variable-length "verification" structure), which makes the
+    // numeric section impractical to parse field-by-field across builds. For LISTING we only
+    // need each file's destination name and size. Every file entry's DestName is a WideString
+    // that begins with a '{const}' destination path; locate the validated DestName positions
+    // (a zero-length SourceFilename immediately precedes the entry) in file order and map them
+    // one-to-one to the file-location entries, which Inno emits in the same order.
+    QList<FILE_ENTRY> listResult;
+
+    // UTF-16LE patterns for the common destination constants.
+    const char *apszConsts[] = {"{app}", "{tmp}", "{sys}", "{win}", "{sd}", "{commonappdata}", "{localappdata}",
+                                "{userappdata}", "{commonpf}", "{pf}", "{autopf}", "{commonprograms}", "{group}", "{src}"};
+    const qint32 nConstCount = (qint32)(sizeof(apszConsts) / sizeof(apszConsts[0]));
+
+    // The WideString length prefixes are byte-packed and may sit at any (odd or even) offset,
+    // so the scan advances one byte at a time.
+    for (qint32 nPos = 4; nPos + 8 < baBlock1.size(); nPos++) {
+        // A DestName WideString: [u32 byteLen][UTF-16LE text starting with '{']
+        if ((baBlock1.at(nPos + 4) != '{') || (baBlock1.at(nPos + 5) != 0)) {
+            continue;
+        }
+
+        quint32 nByteLen = qFromLittleEndian<quint32>((const uchar *)(baBlock1.constData() + nPos));
+
+        if ((nByteLen < 6) || (nByteLen > 4000) || ((nByteLen % 2) != 0) || (nPos + 4 + (qint32)nByteLen > baBlock1.size())) {
+            continue;
+        }
+
+        // The DestName must be preceded by a zero-length SourceFilename WideString.
+        if (qFromLittleEndian<quint32>((const uchar *)(baBlock1.constData() + nPos - 4)) != 0) {
+            continue;
+        }
+
+        QString sDest = QString::fromUtf16((const ushort *)(baBlock1.constData() + nPos + 4), (qint32)(nByteLen / 2));
+
+        // Keep only strings that actually name a FILE below a known destination constant,
+        // i.e. "{const}\sub\file.ext". A bare "{app}" (DefaultDirName) or a directory entry has
+        // no separator after the closing brace and must be skipped.
+        bool bKnownConst = false;
+
+        for (qint32 c = 0; c < nConstCount; c++) {
+            const QString sConst = QString::fromLatin1(apszConsts[c]);
+
+            if (sDest.startsWith(sConst) && (sDest.size() > sConst.size())) {
+                const QChar chSep = sDest.at(sConst.size());
+
+                if ((chSep == QLatin1Char('\\')) || (chSep == QLatin1Char('/'))) {
+                    bKnownConst = true;
+                    break;
+                }
+            }
+        }
+
+        if (!bKnownConst) {
+            continue;
+        }
+
+        FILE_ENTRY fileEntry = {};
+        fileEntry.sDestName = sDest;
+        fileEntry.nLocationEntry = listResult.count();  // one-to-one with file-location entries, in order
+        listResult.append(fileEntry);
+
+        nPos += 4 + (qint32)nByteLen - 1;  // skip past this DestName (the loop adds +1)
+
+        if ((nNumFiles > 0) && (listResult.count() >= nNumFiles)) {
+            break;
+        }
+    }
+
+    return listResult;
+}
+
+QList<XInnoSetup::FILE_ENTRY> XInnoSetup::_parseFileEntries(const QByteArray &baBlock1, qint32 nNumFiles, bool bUnicode, bool bRev2)
 {
     QList<FILE_ENTRY> listResult;
 
     if (!bUnicode) {
         return _parseFileEntriesAnsi(baBlock1, nNumFiles);
+    }
+
+    if (bRev2) {
+        return _parseFileEntriesRev2(baBlock1, nNumFiles);
     }
 
     // Strategy: search for {app}\ or {tmp}\ patterns in UTF-16LE, then score
@@ -1591,8 +1694,26 @@ bool XInnoSetup::_parseRealInnoSetup(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStru
 
     // Read Block Stream 1 (file entries + setup header)
     qint64 nBlock1Offset = nSetup0Offset + 64;
+    const bool bRev2 = (offsetTable.nRevision >= 2);
+
+    if (bRev2) {
+        // Inno Setup >= 6.4.0 (revision 2): the 64-byte version string is followed by a
+        // fixed 53-byte block-stream prefix that begins with the 0xDC9289B2 signature
+        // (magic + reserved fields, constant across 6.7.x / 7.0.x), before the first
+        // compressed block. The subsequent blocks carry no such prefix. The block
+        // headers themselves widen stored_size from 32-bit to 64-bit.
+        static const quint32 nRev2BlockMagic = 0xDC9289B2;
+        static const qint64 nRev2Prefix = 53;
+
+        if ((nBlock1Offset + nRev2Prefix > nFileSize) || (read_uint32(nBlock1Offset, false) != nRev2BlockMagic)) {
+            return false;
+        }
+
+        nBlock1Offset += nRev2Prefix;
+    }
+
     qint64 nBlock1Consumed = 0;
-    QByteArray baBlock1 = _readBlockStream(nBlock1Offset, &nBlock1Consumed, pPdStruct);
+    QByteArray baBlock1 = _readBlockStream(nBlock1Offset, &nBlock1Consumed, pPdStruct, bRev2);
 
     if (baBlock1.isEmpty()) {
         return false;
@@ -1601,7 +1722,7 @@ bool XInnoSetup::_parseRealInnoSetup(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStru
     // Read Block Stream 2 (data entries)
     qint64 nBlock2Offset = nBlock1Offset + nBlock1Consumed;
     qint64 nBlock2Consumed = 0;
-    QByteArray baBlock2 = _readBlockStream(nBlock2Offset, &nBlock2Consumed, pPdStruct);
+    QByteArray baBlock2 = _readBlockStream(nBlock2Offset, &nBlock2Consumed, pPdStruct, bRev2);
 
     if (baBlock2.isEmpty()) {
         return false;
@@ -1617,7 +1738,7 @@ bool XInnoSetup::_parseRealInnoSetup(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStru
     qint32 nNumDataEntries = listDataEntries.count();
 
     // Parse file entries from Block 1
-    QList<FILE_ENTRY> listFileEntries = _parseFileEntries(baBlock1, nNumDataEntries, bUnicode);
+    QList<FILE_ENTRY> listFileEntries = _parseFileEntries(baBlock1, nNumDataEntries, bUnicode, bRev2);
 
     if (listFileEntries.isEmpty()) {
         return false;

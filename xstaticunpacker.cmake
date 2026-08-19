@@ -45,6 +45,9 @@ set(XSTATICUNPACKER_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/xinnosetup.h
     ${CMAKE_CURRENT_LIST_DIR}/xnsis.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xnsis.h
+    ${CMAKE_CURRENT_LIST_DIR}/nsis_bzip2/nsis_bzip2.c
+    ${CMAKE_CURRENT_LIST_DIR}/nsis_bzip2/nsis_bzip2.h
+    ${CMAKE_CURRENT_LIST_DIR}/nsis_bzip2/nsis_bzip2_private.h
     ${CMAKE_CURRENT_LIST_DIR}/xupx.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xupx.h
     ${CMAKE_CURRENT_LIST_DIR}/xsfx.cpp

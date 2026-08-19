@@ -7,11 +7,11 @@
  * from 7-Zip (CPP/7zip/Archive/Nsis, vendored under XArchive/inbox). It covers
  * the parts required to enumerate and extract the packed files:
  *   - first header + method/solid detection (NsisIn::Open2)
- *   - header decompression (Copy / Deflate / LZMA; solid and non-solid)
+ *   - header decompression (Copy / Deflate / LZMA / BZip2; solid and non-solid)
  *   - block-header table + install-script instruction walk (NsisIn::ReadEntries)
  *   - NSIS string decoding with variable / shell-folder / lang substitution
  *   - per-file extraction by data-block position (NsisIn::Decode)
- * BZip2 (the NSIS-modified variant) is detected but not decoded here.
+ * The NSIS-modified BZip2 variant is decoded via the vendored nsis_bzip2 decoder.
  */
 
 #include "xnsis.h"
@@ -28,6 +28,7 @@
 #include <zlib.h>
 
 #include "LzmaDec.h"
+#include "nsis_bzip2/nsis_bzip2.h"
 
 namespace {
 class NsisOperationGuard {
@@ -729,6 +730,76 @@ bool XNSIS::_inflateRaw(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bo
     return false;
 }
 
+bool XNSIS::_bzip2Decode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, QByteArray *pResult)
+{
+    if (nSrcSize <= 0) {
+        return false;
+    }
+
+    // NSIS uses a modified bzip2 (no "BZh" stream header, no RLE1 pass, no CRC):
+    // the stream starts straight at the first block header (0x31 ...). The vendored
+    // nsis_BZ2_* decoder hardcodes blockSize100k = 9 and consumes that framing.
+    nsis_bzstream strm;
+    memset(&strm, 0, sizeof(strm));
+    strm.next_in = (unsigned char *)pSrc;
+    strm.avail_in = (unsigned int)nSrcSize;
+
+    if (nsis_BZ2_bzDecompressInit(&strm, 0, 0) != BZ_OK) {
+        return false;
+    }
+
+    pResult->clear();
+    qint64 nCapacity = bOutHintKnown ? nOutHint : (qint64)(1 << 20);
+    if (nCapacity < (1 << 16)) {
+        nCapacity = (1 << 16);
+    }
+    pResult->resize((int)nCapacity);
+    qint64 nOutPos = 0;
+
+    int nRes = BZ_OK;
+
+    for (;;) {
+        if (nOutPos >= pResult->size()) {
+            pResult->resize((int)((qint64)pResult->size() * 2));
+        }
+
+        strm.next_out = (unsigned char *)pResult->data() + nOutPos;
+        strm.avail_out = (unsigned int)(pResult->size() - nOutPos);
+
+        nRes = nsis_BZ2_bzDecompress(&strm);
+        nOutPos = (qint64)strm.total_out_lo32;  // header/solid streams are < 4 GiB
+
+        if (nRes == BZ_STREAM_END) {
+            break;
+        }
+        if (nRes != BZ_OK) {
+            break;
+        }
+        if (strm.avail_in == 0 && strm.avail_out != 0) {
+            // Input exhausted; NSIS streams carry no explicit end marker.
+            break;
+        }
+    }
+
+    nsis_BZ2_bzDecompressEnd(&strm);
+
+    bool bOk = (nRes == BZ_STREAM_END) || (nRes == BZ_OK);
+    if (bOutHintKnown) {
+        bOk = bOk && (nOutPos >= nOutHint);
+        if (nOutPos > nOutHint) {
+            nOutPos = nOutHint;
+        }
+    }
+
+    if (bOk && (nOutPos > 0)) {
+        pResult->resize((int)nOutPos);
+        return true;
+    }
+
+    pResult->clear();
+    return false;
+}
+
 bool XNSIS::_decodeBlock(NMETHOD method, bool bFilterFlag, const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, QByteArray *pResult,
                          PDSTRUCT *pPdStruct)
 {
@@ -742,13 +813,13 @@ bool XNSIS::_decodeBlock(NMETHOD method, bool bFilterFlag, const quint8 *pSrc, q
     switch (method) {
         case NMETHOD_LZMA: return _lzmaDecode(pSrc, nSrcSize, nOutHint, bOutHintKnown, pResult);
         case NMETHOD_DEFLATE: return _inflateRaw(pSrc, nSrcSize, nOutHint, bOutHintKnown, pResult);
+        case NMETHOD_BZIP2: return _bzip2Decode(pSrc, nSrcSize, nOutHint, bOutHintKnown, pResult);
         case NMETHOD_COPY: {
             qint64 nSize = bOutHintKnown ? (std::min)(nOutHint, nSrcSize) : nSrcSize;
             *pResult = QByteArray((const char *)pSrc, (int)nSize);
             return true;
         }
-        case NMETHOD_BZIP2:
-        default: return false;  // NSIS-modified BZip2 not supported
+        default: return false;
     }
 }
 
