@@ -69,7 +69,7 @@ HEADERS += \
 SOURCES += \
     $$PWD/xinnosetup.cpp \
     $$PWD/xnsis.cpp \
-    $$PWD/nsis_bzip2/nsis_bzip2.c \
+    $$PWD/nsis_bzip2/nsis_bzip2.cpp \
     $$PWD/xupx.cpp \
     $$PWD/xsfx.cpp \
     $$PWD/xfsg.cpp \
