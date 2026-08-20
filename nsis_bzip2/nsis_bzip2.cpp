@@ -547,13 +547,13 @@ static Int32 BZ2_decompress ( DState* s )
       s->blockSize100k = 9;
 
       if (s->smallDecompress) {
-         s->ll16 = BZALLOC( s->blockSize100k * 100000 * sizeof(UInt16) );
-         s->ll4  = BZALLOC(
+         s->ll16 = (UInt16*)BZALLOC( s->blockSize100k * 100000 * sizeof(UInt16) );
+         s->ll4  = (UChar*)BZALLOC(
                       ((1 + s->blockSize100k * 100000) >> 1) * sizeof(UChar)
                    );
          if (s->ll16 == NULL || s->ll4 == NULL) RETURN(BZ_MEM_ERROR);
       } else {
-         s->tt  = BZALLOC( s->blockSize100k * 100000 * sizeof(Int32) );
+         s->tt  = (UInt32*)BZALLOC( s->blockSize100k * 100000 * sizeof(Int32) );
          if (s->tt == NULL) RETURN(BZ_MEM_ERROR);
       }
 
@@ -1030,7 +1030,7 @@ int BZ_API(nsis_BZ2_bzDecompressInit)
    if (strm->bzalloc == NULL) strm->bzalloc = default_bzalloc;
    if (strm->bzfree == NULL) strm->bzfree = default_bzfree;
 
-   s = BZALLOC( sizeof(DState) );
+   s = (DState*)BZALLOC( sizeof(DState) );
    if (s == NULL) return BZ_MEM_ERROR;
    s->strm                  = strm;
    strm->state              = s;
@@ -1058,7 +1058,7 @@ int BZ_API(nsis_BZ2_bzDecompress) ( nsis_bzstream *strm )
    Bool    corrupt;
    DState* s;
    if (strm == NULL) return BZ_PARAM_ERROR;
-   s = strm->state;
+   s = (DState*)strm->state;
    if (s == NULL) return BZ_PARAM_ERROR;
    if (s->strm != strm) return BZ_PARAM_ERROR;
 
@@ -1114,7 +1114,7 @@ int BZ_API(nsis_BZ2_bzDecompressEnd)  ( nsis_bzstream *strm )
 {
    DState* s;
    if (strm == NULL) return BZ_PARAM_ERROR;
-   s = strm->state;
+   s = (DState*)strm->state;
    if (s == NULL) return BZ_PARAM_ERROR;
    if (s->strm != strm) return BZ_PARAM_ERROR;
 
