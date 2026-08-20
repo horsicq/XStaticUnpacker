@@ -56,6 +56,7 @@ HEADERS += \
     $$PWD/xiexpress.h \
     $$PWD/xmsi.h \
     $$PWD/xwix.h \
+    $$PWD/xburn.h \
     $$PWD/xadvancedinstaller.h \
     $$PWD/xactualinstaller.h \
     $$PWD/xclickteam.h \
@@ -66,10 +67,17 @@ HEADERS += \
     $$PWD/xsmartinstall.h \
     $$PWD/xtarma.h \
 
+NSIS_BZIP2_SOURCE = $$PWD/nsis_bzip2/nsis_bzip2.cpp
+!exists($$NSIS_BZIP2_SOURCE) {
+    NSIS_BZIP2_SOURCE = $$PWD/nsis_bzip2/nsis_bzip2.c
+    !exists($$NSIS_BZIP2_SOURCE) {
+        error("Cannot find nsis_bzip2 source file: nsis_bzip2.cpp or nsis_bzip2.c")
+    }
+}
 SOURCES += \
     $$PWD/xinnosetup.cpp \
     $$PWD/xnsis.cpp \
-    $$PWD/nsis_bzip2/nsis_bzip2.cpp \
+    $$NSIS_BZIP2_SOURCE \
     $$PWD/xupx.cpp \
     $$PWD/xsfx.cpp \
     $$PWD/xfsg.cpp \
@@ -84,6 +92,7 @@ SOURCES += \
     $$PWD/xiexpress.cpp \
     $$PWD/xmsi.cpp \
     $$PWD/xwix.cpp \
+    $$PWD/xburn.cpp \
     $$PWD/xadvancedinstaller.cpp \
     $$PWD/xactualinstaller.cpp \
     $$PWD/xclickteam.cpp \

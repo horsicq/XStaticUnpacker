@@ -1,5 +1,13 @@
 include_directories(${CMAKE_CURRENT_LIST_DIR})
 
+set(XSTATICUNPACKER_NSIS_BZIP2_SOURCE "${CMAKE_CURRENT_LIST_DIR}/nsis_bzip2/nsis_bzip2.cpp")
+if(NOT EXISTS "${XSTATICUNPACKER_NSIS_BZIP2_SOURCE}")
+    set(XSTATICUNPACKER_NSIS_BZIP2_SOURCE "${CMAKE_CURRENT_LIST_DIR}/nsis_bzip2/nsis_bzip2.c")
+endif()
+if(NOT EXISTS "${XSTATICUNPACKER_NSIS_BZIP2_SOURCE}")
+    message(FATAL_ERROR "Cannot find nsis_bzip2 source file in ${CMAKE_CURRENT_LIST_DIR}/nsis_bzip2")
+endif()
+
 # Signals to lower layers (e.g. XFormats) that the XStaticUnpacker classes are
 # compiled into this target, so they may reference them (packer/installer
 # FT_PE32_*/FT_CFBF_* handle-method file types).
@@ -45,7 +53,7 @@ set(XSTATICUNPACKER_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/xinnosetup.h
     ${CMAKE_CURRENT_LIST_DIR}/xnsis.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xnsis.h
-    ${CMAKE_CURRENT_LIST_DIR}/nsis_bzip2/nsis_bzip2.cpp
+    ${XSTATICUNPACKER_NSIS_BZIP2_SOURCE}
     ${CMAKE_CURRENT_LIST_DIR}/nsis_bzip2/nsis_bzip2.h
     ${CMAKE_CURRENT_LIST_DIR}/nsis_bzip2/nsis_bzip2_private.h
     ${CMAKE_CURRENT_LIST_DIR}/xupx.cpp
@@ -76,6 +84,8 @@ set(XSTATICUNPACKER_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/xmsi.h
     ${CMAKE_CURRENT_LIST_DIR}/xwix.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xwix.h
+    ${CMAKE_CURRENT_LIST_DIR}/xburn.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xburn.h
     ${CMAKE_CURRENT_LIST_DIR}/xadvancedinstaller.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xadvancedinstaller.h
     ${CMAKE_CURRENT_LIST_DIR}/xactualinstaller.cpp
