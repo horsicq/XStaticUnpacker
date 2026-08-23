@@ -346,8 +346,18 @@ XYODA::INTERNAL_INFO XYODA::_detect(PDSTRUCT *pPdStruct)
         return result;
     }
 
-    const quint64 nLastRaw = listSections.at(n - 1).PointerToRawData;
-    if ((quint64)getSize() < nLastRaw + 0xC6 + nEcx + nOffset) {
+    const qint64 nFileSize = getSize();
+    const qint64 nLastRaw = listSections.at(n - 1).PointerToRawData;
+    const qint64 nYcSect = nLastRaw + nOffset;
+    const auto isRangeWithinFile = [nFileSize](qint64 nOffset, qint64 nSize) -> bool {
+        return (nFileSize >= 0) && (nOffset >= 0) && (nSize >= 0) &&
+               (nOffset <= nFileSize) && (nSize <= nFileSize - nOffset);
+    };
+    // yc.c consumes both regions unconditionally: the first-layer encrypted
+    // code and the stored original entry point.  Reject a partial candidate
+    // here instead of publishing an output with the packed OEP left intact.
+    if (!isRangeWithinFile(nYcSect + 0xc6, nEcx) ||
+        !isRangeWithinFile(nYcSect + 0xa0f, 4)) {
         return result;
     }
 
@@ -373,6 +383,8 @@ QMap<XBinary::UNPACK_PROP, QVariant> XYODA::getDefaultUnpackProperties()
 bool XYODA::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
+    qint64 nOutputLimit = -1;
+    if (!getUnpackOutputLimit(mapProperties, &nOutputLimit)) return false;
     const PDSTRUCTLIFETIME progressLifetime = pPdStruct ? retainPdStructLifetime(pPdStruct) : PDSTRUCTLIFETIME();
     const auto isProgressAlive = [&]() -> bool {
         return !pPdStruct || isPdStructLifetimeAlive(progressLifetime);
@@ -424,7 +436,7 @@ bool XYODA::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
     if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
         (getDevice() != guardedSource.data()) || !info.bIsValid) return false;
     QByteArray baData;
-    const bool bUnpacked = worker._unpackToBuffer(baData, pPdStruct);
+    const bool bUnpacked = worker._unpackToBuffer(baData, nOutputLimit, pPdStruct);
     if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
         (getDevice() != guardedSource.data()) || !bUnpacked || baData.isEmpty() ||
         !isPdStructNotCanceled(pPdStruct)) return false;
@@ -597,7 +609,7 @@ bool XYODA::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
     return true;
 }
 
-bool XYODA::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
+bool XYODA::_unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct)
 {
     baOut.clear();
 
@@ -613,21 +625,31 @@ bool XYODA::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
     const int nSectCount = n - 1;  // yC section is the last one
 
     const qint64 nFileSize = getSize();
+    const qint64 nLastRaw = listSections.at(nSectCount).PointerToRawData;
+    const qint64 nDeclaredYcRawSize = listSections.at(nSectCount).SizeOfRawData;
+    if ((nFileSize <= 0) || (nFileSize > 0x7fffffff) ||
+        (nLastRaw < 0) || (nLastRaw >= nFileSize) ||
+        (nDeclaredYcRawSize <= 0)) return false;
+
+    // ClamAV's PE parser stores the unaligned raw size in ursz and truncates
+    // it to the bytes available at EOF before yc_decrypt() removes it.  PE
+    // files commonly retain an aligned declared size after final padding was
+    // stripped, so subtracting the declaration directly loses valid output.
+    const qint64 nEffectiveYcRawSize = qMin(nDeclaredYcRawSize, nFileSize - nLastRaw);
+    const qint64 nCurFileSize = nFileSize - nEffectiveYcRawSize;
+    if ((nCurFileSize <= 0) ||
+        ((nOutputLimit >= 0) && ((quint64)nCurFileSize > (quint64)nOutputLimit))) return false;
+
     QByteArray baFile = read_array_process(0, nFileSize, pPdStruct);
     if (baFile.size() != nFileSize) return false;
     quint8 *pBase = (quint8 *)baFile.data();
 
-    const qint64 nLastRaw = listSections.at(nSectCount).PointerToRawData;
     const qint64 nYcSect = nLastRaw + info.nOffset;
 
     // layer 1: decrypt the section-decryptor code
     if (_polyEmulate(pBase, nFileSize, nYcSect + 0x93, nYcSect + 0xc6, info.nEcx, info.nEcx) != 0) {
         return false;
     }
-
-    const qint64 nCurFileSize = nFileSize - (qint64)listSections.at(nSectCount).SizeOfRawData;
-    if (nCurFileSize <= 0) return false;
-    if (nCurFileSize > 0x7fffffff) return false;
 
     // layer 2: decrypt each original section
     const qint64 nDecOff = nYcSect + ((info.nOffset == -0x18) ? 0x3ea : 0x457);
@@ -642,12 +664,14 @@ bool XYODA::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
             continue;
         }
 
-        if ((qint64)sec.PointerToRawData >= nCurFileSize) {
-            continue;
-        }
+        // yc.c detects the unsigned underflow in (filesize - raw) and aborts.
+        // Silently skipping this case would publish a partially decrypted PE.
+        if ((qint64)sec.PointerToRawData >= nCurFileSize) return false;
         quint32 nMaxEmu = (quint32)(nCurFileSize - sec.PointerToRawData);
+        const quint32 nEffectiveRawSize = (quint32)qMin<qint64>(
+            sec.SizeOfRawData, nFileSize - sec.PointerToRawData);
 
-        if (_polyEmulate(pBase, nFileSize, nDecOff, sec.PointerToRawData, sec.SizeOfRawData, nMaxEmu) != 0) {
+        if (_polyEmulate(pBase, nFileSize, nDecOff, sec.PointerToRawData, nEffectiveRawSize, nMaxEmu) != 0) {
             return false;
         }
 
@@ -656,15 +680,18 @@ bool XYODA::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
 
     // header fixups
     const qint64 nPeOff = _read_uint32((char *)pBase + 0x3C);
-    if ((nPeOff <= 0) || (nPeOff + 0x18 + 0x40 > nFileSize)) return false;
+    if ((nPeOff <= 0) || (nPeOff > nCurFileSize) ||
+        (0x18 + 0x70 > nCurFileSize - nPeOff) ||
+        (nYcSect < 0) || (nYcSect > nFileSize) ||
+        (0xa0f + 4 > nFileSize - nYcSect)) return false;
 
     _write_uint16((char *)pBase + nPeOff + 6, (quint16)nSectCount);           // NumberOfSections
     memset(pBase + nPeOff + 0x18 + 0x68, 0, 8);                               // clear import directory
-    if ((nYcSect + 0xa0f + 4) <= nFileSize) {
-        _write_uint32((char *)pBase + nPeOff + 0x18 + 16, _read_uint32((char *)pBase + nYcSect + 0xa0f));  // OEP
-    }
+    _write_uint32((char *)pBase + nPeOff + 0x18 + 16, _read_uint32((char *)pBase + nYcSect + 0xa0f));  // OEP
     quint32 nSizeOfImage = _read_uint32((char *)pBase + nPeOff + 0x18 + 0x38);
-    _write_uint32((char *)pBase + nPeOff + 0x18 + 0x38, nSizeOfImage - listSections.at(nSectCount).Misc.VirtualSize);  // SizeOfImage
+    const quint32 nYcVirtualSize = listSections.at(nSectCount).Misc.VirtualSize;
+    if (nSizeOfImage < nYcVirtualSize) return false;
+    _write_uint32((char *)pBase + nPeOff + 0x18 + 0x38, nSizeOfImage - nYcVirtualSize);  // SizeOfImage
 
     baOut = baFile.left((int)nCurFileSize);
 

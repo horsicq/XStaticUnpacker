@@ -11,14 +11,17 @@ class SubDevice;
 class XArchive;
 class XCab;
 
-/* WiX Toolset v3 Burn bundle detector and payload extractor.
+/* WiX Toolset Burn bundle detector and payload extractor.
  *
- * This reader supports a CAB UX container and, optionally, one attached CAB
- * after the PE engine.  The UX container owns the Burn manifest which
- * authenticates the physical CAB members and supplies their public paths.
- * Additional attached containers, detached/external payloads, and newer Burn
- * section/container formats are deliberately rejected until their layouts can
- * be handled completely without guessing or omitting records. */
+ * This reader supports the version-2 .wixburn section used by WiX v3 and v4,
+ * a CAB UX container, and all attached CAB containers described by that
+ * section and the embedded Burn manifest. Detached containers and external
+ * payloads require Burn's caller-driven acquisition contract, which this
+ * single-device archive API does not have. WiX v4 certificate-only payloads
+ * are necessarily external as well. Unknown section/container formats are
+ * deliberately rejected; released WiX writers/readers through v7 still define
+ * only section version 2 and CAB format 1. Thus a successful open never
+ * presents an incomplete or unverifiable archive. */
 class XBurn : public XBinary {
     Q_OBJECT
 
@@ -31,6 +34,7 @@ public:
 
     struct PAYLOAD_RECORD {
         CONTAINER_TYPE containerType;
+        qint32 nContainerIndex;
         qint32 nInnerIndex;
         QString sSourcePath;
         QString sFilePath;
@@ -39,17 +43,23 @@ public:
         QString sPackageId;
         QString sPackageType;
         qint64 nFileSize;
-        QByteArray baSHA1;
+        QByteArray baHash;
+    };
+
+    struct CONTAINER_RECORD {
+        CONTAINER_TYPE containerType;
+        qint32 nContainerIndex;
+        QString sId;
+        qint64 nOffset;
+        qint64 nSize;
+        QByteArray baHash;
     };
 
     struct INTERNAL_INFO : public XBinary::INTERNAL_INFO {
         bool bIsValid;
         QString sVersion;
         QByteArray baBundleId;
-        qint64 nUXOffset;
-        qint64 nUXSize;
-        qint64 nAttachedOffset;
-        qint64 nAttachedSize;
+        QList<CONTAINER_RECORD> listContainers;
         QList<PAYLOAD_RECORD> listPayloads;
     };
 
@@ -66,8 +76,7 @@ public:
         QPointer<QIODevice> pOuterSourceDevice;
         quint64 nOwnerDeviceGeneration;
         UNPACK_STATE *pOwnerState;
-        CONTAINER_CONTEXT ux;
-        CONTAINER_CONTEXT attached;
+        QList<CONTAINER_CONTEXT *> listContainers;
         QList<PAYLOAD_RECORD> listPayloads;
         qint32 nCurrentPayload;
         XArchive *pSourceValidator;

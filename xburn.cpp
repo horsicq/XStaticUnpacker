@@ -18,13 +18,16 @@
 #include "../XArchive/xcab.h"
 
 namespace {
-const qint32 BURN_SECTION_SIZE = 56;
+const qint32 BURN_SECTION_FIXED_SIZE = 48;
+const qint32 BURN_SECTION_MIN_SIZE = 52;
 const quint32 BURN_SECTION_MAGIC = 0x00F14300U;
-const quint32 BURN_SECTION_VERSION_V3 = 2U;
+const quint32 BURN_SECTION_VERSION = 2U;
 const quint32 BURN_CONTAINER_FORMAT_CAB = 1U;
 const qint64 BURN_MAX_MANIFEST_SIZE = 16ll << 20;
 const qint32 BURN_MAX_RECORDS = 100000;
-const QString BURN_NAMESPACE = QStringLiteral("http://schemas.microsoft.com/wix/2008/Burn");
+const qint32 BURN_MAX_CONTAINERS = 116;
+const QString BURN_NAMESPACE_V3 = QStringLiteral("http://schemas.microsoft.com/wix/2008/Burn");
+const QString BURN_NAMESPACE_V4 = QStringLiteral("http://wixtoolset.org/schemas/v4/2008/Burn");
 
 class BurnOperationGuard {
 public:
@@ -66,7 +69,7 @@ struct BURN_MANIFEST_CONTAINER {
     bool bAttached;
     qint32 nAttachedIndex;
     qint64 nFileSize;
-    QByteArray baSHA1;
+    QByteArray baHash;
 };
 
 struct BURN_PENDING_PAYLOAD {
@@ -83,10 +86,9 @@ struct BURN_PACKAGE_INFO {
 
 struct BURN_MANIFEST_INFO {
     QList<XBurn::PAYLOAD_RECORD> listUXPayloads;
-    QList<XBurn::PAYLOAD_RECORD> listAttachedPayloads;
-    bool bHasAttachedContainer;
-    qint64 nAttachedContainerSize;
-    QByteArray baAttachedContainerSHA1;
+    QMap<qint32, QList<XBurn::PAYLOAD_RECORD> > mapAttachedPayloads;
+    QMap<qint32, BURN_MANIFEST_CONTAINER> mapAttachedContainers;
+    bool bIsV4;
 };
 
 static quint32 burnReadLE32(const QByteArray &baData, qint32 nOffset)
@@ -129,11 +131,12 @@ static bool burnParseUnsignedDecimal(const QString &sValue, qint64 *pValue)
     return true;
 }
 
-static bool burnParseSHA1(const QString &sValue, QByteArray *pValue)
+static bool burnParseHash(const QString &sValue, qint32 nExpectedBytes, QByteArray *pValue)
 {
-    if (!pValue || (sValue.size() != 40)) return false;
+    if (!pValue || ((nExpectedBytes != 20) && (nExpectedBytes != 64)) ||
+        (sValue.size() != (nExpectedBytes * 2))) return false;
     QByteArray baHex = sValue.toLatin1();
-    if (baHex.size() != 40) return false;
+    if (baHex.size() != (nExpectedBytes * 2)) return false;
 
     for (char ch : baHex) {
         const bool bDigit = (ch >= '0') && (ch <= '9');
@@ -143,9 +146,24 @@ static bool burnParseSHA1(const QString &sValue, QByteArray *pValue)
     }
 
     QByteArray baResult = QByteArray::fromHex(baHex);
-    if (baResult.size() != 20) return false;
+    if (baResult.size() != nExpectedBytes) return false;
     *pValue = baResult;
     return true;
+}
+
+static bool burnHashAlgorithm(const QByteArray &baExpected,
+                              QCryptographicHash::Algorithm *pAlgorithm)
+{
+    if (!pAlgorithm) return false;
+    if (baExpected.size() == 20) {
+        *pAlgorithm = QCryptographicHash::Sha1;
+        return true;
+    }
+    if (baExpected.size() == 64) {
+        *pAlgorithm = QCryptographicHash::Sha512;
+        return true;
+    }
+    return false;
 }
 
 static bool burnIsSafeRelativePath(const QString &sValue, QString *pNormalized)
@@ -186,7 +204,8 @@ static bool burnEmbeddedNameIndex(const QString &sName, QChar prefix, qint32 *pI
     return true;
 }
 
-static bool burnHashDevice(QIODevice *pDevice, QByteArray *pHash, XBinary::PDSTRUCT *pPdStruct)
+static bool burnHashDevice(QIODevice *pDevice, QCryptographicHash::Algorithm algorithm,
+                           QByteArray *pHash, XBinary::PDSTRUCT *pPdStruct)
 {
     if (!pDevice || !pHash || !pDevice->isOpen() || !pDevice->isReadable() || pDevice->isSequential() ||
         !pDevice->seek(0)) {
@@ -196,7 +215,7 @@ static bool burnHashDevice(QIODevice *pDevice, QByteArray *pHash, XBinary::PDSTR
     const qint64 nSize = pDevice->size();
     if (nSize < 0) return false;
 
-    QCryptographicHash hash(QCryptographicHash::Sha1);
+    QCryptographicHash hash(algorithm);
     QByteArray baBuffer;
     baBuffer.resize(0x10000);
     if (baBuffer.size() != 0x10000) return false;
@@ -213,16 +232,19 @@ static bool burnHashDevice(QIODevice *pDevice, QByteArray *pHash, XBinary::PDSTR
 
     if ((pDevice->pos() != nSize) || !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
     *pHash = hash.result();
-    return pHash->size() == 20;
+    const qint32 nExpectedSize = (algorithm == QCryptographicHash::Sha1) ? 20 :
+                                 ((algorithm == QCryptographicHash::Sha512) ? 64 : 0);
+    return (nExpectedSize != 0) && (pHash->size() == nExpectedSize);
 }
 
 static bool burnHashRange(QIODevice *pDevice, qint64 nOffset, qint64 nSize,
-                          QByteArray *pHash, XBinary::PDSTRUCT *pPdStruct)
+                          QCryptographicHash::Algorithm algorithm, QByteArray *pHash,
+                          XBinary::PDSTRUCT *pPdStruct)
 {
     if (!pDevice || !pHash || !burnRangeIsValid(nOffset, nSize, pDevice->size())) return false;
     SubDevice subDevice(pDevice, nOffset, nSize);
     if (!subDevice.open(QIODevice::ReadOnly)) return false;
-    const bool bResult = burnHashDevice(&subDevice, pHash, pPdStruct);
+    const bool bResult = burnHashDevice(&subDevice, algorithm, pHash, pPdStruct);
     subDevice.close();
     return bResult;
 }
@@ -309,11 +331,12 @@ static bool burnScanCabinet(QIODevice *pDevice, qint64 nOffset, qint64 nSize, bo
 static bool burnIsPackageElement(const QString &sName)
 {
     return (sName == QStringLiteral("MsiPackage")) || (sName == QStringLiteral("ExePackage")) ||
-           (sName == QStringLiteral("MsuPackage")) || (sName == QStringLiteral("MspPackage"));
+           (sName == QStringLiteral("MsuPackage")) || (sName == QStringLiteral("MspPackage")) ||
+           (sName == QStringLiteral("BundlePackage"));
 }
 
 static bool burnReadPayloadAttributes(const QXmlStreamAttributes &attributes, bool bUX,
-                                      BURN_PENDING_PAYLOAD *pPayload)
+                                      bool bIsV4, BURN_PENDING_PAYLOAD *pPayload)
 {
     if (!pPayload) return false;
 
@@ -325,28 +348,39 @@ static bool burnReadPayloadAttributes(const QXmlStreamAttributes &attributes, bo
     const QString sSourcePath = attributes.value(QStringLiteral("SourcePath")).toString();
     const QString sContainer = attributes.value(QStringLiteral("Container")).toString();
 
-    qint64 nFileSize = 0;
-    QByteArray baSHA1;
+    qint64 nFileSize = -1;
+    QByteArray baHash;
     QString sNormalizedPath;
     if (sId.isEmpty() || (sId.size() > 32767) || sId.contains(QChar(0)) ||
         !burnIsSafeRelativePath(sFilePath, &sNormalizedPath) ||
-        !burnParseUnsignedDecimal(sFileSize, &nFileSize) || !burnParseSHA1(sHash, &baSHA1) ||
         sSourcePath.isEmpty() || (sSourcePath.size() > 32767) || sSourcePath.contains(QChar(0))) {
         return false;
     }
 
-    const bool bEmbedded = (sPackaging.compare(QStringLiteral("embedded"), Qt::CaseInsensitive) == 0);
+    const qint32 nHashSize = bIsV4 ? 64 : 20;
+    if (bUX && bIsV4 && sFileSize.isEmpty() && sHash.isEmpty()) {
+        // WiX v4 intentionally writes only Id, FilePath, and SourcePath for UX
+        // payloads. The physical CAB supplies their sizes.
+    } else if (!burnParseUnsignedDecimal(sFileSize, &nFileSize) ||
+               !burnParseHash(sHash, nHashSize, &baHash)) {
+        return false;
+    }
+
+    const bool bImplicitV4UX = bUX && bIsV4 && sPackaging.isEmpty();
+    const bool bEmbedded = bImplicitV4UX ||
+                           (sPackaging.compare(QStringLiteral("embedded"), Qt::CaseInsensitive) == 0);
     const bool bExternal = (sPackaging.compare(QStringLiteral("external"), Qt::CaseInsensitive) == 0);
     if ((!bEmbedded && !bExternal) || (bUX && (!bEmbedded || !sContainer.isEmpty()))) return false;
 
     pPayload->payload = XBurn::PAYLOAD_RECORD();
     pPayload->payload.containerType = bUX ? XBurn::CONTAINER_TYPE_UX : XBurn::CONTAINER_TYPE_UNKNOWN;
+    pPayload->payload.nContainerIndex = bUX ? 0 : -1;
     pPayload->payload.nInnerIndex = -1;
     pPayload->payload.sSourcePath = sSourcePath;
     pPayload->payload.sFilePath = sNormalizedPath;
     pPayload->payload.sPayloadId = sId;
     pPayload->payload.nFileSize = nFileSize;
-    pPayload->payload.baSHA1 = baSHA1;
+    pPayload->payload.baHash = baHash;
     pPayload->bUX = bUX;
     pPayload->bEmbedded = bEmbedded;
     pPayload->sContainerId = sContainer;
@@ -376,6 +410,8 @@ static bool burnParseManifest(const QByteArray &baManifest, BURN_MANIFEST_INFO *
     bool bRootSeen = false;
     bool bUXSeen = false;
     bool bChainSeen = false;
+    bool bIsV4 = false;
+    QString sManifestNamespace;
     qint32 nElements = 0;
 
     while (!xml.atEnd()) {
@@ -387,12 +423,19 @@ static bool burnParseManifest(const QByteArray &baManifest, BURN_MANIFEST_INFO *
             if (++nElements > BURN_MAX_RECORDS * 8) return false;
             const QString sName = xml.name().toString();
             const QString sNamespace = xml.namespaceUri().toString();
-            if ((sNamespace != BURN_NAMESPACE) || (listElements.size() >= 64)) return false;
+            if (listElements.size() >= 64) return false;
 
             if (listElements.isEmpty()) {
                 if (bRootSeen || (sName != QStringLiteral("BurnManifest"))) return false;
+                if ((sNamespace != BURN_NAMESPACE_V3) && (sNamespace != BURN_NAMESPACE_V4)) return false;
+                sManifestNamespace = sNamespace;
+                bIsV4 = (sNamespace == BURN_NAMESPACE_V4);
                 bRootSeen = true;
-            } else if ((listElements.size() == 1) && (listElements.at(0) == QStringLiteral("BurnManifest"))) {
+            } else {
+                if (sNamespace != sManifestNamespace) return false;
+            }
+
+            if ((listElements.size() == 1) && (listElements.at(0) == QStringLiteral("BurnManifest"))) {
                 if (sName == QStringLiteral("UX")) {
                     if (bUXSeen) return false;
                     bUXSeen = true;
@@ -410,13 +453,13 @@ static bool burnParseManifest(const QByteArray &baManifest, BURN_MANIFEST_INFO *
                     container.nAttachedIndex = -1;
                     if (container.sId.isEmpty() || (container.sId.size() > 32767) || container.sId.contains(QChar(0)) ||
                         mapContainers.contains(container.sId) || !burnParseUnsignedDecimal(sFileSize, &container.nFileSize) ||
-                        !burnParseSHA1(sHash, &container.baSHA1) ||
+                        !burnParseHash(sHash, bIsV4 ? 64 : 20, &container.baHash) ||
                         (!sAttached.isEmpty() && !container.bAttached)) {
                         return false;
                     }
                     if (container.bAttached) {
                         qint64 nIndex = -1;
-                        if (!burnParseUnsignedDecimal(sAttachedIndex, &nIndex) ||
+                        if (!burnParseUnsignedDecimal(sAttachedIndex, &nIndex) || (nIndex < 1) ||
                             (nIndex > (std::numeric_limits<qint32>::max)())) return false;
                         container.nAttachedIndex = (qint32)nIndex;
                     } else if (!sAttachedIndex.isEmpty()) {
@@ -433,7 +476,7 @@ static bool burnParseManifest(const QByteArray &baManifest, BURN_MANIFEST_INFO *
                                         (listElements.at(0) == QStringLiteral("BurnManifest"));
             if (bUXPayload || bGlobalPayload) {
                 BURN_PENDING_PAYLOAD payload = {};
-                if (!burnReadPayloadAttributes(xml.attributes(), bUXPayload, &payload) ||
+                if (!burnReadPayloadAttributes(xml.attributes(), bUXPayload, bIsV4, &payload) ||
                     setPayloadIds.contains(payload.payload.sPayloadId)) {
                     return false;
                 }
@@ -465,7 +508,7 @@ static bool burnParseManifest(const QByteArray &baManifest, BURN_MANIFEST_INFO *
         } else if (xml.isEndElement()) {
             const QString sName = xml.name().toString();
             if (listElements.isEmpty() || (listElements.constLast() != sName) ||
-                (xml.namespaceUri().toString() != BURN_NAMESPACE)) {
+                (xml.namespaceUri().toString() != sManifestNamespace)) {
                 return false;
             }
             if ((listElements.size() == 3) && (sName == sCurrentPackageElement)) {
@@ -481,17 +524,14 @@ static bool burnParseManifest(const QByteArray &baManifest, BURN_MANIFEST_INFO *
         if (!setPayloadIds.contains(sRef)) return false;
     }
 
-    qint32 nAttachedContainers = 0;
+    pInfo->bIsV4 = bIsV4;
     for (auto it = mapContainers.constBegin(); it != mapContainers.constEnd(); ++it) {
         // Detached containers are declared by the manifest but are not bytes in
         // this bundle.  Accepting them would make a successful open silently
         // omit part of the bundle, so the embedded-only reader fails closed.
         if (!it.value().bAttached) return false;
-        // AttachedIndex is the Burn container index; UX occupies index zero.
-        if ((it.value().nAttachedIndex != 1) || (++nAttachedContainers != 1)) return false;
-        pInfo->bHasAttachedContainer = true;
-        pInfo->nAttachedContainerSize = it.value().nFileSize;
-        pInfo->baAttachedContainerSHA1 = it.value().baSHA1;
+        if (pInfo->mapAttachedContainers.contains(it.value().nAttachedIndex)) return false;
+        pInfo->mapAttachedContainers.insert(it.value().nAttachedIndex, it.value());
     }
 
     for (BURN_PENDING_PAYLOAD pending : listPayloads) {
@@ -505,6 +545,7 @@ static bool burnParseManifest(const QByteArray &baManifest, BURN_MANIFEST_INFO *
             if ((payload.containerType != XBurn::CONTAINER_TYPE_UX) ||
                 !burnEmbeddedNameIndex(payload.sSourcePath, QChar('u'), &nEmbeddedIndex)) return false;
             Q_UNUSED(nEmbeddedIndex)
+            payload.nContainerIndex = 0;
             pInfo->listUXPayloads.append(payload);
         } else if (payload.containerType == XBurn::CONTAINER_TYPE_UNKNOWN) {
             if (!pending.bEmbedded) {
@@ -520,7 +561,8 @@ static bool burnParseManifest(const QByteArray &baManifest, BURN_MANIFEST_INFO *
             if (!burnEmbeddedNameIndex(payload.sSourcePath, QChar('a'), &nEmbeddedIndex)) return false;
             Q_UNUSED(nEmbeddedIndex)
             payload.containerType = XBurn::CONTAINER_TYPE_ATTACHED;
-            pInfo->listAttachedPayloads.append(payload);
+            payload.nContainerIndex = container.nAttachedIndex;
+            pInfo->mapAttachedPayloads[container.nAttachedIndex].append(payload);
         }
     }
 
@@ -529,7 +571,7 @@ static bool burnParseManifest(const QByteArray &baManifest, BURN_MANIFEST_INFO *
 
 static bool burnMapCabinetPayloads(const QList<BURN_CAB_ENTRY> &listEntries,
                                    const QList<XBurn::PAYLOAD_RECORD> &listManifestPayloads,
-                                   XBurn::CONTAINER_TYPE containerType,
+                                   XBurn::CONTAINER_TYPE containerType, qint32 nContainerIndex,
                                    QList<XBurn::PAYLOAD_RECORD> *pOutput)
 {
     if (!pOutput) return false;
@@ -548,13 +590,15 @@ static bool burnMapCabinetPayloads(const QList<BURN_CAB_ENTRY> &listEntries,
         XBurn::PAYLOAD_RECORD payload = mapPayloads.take(entry.sName);
         qint32 nEmbeddedIndex = -1;
         const QChar prefix = (containerType == XBurn::CONTAINER_TYPE_UX) ? QChar('u') : QChar('a');
-        const qint32 nExpectedIndex = i - nFirstPhysical;
         if (!burnEmbeddedNameIndex(entry.sName, prefix, &nEmbeddedIndex) ||
-            (nEmbeddedIndex != nExpectedIndex) || (payload.nFileSize != entry.nSize)) {
+            ((payload.nFileSize >= 0) && (payload.nFileSize != entry.nSize))) {
             return false;
         }
+        Q_UNUSED(nEmbeddedIndex)
         payload.containerType = containerType;
+        payload.nContainerIndex = nContainerIndex;
         payload.nInnerIndex = entry.nIndex;
+        payload.nFileSize = entry.nSize;
         pOutput->append(payload);
     }
 
@@ -589,12 +633,11 @@ static bool burnAssignPublicPaths(QList<XBurn::PAYLOAD_RECORD> *pPayloads)
 }
 
 static XBurn::CONTAINER_CONTEXT *burnGetContainer(XBurn::UNPACK_CONTEXT *pContext,
-                                                   XBurn::CONTAINER_TYPE containerType)
+                                                   qint32 nContainerIndex)
 {
-    if (!pContext) return nullptr;
-    if (containerType == XBurn::CONTAINER_TYPE_UX) return &pContext->ux;
-    if (containerType == XBurn::CONTAINER_TYPE_ATTACHED) return &pContext->attached;
-    return nullptr;
+    if (!pContext || (nContainerIndex < 0) ||
+        (nContainerIndex >= pContext->listContainers.size())) return nullptr;
+    return pContext->listContainers.at(nContainerIndex);
 }
 
 static bool burnPositionContainer(XBurn::CONTAINER_CONTEXT *pContainer, qint32 nTargetIndex,
@@ -653,8 +696,13 @@ XBurn::UNPACK_LIFETIME_STATE::~UNPACK_LIFETIME_STATE()
 bool XBurn::deleteUnpackContext(UNPACK_CONTEXT *pContext)
 {
     if (!pContext) return true;
-    bool bResult = burnFinishContainer(&pContext->attached);
-    if (!burnFinishContainer(&pContext->ux)) bResult = false;
+    bool bResult = true;
+    for (qint32 i = pContext->listContainers.size() - 1; i >= 0; --i) {
+        CONTAINER_CONTEXT *pContainer = pContext->listContainers.at(i);
+        if (!burnFinishContainer(pContainer)) bResult = false;
+        delete pContainer;
+    }
+    pContext->listContainers.clear();
     if (pContext->pSourceValidator) {
         pContext->pSourceValidator->releaseUnpackSource(&pContext->sourceValidationState);
         delete pContext->pSourceValidator;
@@ -770,16 +818,12 @@ XBinary::FT XBurn::getFileType()
 XBurn::INTERNAL_INFO XBurn::_detect(PDSTRUCT *pPdStruct)
 {
     INTERNAL_INFO result = {};
-    result.nUXOffset = -1;
-    result.nAttachedOffset = -1;
     if (isImage() || !getDevice() || !XBinary::isPdStructNotCanceled(pPdStruct)) return result;
 
     XPE pe(getDevice(), false, getModuleAddress());
-    if (!pe.isValid(pPdStruct)) {
-        return result;
-    }
+    if (!pe.isValid(pPdStruct)) return result;
     const qint64 nTotalSize = getSize();
-    if (nTotalSize < BURN_SECTION_SIZE) return result;
+    if (nTotalSize < BURN_SECTION_MIN_SIZE) return result;
 
     QList<XPE_DEF::IMAGE_SECTION_HEADER> listSectionHeaders = pe.getSectionHeaders(pPdStruct);
     QList<XPE::SECTION_RECORD> listSections = pe.getSectionRecords(&listSectionHeaders, pPdStruct);
@@ -794,16 +838,28 @@ XBurn::INTERNAL_INFO XBurn::_detect(PDSTRUCT *pPdStruct)
             nBurnSections++;
         }
     }
-    if ((nBurnSections != 1) || (burnSection.nSize < BURN_SECTION_SIZE) ||
+    if ((nBurnSections != 1) || (burnSection.nSize < BURN_SECTION_MIN_SIZE) ||
         !burnRangeIsValid(burnSection.nOffset, burnSection.nSize, nTotalSize)) {
         return result;
     }
 
-    const QByteArray baHeader = read_array_process(burnSection.nOffset, BURN_SECTION_SIZE, pPdStruct);
-    if ((baHeader.size() != BURN_SECTION_SIZE) ||
+    QByteArray baHeader = read_array_process(burnSection.nOffset, BURN_SECTION_MIN_SIZE, pPdStruct);
+    if ((baHeader.size() != BURN_SECTION_MIN_SIZE) ||
         (burnReadLE32(baHeader, 0) != BURN_SECTION_MAGIC) ||
-        (burnReadLE32(baHeader, 4) != BURN_SECTION_VERSION_V3) ||
+        (burnReadLE32(baHeader, 4) != BURN_SECTION_VERSION) ||
         (burnReadLE32(baHeader, 40) != BURN_CONTAINER_FORMAT_CAB)) {
+        return result;
+    }
+
+    const quint32 nContainerCount = burnReadLE32(baHeader, 44);
+    if ((nContainerCount < 1) || (nContainerCount > (quint32)BURN_MAX_CONTAINERS) ||
+        (nContainerCount > (quint32)((burnSection.nSize - BURN_SECTION_FIXED_SIZE) / 4))) {
+        return result;
+    }
+    const qint64 nHeaderSize = BURN_SECTION_FIXED_SIZE + ((qint64)nContainerCount * 4);
+    if ((nHeaderSize > baHeader.size()) &&
+        ((nHeaderSize > (std::numeric_limits<qint32>::max)()) ||
+         ((baHeader = read_array_process(burnSection.nOffset, (qint32)nHeaderSize, pPdStruct)).size() != nHeaderSize))) {
         return result;
     }
 
@@ -811,12 +867,14 @@ XBurn::INTERNAL_INFO XBurn::_detect(PDSTRUCT *pPdStruct)
     const qint64 nStubSize = burnReadLE32(baHeader, 24);
     const qint64 nOriginalSignatureOffset = burnReadLE32(baHeader, 32);
     const qint64 nOriginalSignatureSize = burnReadLE32(baHeader, 36);
-    const quint32 nContainerCount = burnReadLE32(baHeader, 44);
-    const qint64 nUXSize = burnReadLE32(baHeader, 48);
-    const qint64 nAttachedSizeField = burnReadLE32(baHeader, 52);
+    QList<qint64> listContainerSizes;
+    for (quint32 i = 0; i < nContainerCount; ++i) {
+        listContainerSizes.append((qint64)burnReadLE32(baHeader, BURN_SECTION_FIXED_SIZE + ((qint32)i * 4)));
+    }
+    const qint64 nUXSize = listContainerSizes.constFirst();
 
-    if (burnIsAllZero(baBundleId) || (nContainerCount < 1) || (nContainerCount > 2) ||
-        (nStubSize <= 0) || (nUXSize < (qint64)sizeof(XCab::CFHEADER)) ||
+    if (burnIsAllZero(baBundleId) || (nStubSize <= 0) ||
+        (nUXSize < (qint64)sizeof(XCab::CFHEADER)) ||
         !burnRangeIsValid(0, nStubSize, nTotalSize) ||
         !burnRangeIsValid(nStubSize, nUXSize, nTotalSize) ||
         ((burnSection.nOffset + burnSection.nSize) > nStubSize) ||
@@ -841,24 +899,36 @@ XBurn::INTERNAL_INFO XBurn::_detect(PDSTRUCT *pPdStruct)
         nEngineEnd = signature.nOffset + signature.nSize;
     }
 
-    qint64 nAttachedOffset = -1;
-    qint64 nAttachedSize = 0;
-    qint64 nPhysicalEnd = nEngineEnd;
-    if (nContainerCount == 2) {
-        if (nAttachedSizeField < (qint64)sizeof(XCab::CFHEADER)) return result;
-        nAttachedOffset = nEngineEnd;
-        nAttachedSize = nAttachedSizeField;
-        if (!burnRangeIsValid(nAttachedOffset, nAttachedSize, nTotalSize)) return result;
-        nPhysicalEnd = nAttachedOffset + nAttachedSize;
-    } else if (nAttachedSizeField != 0) {
-        return result;
+    CONTAINER_RECORD uxContainer = {};
+    uxContainer.containerType = CONTAINER_TYPE_UX;
+    uxContainer.nContainerIndex = 0;
+    uxContainer.nOffset = nStubSize;
+    uxContainer.nSize = nUXSize;
+    result.listContainers.append(uxContainer);
+
+    qint64 nAttachedCursor = nEngineEnd;
+    for (quint32 i = 1; i < nContainerCount; ++i) {
+        const qint64 nContainerSize = listContainerSizes.at((qint32)i);
+        if ((nContainerSize < (qint64)sizeof(XCab::CFHEADER)) ||
+            !burnRangeIsValid(nAttachedCursor, nContainerSize, nTotalSize)) {
+            result.listContainers.clear();
+            return result;
+        }
+        CONTAINER_RECORD container = {};
+        container.containerType = CONTAINER_TYPE_ATTACHED;
+        container.nContainerIndex = (qint32)i;
+        container.nOffset = nAttachedCursor;
+        container.nSize = nContainerSize;
+        result.listContainers.append(container);
+        nAttachedCursor += nContainerSize;
     }
+    const qint64 nPhysicalEnd = (nContainerCount > 1) ? nAttachedCursor : nEngineEnd;
 
     // A valid writer leaves only the current Authenticode certificate after
     // the UX/attached contents.  For a one-container signed bundle EngineEnd
     // itself includes that certificate, so compare against the actual content
     // boundary rather than EngineEnd.
-    const qint64 nContentEnd = (nContainerCount == 2) ? nPhysicalEnd : nUXEnd;
+    const qint64 nContentEnd = (nContainerCount > 1) ? nPhysicalEnd : nUXEnd;
     if (signature.nSize > 0) {
         if ((signature.nOffset < nContentEnd) ||
             ((signature.nOffset + signature.nSize) != nTotalSize)) return result;
@@ -866,62 +936,81 @@ XBurn::INTERNAL_INFO XBurn::_detect(PDSTRUCT *pPdStruct)
         return result;
     }
 
-    QList<BURN_CAB_ENTRY> listUXEntries;
-    QList<BURN_CAB_ENTRY> listAttachedEntries;
+    QList<QList<BURN_CAB_ENTRY> > listContainerEntries;
     QByteArray baManifest;
-    if (!burnScanCabinet(getDevice(), nStubSize, nUXSize, true, &listUXEntries, &baManifest, pPdStruct)) {
-        return result;
-    }
-    if ((nContainerCount == 2) &&
-        !burnScanCabinet(getDevice(), nAttachedOffset, nAttachedSize, false,
-                         &listAttachedEntries, nullptr, pPdStruct)) {
-        return result;
+    for (qint32 i = 0; i < result.listContainers.size(); ++i) {
+        const CONTAINER_RECORD &container = result.listContainers.at(i);
+        QList<BURN_CAB_ENTRY> listEntries;
+        if (!burnScanCabinet(getDevice(), container.nOffset, container.nSize, i == 0,
+                             &listEntries, (i == 0) ? &baManifest : nullptr, pPdStruct)) {
+            result.listContainers.clear();
+            return result;
+        }
+        listContainerEntries.append(listEntries);
     }
 
     BURN_MANIFEST_INFO manifestInfo = {};
     if (!burnParseManifest(baManifest, &manifestInfo, pPdStruct) ||
-        (manifestInfo.bHasAttachedContainer != (nContainerCount == 2))) {
+        (manifestInfo.mapAttachedContainers.size() != ((qint32)nContainerCount - 1))) {
+        result.listContainers.clear();
         return result;
     }
-    if (nContainerCount == 2) {
-        if ((manifestInfo.nAttachedContainerSize != nAttachedSize) ||
-            (manifestInfo.baAttachedContainerSHA1.size() != 20)) {
+    for (qint32 i = 1; i < (qint32)nContainerCount; ++i) {
+        if (!manifestInfo.mapAttachedContainers.contains(i)) {
+            result.listContainers.clear();
             return result;
         }
-        QByteArray baAttachedSHA1;
-        if (!burnHashRange(getDevice(), nAttachedOffset, nAttachedSize, &baAttachedSHA1, pPdStruct) ||
-            (baAttachedSHA1 != manifestInfo.baAttachedContainerSHA1)) {
+        const BURN_MANIFEST_CONTAINER manifestContainer = manifestInfo.mapAttachedContainers.value(i);
+        CONTAINER_RECORD &physicalContainer = result.listContainers[i];
+        QCryptographicHash::Algorithm algorithm;
+        if ((manifestContainer.nFileSize != physicalContainer.nSize) ||
+            !burnHashAlgorithm(manifestContainer.baHash, &algorithm)) {
+            result.listContainers.clear();
             return result;
         }
-    } else if (!manifestInfo.listAttachedPayloads.isEmpty()) {
-        return result;
+        QByteArray baActualHash;
+        if (!burnHashRange(getDevice(), physicalContainer.nOffset, physicalContainer.nSize,
+                           algorithm, &baActualHash, pPdStruct) ||
+            (baActualHash != manifestContainer.baHash)) {
+            result.listContainers.clear();
+            return result;
+        }
+        physicalContainer.sId = manifestContainer.sId;
+        physicalContainer.baHash = manifestContainer.baHash;
     }
 
     QList<PAYLOAD_RECORD> listPublicPayloads;
     PAYLOAD_RECORD manifestPayload = {};
     manifestPayload.containerType = CONTAINER_TYPE_UX;
-    manifestPayload.nInnerIndex = listUXEntries.constFirst().nIndex;
+    manifestPayload.nContainerIndex = 0;
+    manifestPayload.nInnerIndex = listContainerEntries.constFirst().constFirst().nIndex;
     manifestPayload.sSourcePath = QStringLiteral("0");
     manifestPayload.sFilePath = QStringLiteral("manifest.xml");
     manifestPayload.sPayloadId = QStringLiteral("BurnManifest");
     manifestPayload.nFileSize = baManifest.size();
-    manifestPayload.baSHA1 = QCryptographicHash::hash(baManifest, QCryptographicHash::Sha1);
+    manifestPayload.baHash = QCryptographicHash::hash(
+        baManifest, manifestInfo.bIsV4 ? QCryptographicHash::Sha512 : QCryptographicHash::Sha1);
     listPublicPayloads.append(manifestPayload);
 
-    if (!burnMapCabinetPayloads(listUXEntries, manifestInfo.listUXPayloads,
-                                CONTAINER_TYPE_UX, &listPublicPayloads) ||
-        !burnMapCabinetPayloads(listAttachedEntries, manifestInfo.listAttachedPayloads,
-                                CONTAINER_TYPE_ATTACHED, &listPublicPayloads) ||
-        !burnAssignPublicPaths(&listPublicPayloads)) {
+    if (!burnMapCabinetPayloads(listContainerEntries.at(0), manifestInfo.listUXPayloads,
+                                CONTAINER_TYPE_UX, 0, &listPublicPayloads)) {
+        result.listContainers.clear();
+        return result;
+    }
+    for (qint32 i = 1; i < (qint32)nContainerCount; ++i) {
+        if (!burnMapCabinetPayloads(listContainerEntries.at(i), manifestInfo.mapAttachedPayloads.value(i),
+                                    CONTAINER_TYPE_ATTACHED, i, &listPublicPayloads)) {
+            result.listContainers.clear();
+            return result;
+        }
+    }
+    if (!burnAssignPublicPaths(&listPublicPayloads)) {
+        result.listContainers.clear();
         return result;
     }
 
     result.bIsValid = true;
     result.baBundleId = baBundleId;
-    result.nUXOffset = nStubSize;
-    result.nUXSize = nUXSize;
-    result.nAttachedOffset = nAttachedOffset;
-    result.nAttachedSize = nAttachedSize;
     result.listPayloads = listPublicPayloads;
     result.sVersion = pe.getResourcesVersionValue(QStringLiteral("FileVersion")).trimmed();
     if (result.sVersion.isEmpty()) result.sVersion = pe.getFileVersion().trimmed();
@@ -989,7 +1078,7 @@ static bool burnResolveActiveRecord(
     }
 
     const XBurn::PAYLOAD_RECORD *pPayload = &pContext->listPayloads.at(pContext->nCurrentPayload);
-    XBurn::CONTAINER_CONTEXT *pContainer = burnGetContainer(pContext, pPayload->containerType);
+    XBurn::CONTAINER_CONTEXT *pContainer = burnGetContainer(pContext, pPayload->nContainerIndex);
     if (!pContainer || !pContainer->bInitialized || !pContainer->pCab ||
         (pContainer->state.nCurrentIndex != pPayload->nInnerIndex) ||
         (pContainer->state.nCurrentOffset != pState->nCurrentOffset)) {
@@ -1052,8 +1141,11 @@ bool XBurn::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
     pContext->pOuterSourceDevice = guardedSource;
     pContext->nOwnerDeviceGeneration = getDeviceGeneration();
     pContext->pOwnerState = nullptr;
-    burnInitializeContainerContext(&pContext->ux, info.nUXOffset, info.nUXSize);
-    burnInitializeContainerContext(&pContext->attached, info.nAttachedOffset, info.nAttachedSize);
+    for (const CONTAINER_RECORD &record : info.listContainers) {
+        CONTAINER_CONTEXT *pContainer = new CONTAINER_CONTEXT;
+        burnInitializeContainerContext(pContainer, record.nOffset, record.nSize);
+        pContext->listContainers.append(pContainer);
+    }
     pContext->listPayloads = info.listPayloads;
     pContext->nCurrentPayload = 0;
     pContext->pSourceValidator = pSourceValidator;
@@ -1066,19 +1158,21 @@ bool XBurn::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
         return false;
     }
 
-    bool bOpen = burnOpenContainer(&pContext->ux, guardedSource.data(), mapProperties, pPdStruct);
-    if (bOpen && (info.nAttachedSize > 0)) {
-        bOpen = burnOpenContainer(&pContext->attached, guardedSource.data(), mapProperties, pPdStruct);
+    bool bOpen = (pContext->listContainers.size() == info.listContainers.size()) &&
+                 !pContext->listContainers.isEmpty();
+    for (qint32 i = 0; bOpen && (i < pContext->listContainers.size()); ++i) {
+        bOpen = burnOpenContainer(pContext->listContainers.at(i), guardedSource.data(),
+                                  mapProperties, pPdStruct);
     }
     if (!bOpen || !guardedThis || !guardedSource || !pLifetime->bOwnerAlive ||
-        (pContext->ux.state.nNumberOfRecords < 1)) {
+        (pContext->listContainers.constFirst()->state.nNumberOfRecords < 1)) {
         deleteUnpackContext(pContext);
         return false;
     }
 
     if (!pContext->listPayloads.isEmpty()) {
         const PAYLOAD_RECORD &firstPayload = pContext->listPayloads.constFirst();
-        CONTAINER_CONTEXT *pFirstContainer = burnGetContainer(pContext, firstPayload.containerType);
+        CONTAINER_CONTEXT *pFirstContainer = burnGetContainer(pContext, firstPayload.nContainerIndex);
         if (!burnPositionContainer(pFirstContainer, firstPayload.nInnerIndex, pPdStruct) ||
             !guardedThis || !guardedSource || !pLifetime->bOwnerAlive) {
             deleteUnpackContext(pContext);
@@ -1098,7 +1192,7 @@ bool XBurn::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
     pState->nCurrentIndex = 0;
     if (!pContext->listPayloads.isEmpty()) {
         CONTAINER_CONTEXT *pFirstContainer = burnGetContainer(
-            pContext, pContext->listPayloads.constFirst().containerType);
+            pContext, pContext->listPayloads.constFirst().nContainerIndex);
         if (!pFirstContainer) {
             deleteUnpackContext(pContext);
             return false;
@@ -1107,7 +1201,7 @@ bool XBurn::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
         pState->mapArchiveProperties = pFirstContainer->state.mapArchiveProperties;
     } else {
         pState->nCurrentOffset = 0;
-        pState->mapArchiveProperties = pContext->ux.state.mapArchiveProperties;
+        pState->mapArchiveProperties = pContext->listContainers.constFirst()->state.mapArchiveProperties;
     }
     pContext->pOwnerState = pState;
     pState->pContext = pContext;
@@ -1214,9 +1308,13 @@ bool XBurn::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
         return false;
     }
 
-    QByteArray baSHA1;
-    if ((stage.size() != pPayload->nFileSize) ||
-        !burnHashDevice(&stage, &baSHA1, pPdStruct) || (baSHA1 != pPayload->baSHA1) ||
+    QByteArray baActualHash;
+    QCryptographicHash::Algorithm hashAlgorithm = QCryptographicHash::Sha1;
+    const bool bHashOK = pPayload->baHash.isEmpty() ||
+                         (burnHashAlgorithm(pPayload->baHash, &hashAlgorithm) &&
+                          burnHashDevice(&stage, hashAlgorithm, &baActualHash, pPdStruct) &&
+                          (baActualHash == pPayload->baHash));
+    if ((stage.size() != pPayload->nFileSize) || !bHashOK ||
         !guardedThis || !guardedOutput || !pLifetime->bOwnerAlive ||
         !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) {
         return false;
@@ -1266,7 +1364,7 @@ bool XBurn::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         return false;
     }
     const PAYLOAD_RECORD &nextPayload = pContext->listPayloads.at(nNextPayload);
-    CONTAINER_CONTEXT *pNextContainer = burnGetContainer(pContext, nextPayload.containerType);
+    CONTAINER_CONTEXT *pNextContainer = burnGetContainer(pContext, nextPayload.nContainerIndex);
     if (!burnPositionContainer(pNextContainer, nextPayload.nInnerIndex, pPdStruct) ||
         !guardedThis || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) ||
         (pState->pContext != pContext) ||

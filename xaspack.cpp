@@ -10,28 +10,65 @@
 #include <QScopedValueRollback>
 #include <QUuid>
 
+#include <climits>
 #include <cstring>
 #include <vector>
 
-// version-specific stub offsets
-#define ASP_BLOCKS_212 0x57c
-#define ASP_BLOCKS_OTHER 0x5d8
-#define ASP_BLOCKS_242 0x5e4
-#define ASP_STRMLT_212 0x70e
-#define ASP_STRMLT_OTHER 0x76a
-#define ASP_STRMLT_242 0x776
-#define ASP_COMPB_212 0x6d6
-#define ASP_COMPB_OTHER 0x732
-#define ASP_COMPB_242 0x73e
-#define ASP_WRKBUF_212 0x148
-#define ASP_WRKBUF_OTHER 0x13a
-#define ASP_WRKBUF_242 0x148
-#define ASP_OEP_212 0x39b
-#define ASP_OEP_OTHER 0x401
-#define ASP_OEP_242 0x40d
-#define ASP_EPBUFF_212 0x3b9
-#define ASP_EPBUFF_OTHER 0x41f
-#define ASP_EPBUFF_242 0x42b
+// Stub layout table.  `nEpBuffOff` is relative to AddressOfEntryPoint; every
+// other offset is relative to (AddressOfEntryPoint - 1), which is where the
+// stub's own base pointer lands.  The values were derived per generation from
+// the packed corpus: the entry signature identifies the stub build, the
+// `68 00 00 00 00 c3` marker at nEpBuffOff confirms it, and the remaining
+// offsets locate the block table, the two constant decoder tables, the
+// call/jmp filter marker byte and the stored original entry point.
+namespace {
+
+struct ASPACK_LAYOUT {
+    XASPACK::AVER version;
+    const char *pszSignature;  // exact bytes required at the entry point
+    int nSignatureSize;
+    quint32 nEpBuffOff;  // "\x68\x00\x00\x00\x00\xc3" marker, EP-relative
+    quint32 nBlocksOff;
+    quint32 nBlockStride;  // bytes per block-table entry
+    quint32 nStrMltOff;
+    quint32 nCompBOff;
+    quint32 nWrkbufOff;
+    quint32 nOepOff;
+    const char *pszVersion;
+};
+
+// ASPack 2.00 and 2.01/2.1 keep the original entry point in the stub data area
+// instead of an immediate, and their block table uses 8-byte entries like 2.12.
+const ASPACK_LAYOUT g_aspackLayouts[] = {
+    {XASPACK::AVER_212, "\x60\xe8\x03\x00\x00\x00\xe9\xeb", 8, 0x3b9, 0x57c, 8, 0x70e, 0x6d6, 0x148, 0x39b, "2.12"},
+    {XASPACK::AVER_22, "\x60\xe8\x03\x00\x00\x00\xe9\xeb", 8, 0x414, 0x5d0, 12, 0x6ca, 0x692, 0x145, 0x3f6, "2.2"},
+    {XASPACK::AVER_OTHER, "\x60\xe8\x03\x00\x00\x00\xe9\xeb", 8, 0x41f, 0x5d8, 12, 0x76a, 0x732, 0x13a, 0x401, "2.xx"},
+    {XASPACK::AVER_242, "\x60\xe8\x03\x00\x00\x00\xe9\xeb", 8, 0x42b, 0x5e4, 12, 0x776, 0x73e, 0x148, 0x40d, "2.42"},
+    {XASPACK::AVER_200, "\x60\xe8\x70\x05\x00\x00\xeb", 7, 0x4fb, 0x0de, 8, 0x623, 0x5eb, 0x292, 0x0d2, "2.00"},
+    {XASPACK::AVER_201, "\x60\xe8\x72\x05\x00\x00\xeb", 7, 0x4fd, 0x0de, 8, 0x625, 0x5ed, 0x294, 0x0d2, "2.01/2.1"},
+};
+
+const ASPACK_LAYOUT *aspackLayout(XASPACK::AVER version)
+{
+    for (const ASPACK_LAYOUT &layout : g_aspackLayouts) {
+        if (layout.version == version) return &layout;
+    }
+    return nullptr;
+}
+
+// The 0x72-byte constant table the decoder indexes as `stuff[]`.  Requiring it
+// at the layout's offset keeps detection specific to a real ASPack stub.
+const quint8 g_aspackCompBTable[0x72] = {
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x0a, 0x0c, 0x0e, 0x10, 0x14, 0x18, 0x1c,
+    0x20, 0x28, 0x30, 0x38, 0x40, 0x50, 0x60, 0x70, 0x80, 0xa0, 0xc0, 0xe0, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x02, 0x02, 0x02, 0x02, 0x03, 0x03, 0x03, 0x03,
+    0x04, 0x04, 0x04, 0x04, 0x05, 0x05, 0x05, 0x05, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x02, 0x02,
+    0x03, 0x03, 0x04, 0x04, 0x05, 0x05, 0x06, 0x06, 0x07, 0x07, 0x08, 0x08, 0x09, 0x09, 0x0a, 0x0a,
+    0x0b, 0x0b, 0x0c, 0x0c, 0x0d, 0x0d, 0x0e, 0x0e, 0x0f, 0x0f, 0x10, 0x10, 0x11, 0x11, 0x11, 0x11,
+    0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x12, 0x12, 0x12, 0x12, 0x12, 0x12,
+    0x12, 0x12};
+
+}  // namespace
 
 static inline quint32 aspRd32(const quint8 *p)
 {
@@ -468,7 +505,8 @@ void XASPACK::_initDict(ASPK *s, quint8 **ppWrkbuf, int n, quint32 sz)
 // multi-section PE rebuild (sections mapped by RVA, raw == rva)
 // ---------------------------------------------------------------------------
 
-QByteArray XASPACK::_buildPE(const QByteArray &baImage, const QList<XPE_DEF::IMAGE_SECTION_HEADER> &listSections, int nSectCount, quint32 nImageBase, quint32 nOEP)
+QByteArray XASPACK::_buildPE(const QByteArray &baImage, const QList<XPE_DEF::IMAGE_SECTION_HEADER> &listSections, int nSectCount, quint32 nImageBase,
+                            quint32 nOEP, qint64 nOutputLimit)
 {
     if (nSectCount <= 0) return QByteArray();
 
@@ -480,14 +518,15 @@ QByteArray XASPACK::_buildPE(const QByteArray &baImage, const QList<XPE_DEF::IMA
         nRawBase = aspAlign(nHeaderBase + 0x28 * (nSectCount + 1), 0x200);
     }
 
-    quint32 nRawTotal = nRawBase;
+    quint64 nRawTotal = nRawBase;
     quint32 nMaxVEnd = 0;
     for (int i = 0; i < nSectCount; i++) {
         nRawTotal += aspAlign(listSections.at(i).Misc.VirtualSize, 0x200);
         nMaxVEnd = qMax(nMaxVEnd, listSections.at(i).VirtualAddress + listSections.at(i).Misc.VirtualSize);
     }
 
-    QByteArray baResult(nRawTotal, (char)0);
+    if ((nRawTotal > INT_MAX) || ((nOutputLimit >= 0) && (nRawTotal > (quint64)nOutputLimit))) return QByteArray();
+    QByteArray baResult((int)nRawTotal, (char)0);
     char *p = baResult.data();
 
     _write_uint16(p + 0, 0x5A4D);
@@ -567,31 +606,30 @@ XASPACK::INTERNAL_INFO XASPACK::_detect(PDSTRUCT *pPdStruct)
         return result;
     }
 
-    QByteArray baEp = read_array_process(nEpOffset, 0x480, pPdStruct);
+    QByteArray baEp = read_array_process(nEpOffset, 0x800, pPdStruct);
     if (baEp.size() < 0x3bf) {
         return result;
     }
     const char *ep = baEp.constData();
-
-    if (memcmp(ep, "\x60\xe8\x03\x00\x00\x00\xe9\xeb", 8) != 0) {
-        return result;
-    }
+    const qint64 nEpSize = baEp.size();
 
     const char kMark[] = "\x68\x00\x00\x00\x00\xc3";
-    if ((baEp.size() >= ASP_EPBUFF_212 + 6) && (memcmp(ep + ASP_EPBUFF_212, kMark, 6) == 0)) {
-        result.version = AVER_212;
-        result.sVersion = "2.12";
-    } else if ((baEp.size() >= ASP_EPBUFF_OTHER + 6) && (memcmp(ep + ASP_EPBUFF_OTHER, kMark, 6) == 0)) {
-        result.version = AVER_OTHER;
-        result.sVersion = "2.xx";
-    } else if ((baEp.size() >= ASP_EPBUFF_242 + 6) && (memcmp(ep + ASP_EPBUFF_242, kMark, 6) == 0)) {
-        result.version = AVER_242;
-        result.sVersion = "2.42";
-    } else {
+    for (const ASPACK_LAYOUT &layout : g_aspackLayouts) {
+        if (nEpSize < layout.nSignatureSize) continue;
+        if (memcmp(ep, layout.pszSignature, (size_t)layout.nSignatureSize) != 0) continue;
+        if (nEpSize < (qint64)layout.nEpBuffOff + 6) continue;
+        if (memcmp(ep + layout.nEpBuffOff, kMark, 6) != 0) continue;
+        // The constant decoder table is stored (AddressOfEntryPoint - 1)-relative.
+        const qint64 nCompBEpOff = (qint64)layout.nCompBOff - 1;
+        if ((nCompBEpOff < 0) || (nEpSize < nCompBEpOff + (qint64)sizeof(g_aspackCompBTable))) continue;
+        if (memcmp(ep + nCompBEpOff, g_aspackCompBTable, sizeof(g_aspackCompBTable)) != 0) continue;
+
+        result.version = layout.version;
+        result.sVersion = layout.pszVersion;
+        result.bIsValid = true;
         return result;
     }
 
-    result.bIsValid = true;
     return result;
 }
 
@@ -609,6 +647,8 @@ QMap<XBinary::UNPACK_PROP, QVariant> XASPACK::getDefaultUnpackProperties()
 bool XASPACK::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
+    qint64 nOutputLimit = -1;
+    if (!getUnpackOutputLimit(mapProperties, &nOutputLimit)) return false;
     const PDSTRUCTLIFETIME progressLifetime = pPdStruct ? retainPdStructLifetime(pPdStruct) : PDSTRUCTLIFETIME();
     const auto isProgressAlive = [&]() -> bool {
         return !pPdStruct || isPdStructLifetimeAlive(progressLifetime);
@@ -660,7 +700,7 @@ bool XASPACK::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant>
     if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
         (getDevice() != guardedSource.data()) || !info.bIsValid) return false;
     QByteArray baData;
-    const bool bUnpacked = worker._unpackToBuffer(baData, pPdStruct);
+    const bool bUnpacked = worker._unpackToBuffer(baData, nOutputLimit, pPdStruct);
     if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
         (getDevice() != guardedSource.data()) || !bUnpacked || baData.isEmpty() ||
         !isPdStructNotCanceled(pPdStruct)) return false;
@@ -835,7 +875,7 @@ bool XASPACK::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *
     return true;
 }
 
-bool XASPACK::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
+bool XASPACK::_unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct)
 {
     baOut.clear();
 
@@ -856,18 +896,21 @@ bool XASPACK::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
     const quint32 nImageBase = (quint32)pe.getOptionalHeader_ImageBase();
     const quint32 nEp = pe.getOptionalHeader_AddressOfEntryPoint() - 1;
 
-    quint32 nBlocksOff, nStrMltOff, nCompBOff, nWrkbufOff, nOepOff;
-    switch (info.version) {
-        case AVER_212: nBlocksOff = ASP_BLOCKS_212; nStrMltOff = ASP_STRMLT_212; nCompBOff = ASP_COMPB_212; nWrkbufOff = ASP_WRKBUF_212; nOepOff = ASP_OEP_212; break;
-        case AVER_242: nBlocksOff = ASP_BLOCKS_242; nStrMltOff = ASP_STRMLT_242; nCompBOff = ASP_COMPB_242; nWrkbufOff = ASP_WRKBUF_242; nOepOff = ASP_OEP_242; break;
-        default: nBlocksOff = ASP_BLOCKS_OTHER; nStrMltOff = ASP_STRMLT_OTHER; nCompBOff = ASP_COMPB_OTHER; nWrkbufOff = ASP_WRKBUF_OTHER; nOepOff = ASP_OEP_OTHER; break;
-    }
+    const ASPACK_LAYOUT *pLayout = aspackLayout(info.version);
+    if (!pLayout) return false;
+    const quint32 nBlocksOff = pLayout->nBlocksOff;
+    const quint32 nStrMltOff = pLayout->nStrMltOff;
+    const quint32 nCompBOff = pLayout->nCompBOff;
+    const quint32 nWrkbufOff = pLayout->nWrkbufOff;
+    const quint32 nOepOff = pLayout->nOepOff;
+    const quint32 nBlockStride = pLayout->nBlockStride;
 
     quint32 nImageSize = 0;
     for (int i = 0; i < nSectCount; i++) {
         nImageSize = qMax(nImageSize, listSections.at(i).VirtualAddress + listSections.at(i).Misc.VirtualSize);
     }
-    if (!nImageSize || (nImageSize > (256u * 1024 * 1024))) return false;
+    if (!nImageSize || (nImageSize > (256u * 1024 * 1024)) ||
+        ((nOutputLimit >= 0) && ((quint64)nImageSize > (quint64)nOutputLimit))) return false;
 
     QByteArray baImage(nImageSize, (char)0);
     for (int i = 0; i < nSectCount; i++) {
@@ -942,14 +985,12 @@ bool XASPACK::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
             }
         }
 
-        if (info.version == AVER_212) {
-            blocks += 8;
-        } else {
-            blocks += 12;
+        blocks += nBlockStride;
+        if (nBlockStride != 8) {
             if ((quint64)(blocks - image) + 8 > nImageSize) break;
             block_size = aspRd32(blocks + 4);
             while ((block_size + 0x10e) == 0) {
-                blocks += 12;
+                blocks += nBlockStride;
                 if ((quint64)(blocks - image) + 8 > nImageSize) break;
                 block_size = aspRd32(blocks + 4);
             }
@@ -967,7 +1008,7 @@ bool XASPACK::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
     if (((quint64)nEp + nOepOff + 4) > nImageSize) return false;
     quint32 nOEP = aspRd32(image + nEp + nOepOff);
 
-    QByteArray baPE = _buildPE(baImage, listSections, nSectCount, nImageBase, nOEP);
+    QByteArray baPE = _buildPE(baImage, listSections, nSectCount, nImageBase, nOEP, nOutputLimit);
     if (baPE.isEmpty()) return false;
 
     baOut = baPE;

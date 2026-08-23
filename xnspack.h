@@ -107,9 +107,9 @@ private:
     // at RVA nImpRva (empty on failure / no imports). Sets *pnDescSize.
     QByteArray _reconstructImports(QByteArray *pBaBlob, quint32 nRva, quint32 nImpRva, quint32 *pnDescSize, PDSTRUCT *pPdStruct);
     static QByteArray _buildPE(const QByteArray &baBlob, quint32 nRva, quint32 nImageBase, quint32 nOEP, const QByteArray &baImportSection = QByteArray(),
-                               quint32 nImpRva = 0, quint32 nDescSize = 0);
+                               quint32 nImpRva = 0, quint32 nDescSize = 0, qint64 nOutputLimit = -1);
 
-    bool _unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct);
+    bool _unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct);
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);
     // Locate the nsp0 compressed-block header (start-of-stuff) by scanning for the
     // highest self-consistent header whose dsize field equals nSec0Vsize. Used for

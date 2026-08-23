@@ -10,6 +10,7 @@
 #include <QScopedValueRollback>
 #include <QUuid>
 
+#include <climits>
 #include <cstring>
 #include <vector>
 
@@ -683,7 +684,7 @@ QByteArray XNSPACK::_reconstructImports(QByteArray *pBaBlob, quint32 nRva, quint
 // ---------------------------------------------------------------------------
 
 QByteArray XNSPACK::_buildPE(const QByteArray &baBlob, quint32 nRva, quint32 nImageBase, quint32 nOEP, const QByteArray &baImportSection, quint32 nImpRva,
-                             quint32 nDescSize)
+                             quint32 nDescSize, qint64 nOutputLimit)
 {
     const bool bImports = !baImportSection.isEmpty();
     const quint32 nHeaderBase = 0x40 + 4 + 20 + 0xE0;
@@ -696,9 +697,11 @@ QByteArray XNSPACK::_buildPE(const QByteArray &baBlob, quint32 nRva, quint32 nIm
     const quint32 nNumSections = nBaseSecs + (bGhost ? 1 : 0);
 
     const quint32 nRsz = nspAlign((quint32)baBlob.size(), 0x200);
-    const quint32 nImpRaw = nRawBase + nRsz;
+    const quint64 nImpRaw = (quint64)nRawBase + nRsz;
     const quint32 nImpRsz = bImports ? nspAlign((quint32)baImportSection.size(), 0x200) : 0;
-    QByteArray baResult(nImpRaw + nImpRsz, (char)0);
+    const quint64 nRawTotal = nImpRaw + nImpRsz;
+    if ((nRawTotal > INT_MAX) || ((nOutputLimit >= 0) && (nRawTotal > (quint64)nOutputLimit))) return QByteArray();
+    QByteArray baResult((int)nRawTotal, (char)0);
     char *p = baResult.data();
 
     _write_uint16(p + 0, 0x5A4D);
@@ -934,6 +937,8 @@ QMap<XBinary::UNPACK_PROP, QVariant> XNSPACK::getDefaultUnpackProperties()
 bool XNSPACK::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
+    qint64 nOutputLimit = -1;
+    if (!getUnpackOutputLimit(mapProperties, &nOutputLimit)) return false;
     const PDSTRUCTLIFETIME progressLifetime = pPdStruct ? retainPdStructLifetime(pPdStruct) : PDSTRUCTLIFETIME();
     const auto isProgressAlive = [&]() -> bool {
         return !pPdStruct || isPdStructLifetimeAlive(progressLifetime);
@@ -985,7 +990,7 @@ bool XNSPACK::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant>
     if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
         (getDevice() != guardedSource.data()) || !info.bIsValid) return false;
     QByteArray baData;
-    const bool bUnpacked = worker._unpackToBuffer(baData, pPdStruct);
+    const bool bUnpacked = worker._unpackToBuffer(baData, nOutputLimit, pPdStruct);
     if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
         (getDevice() != guardedSource.data()) || !bUnpacked || baData.isEmpty() ||
         !isPdStructNotCanceled(pPdStruct)) return false;
@@ -1158,7 +1163,7 @@ bool XNSPACK::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *
     return true;
 }
 
-bool XNSPACK::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
+bool XNSPACK::_unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct)
 {
     baOut.clear();
 
@@ -1196,7 +1201,8 @@ bool XNSPACK::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
 
     quint32 nDsize = nspRd32(stuff + 9);
     quint32 nSsize = nspRd32(stuff + 5);
-    if ((nSsize <= 13) || (nDsize != info.nDsize)) return false;
+    if ((nSsize <= 13) || (nDsize != info.nDsize) ||
+        ((nOutputLimit >= 0) && ((quint64)nDsize > (quint64)nOutputLimit))) return false;
 
     std::vector<quint16> table(nTableEntries);
     QByteArray baDest(nDsize, (char)0);
@@ -1211,7 +1217,7 @@ bool XNSPACK::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
     quint32 nDescSize = 0;
     QByteArray baImports = _reconstructImports(&baDest, info.nRva, nImpRva, &nDescSize, pPdStruct);
 
-    QByteArray baPE = _buildPE(baDest, info.nRva, info.nImageBase, info.nOEP, baImports, nImpRva, nDescSize);
+    QByteArray baPE = _buildPE(baDest, info.nRva, info.nImageBase, info.nOEP, baImports, nImpRva, nDescSize, nOutputLimit);
     if (baPE.isEmpty()) return false;
 
     baOut = baPE;

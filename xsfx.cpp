@@ -252,8 +252,17 @@ XSFX::INTERNAL_INFO XSFX::_detect(PDSTRUCT *pPdStruct)
         return result;
     }
 
-    // 1) Preferred: the archive sits in the PE overlay.
-    qint64 nOverlayOffset = getOverlayOffset(pPdStruct);
+    // 1) Preferred: the archive sits in the executable overlay.  XSFX itself
+    // has XBinary's flat memory map, whose raw extent is the whole input, so
+    // asking `this` for the overlay always returned EOF.  Use the parsed stub
+    // map instead.
+    qint64 nOverlayOffset = -1;
+    XPE pe(getDevice(), isImage(), getModuleAddress());
+    if (pe.isValid(pPdStruct)) {
+        nOverlayOffset = pe.getOverlayOffset(pPdStruct);
+    } else {
+        nOverlayOffset = msdos.getOverlayOffset(pPdStruct);
+    }
     if ((nOverlayOffset > 0) && (nOverlayOffset < nTotalSize)) {
         ARCTYPE type = ARC_UNKNOWN;
         qint64 nArchiveSize = 0;
@@ -347,6 +356,9 @@ QMap<XBinary::UNPACK_PROP, QVariant> XSFX::getDefaultUnpackProperties()
 bool XSFX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
+    qint64 nOutputLimit = -1;
+    if (!getUnpackOutputLimit(mapProperties, &nOutputLimit)) return false;
+    Q_UNUSED(nOutputLimit)
     QSharedPointer<bool> pOperationState = m_pUnpackOperationState;
     if (!pOperationState || *pOperationState) return false;
     QScopedValueRollback<bool> operationGuard(*pOperationState, true);

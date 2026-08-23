@@ -86,8 +86,9 @@ private:
 
     struct DETECT {
         bool bIsValid;
+        quint32 nVersion;    // 10 or 11 (11 covers MEW 11 and 11 SE)
         qint32 nIndex;       // empty-section index i (dest = i, source = i+1)
-        qint64 nFileOffset;  // MEW stub table file offset (0x154/0x158)
+        qint64 nFileOffset;  // MEW stub table file offset (0x154/0x155/0x158)
         quint32 nOffDiff;
         quint32 nSsize;
         quint32 nDsize;
@@ -99,14 +100,16 @@ private:
     };
 
     static qint64 _aplibDepack(const quint8 *pSrc, qint64 nSrcSize, quint8 *pDst, qint64 nDstSize, qint64 *pnSrcConsumed);
-    static QByteArray _buildPE(const QByteArray &baBuf, const QList<SECT> &listSections, quint32 nImageBase, quint32 nOEP);
+    static QByteArray _buildPE(const QByteArray &baBuf, const QList<SECT> &listSections, quint32 nImageBase, quint32 nOEP,
+                               qint64 nOutputLimit = -1);
 
     // LZMA path: stock raw LZMA1 (lc=4/lp=0/pb=2) decode + MEW container framing.
     static bool _decodeRawLzma(const quint8 *pSrc, qint64 nSrcSize, quint8 *pDst, quint32 nDstSize, quint32 nDictSize);
     static void _bcjFilter(quint8 *pData, quint32 nSize, quint32 nLen);
     bool _lzmaDepack(QByteArray &baBuf, qint64 nContainerOff, quint32 nUseLzma, quint32 nDsize, quint32 nVma, PDSTRUCT *pPdStruct);
 
-    bool _unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct);
+    bool _unpackMew10(QByteArray &baBuf, const DETECT &d, QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct);
+    bool _unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct);
     DETECT _detect(PDSTRUCT *pPdStruct);
 };
 

@@ -17,8 +17,9 @@ class XMaterializedUnpackGuard;
  * "poly decryptor" byte-VM, and the PE fixups were understood from the (GPL)
  * libclamav yc.c / pe.c reference, then reimplemented from scratch here.
  *
- * NOTE: not yet verified against real samples. Output is the decrypted PE with
- * the trailing yC section removed and OEP/headers restored. */
+ * Verified against Cisco-Talos ClamAV's benign clam-yc.exe fixture and the
+ * reference libclamav yc.c output. Output is the decrypted PE with the
+ * trailing yC section removed and OEP/headers restored. */
 
 class XYODA : public XBinary {
     Q_OBJECT
@@ -78,7 +79,7 @@ private:
     };
     QSharedPointer<LIFETIME_STATE> m_pUnpackLifetimeState;
 
-    bool _unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct);
+    bool _unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct);
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);
 
     // Emulate the yC poly byte-decryptor. Returns 0 = ok, 1 = bad opcode, 2 = out of bounds.

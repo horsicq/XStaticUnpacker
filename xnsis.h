@@ -61,10 +61,12 @@ public:
         bool bSizeDefined;         // whether nSize is known before extraction
         bool bIsCompressed;        // non-solid: this block is compressed
         quint32 nCompressedSize;   // non-solid: size of the compressed block (without the 4-byte header)
+        bool bCompressedSizeDefined;  // whether nCompressedSize came from a valid block header
         quint32 nMTimeLow;
         quint32 nMTimeHigh;
         bool bIsEmptyFile;
         bool bIsUninstaller;       // built from EW_WRITEUNINSTALLER (may be a patched stub)
+        quint32 nPatchSize;        // nonzero when the uninstaller data is a patch for the installer stub
     };
 
     // Order file entries by ascending data-block position (std::stable_sort comparator).
@@ -162,11 +164,14 @@ private:
     bool _decodeSolidStream(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
 
     // low-level decompressors: decode one raw block
-    bool _decodeBlock(NMETHOD method, bool bFilterFlag, const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, QByteArray *pResult,
+    bool _decodeBlock(NMETHOD method, bool bFilterFlag, const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit,
+                      QByteArray *pResult, PDSTRUCT *pPdStruct);
+    bool _lzmaDecode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit, QByteArray *pResult,
+                     PDSTRUCT *pPdStruct);
+    bool _inflateRaw(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit, QByteArray *pResult,
+                     PDSTRUCT *pPdStruct);
+    bool _bzip2Decode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit, QByteArray *pResult,
                       PDSTRUCT *pPdStruct);
-    bool _lzmaDecode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, QByteArray *pResult);
-    bool _inflateRaw(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, QByteArray *pResult);
-    bool _bzip2Decode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, QByteArray *pResult);
 
     // header parse
     bool _parseHeader(UNPACK_CONTEXT *pContext);

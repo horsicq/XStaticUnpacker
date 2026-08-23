@@ -25,6 +25,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
+#include <new>
 #include <zlib.h>
 
 #include "LzmaDec.h"
@@ -66,8 +68,13 @@ enum {
     EW_CREATEDIR = 11,        // CreateDirectory / SetOutPath
     EW_EXTRACTFILE = 20,      // File
     EW_ASSIGNVAR = 25,        // StrCpy
+    EW_FCLOSE = 54,           // FileClose
+    EW_FOPEN = 55,            // FileOpen
     EW_WRITEUNINSTALLER = 62  // WriteUninstaller
 };
+
+static const quint32 kWinGenericWrite = (quint32)1 << 30;
+static const quint32 kWinCreateAlways = 2;
 
 // internal variable indexes
 #define kVar_INSTDIR 21
@@ -103,6 +110,11 @@ enum {
 #define CONVERT_NUMBER_PARK(n) ((n) &= 0x7FFF)
 
 static const quint32 kMask_IsCompressed = (quint32)1 << 31;
+static const qint64 kNsisMaxHeaderDecoded = 64LL * 1024 * 1024;
+static const qint64 kNsisMaxPackedBlock = 512LL * 1024 * 1024;
+static const qint64 kNsisMaxMemberDecoded = 512LL * 1024 * 1024;
+static const qint64 kNsisMaxSolidDecoded = 512LL * 1024 * 1024;
+static const quint32 kNsisMaxLzmaDictionary = 64U * 1024 * 1024;
 
 static const char *const kVarStrings[] = {"CMDLINE", "INSTDIR", "OUTDIR",     "EXEDIR", "LANGUAGE", "TEMP",
                                           "PLUGINSDIR", "EXEPATH", "EXEFILE", "HWNDPARENT", "_CLICK", "_OUTDIR"};
@@ -575,9 +587,60 @@ bool XNSIS::_detectMethod(UNPACK_CONTEXT *pContext, const quint8 *pSig, qint64 n
 // low-level decoders
 // ---------------------------------------------------------------------------
 
-bool XNSIS::_lzmaDecode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, QByteArray *pResult)
+static bool nsisGetDecodeLimits(qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit, qint64 *pnEffectiveLimit, qint64 *pnProbeLimit)
 {
-    if (nSrcSize < 5) {
+    if (!pnEffectiveLimit || !pnProbeLimit || (nOutputLimit <= 0) ||
+        (nOutputLimit >= (std::numeric_limits<int>::max)()) ||
+        (bOutHintKnown && ((nOutHint < 0) || (nOutHint > nOutputLimit)))) {
+        return false;
+    }
+
+    *pnEffectiveLimit = bOutHintKnown ? nOutHint : nOutputLimit;
+    *pnProbeLimit = *pnEffectiveLimit + 1;
+    return true;
+}
+
+static bool nsisResizeDecoded(QByteArray *pResult, qint64 nSize)
+{
+    if (!pResult || (nSize < 0) || (nSize > (std::numeric_limits<int>::max)())) return false;
+
+    try {
+        pResult->resize((int)nSize);
+    } catch (const std::bad_alloc &) {
+        pResult->clear();
+        return false;
+    }
+
+    return pResult->size() == nSize;
+}
+
+static bool nsisPrepareDecoded(QByteArray *pResult, qint64 nProbeLimit, qint64 nPreferredCapacity)
+{
+    if (!pResult || (nProbeLimit <= 0)) return false;
+    pResult->clear();
+    const qint64 nCapacity = (std::min)(nProbeLimit, (std::max)(1LL, nPreferredCapacity));
+    return nsisResizeDecoded(pResult, nCapacity);
+}
+
+static bool nsisGrowDecoded(QByteArray *pResult, qint64 nProbeLimit)
+{
+    if (!pResult) return false;
+    const qint64 nCurrent = pResult->size();
+    if ((nCurrent < 0) || (nCurrent >= nProbeLimit)) return false;
+    const qint64 nDoubled = (nCurrent > (nProbeLimit / 2)) ? nProbeLimit : (nCurrent * 2);
+    const qint64 nNext = (std::min)(nProbeLimit, (std::max)(nCurrent + 1, nDoubled));
+    return nsisResizeDecoded(pResult, nNext);
+}
+
+bool XNSIS::_lzmaDecode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit, QByteArray *pResult,
+                        PDSTRUCT *pPdStruct)
+{
+    qint64 nEffectiveLimit = 0;
+    qint64 nProbeLimit = 0;
+    if (!pSrc || !pResult || (nSrcSize < 5) || (nSrcSize > kNsisMaxPackedBlock) ||
+        (rd32(pSrc + 1) > kNsisMaxLzmaDictionary) ||
+        !nsisGetDecodeLimits(nOutHint, bOutHintKnown, nOutputLimit, &nEffectiveLimit, &nProbeLimit) ||
+        !isPdStructNotCanceled(pPdStruct)) {
         return false;
     }
 
@@ -591,233 +654,216 @@ bool XNSIS::_lzmaDecode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bo
 
     const Byte *pIn = (const Byte *)pSrc + 5;
     SizeT nInRemaining = (SizeT)(nSrcSize - 5);
-
-    pResult->clear();
-    qint64 nCapacity = bOutHintKnown ? nOutHint : (qint64)(1 << 20);
-    if (nCapacity < (1 << 16)) {
-        nCapacity = (1 << 16);
-    }
-    pResult->resize((int)nCapacity);
+    const qint64 nPreferredCapacity = bOutHintKnown ? (std::max)(1LL, nOutHint) : (1LL << 20);
+    bool bOk = nsisPrepareDecoded(pResult, nProbeLimit, (std::max)(1LL << 16, nPreferredCapacity));
     qint64 nOutPos = 0;
 
-    bool bOk = false;
-
-    for (;;) {
-        if (nOutPos >= pResult->size()) {
-            qint64 nNext = (qint64)pResult->size() * 2;
-            if (bOutHintKnown && (nNext > nOutHint) && (nOutHint > nOutPos)) {
-                nNext = nOutHint;
-            }
-            pResult->resize((int)nNext);
+    while (bOk) {
+        if (!isPdStructNotCanceled(pPdStruct)) {
+            bOk = false;
+            break;
+        }
+        if ((nOutPos >= pResult->size()) && !nsisGrowDecoded(pResult, nProbeLimit)) {
+            bOk = false;
+            break;
         }
 
         SizeT nDestLen = (SizeT)(pResult->size() - nOutPos);
-        if (bOutHintKnown) {
-            SizeT nRem = (SizeT)(nOutHint - nOutPos);
-            if (nRem < nDestLen) {
-                nDestLen = nRem;
-            }
-        }
-
         SizeT nSrcLen = nInRemaining;
         ELzmaStatus status = LZMA_STATUS_NOT_FINISHED;
-        SRes res = LzmaDec_DecodeToBuf(&dec, (Byte *)pResult->data() + nOutPos, &nDestLen, pIn, &nSrcLen, LZMA_FINISH_ANY, &status);
+        const SRes res = LzmaDec_DecodeToBuf(&dec, (Byte *)pResult->data() + nOutPos, &nDestLen, pIn, &nSrcLen, LZMA_FINISH_ANY, &status);
 
         nOutPos += (qint64)nDestLen;
         pIn += nSrcLen;
         nInRemaining -= nSrcLen;
 
-        if (res != SZ_OK) {
+        if ((res != SZ_OK) || (nOutPos > nEffectiveLimit)) {
             bOk = false;
             break;
         }
-
         if (status == LZMA_STATUS_FINISHED_WITH_MARK) {
-            bOk = true;
             break;
         }
-
-        if (bOutHintKnown && (nOutPos >= nOutHint)) {
-            bOk = true;
-            break;
-        }
-
         if ((nDestLen == 0) && (nSrcLen == 0)) {
-            // no progress: input consumed (or stuck). Accept what we have.
-            bOk = true;
-            break;
-        }
-
-        if (nInRemaining == 0 && nDestLen == 0) {
-            bOk = true;
             break;
         }
     }
 
     LzmaDec_Free(&dec, &g_nsisAlloc);
+    bOk = bOk && isPdStructNotCanceled(pPdStruct) && (!bOutHintKnown || (nOutPos == nOutHint));
 
-    if (bOk) {
-        pResult->resize((int)nOutPos);
-        return true;
-    }
-
+    if (bOk && nsisResizeDecoded(pResult, nOutPos)) return true;
     pResult->clear();
     return false;
 }
 
-bool XNSIS::_inflateRaw(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, QByteArray *pResult)
+bool XNSIS::_inflateRaw(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit, QByteArray *pResult,
+                        PDSTRUCT *pPdStruct)
 {
-    if (nSrcSize <= 0) {
+    qint64 nEffectiveLimit = 0;
+    qint64 nProbeLimit = 0;
+    if (!pSrc || !pResult || (nSrcSize <= 0) || (nSrcSize > kNsisMaxPackedBlock) ||
+        !nsisGetDecodeLimits(nOutHint, bOutHintKnown, nOutputLimit, &nEffectiveLimit, &nProbeLimit) ||
+        !isPdStructNotCanceled(pPdStruct)) {
         return false;
     }
 
     z_stream stream = {};
     stream.next_in = (Bytef *)pSrc;
     stream.avail_in = (uInt)nSrcSize;
+    if (inflateInit2(&stream, -MAX_WBITS) != Z_OK) return false;
 
-    if (inflateInit2(&stream, -MAX_WBITS) != Z_OK) {
-        return false;
-    }
-
-    pResult->clear();
-    qint64 nCapacity = bOutHintKnown ? nOutHint : (qint64)(1 << 20);
-    if (nCapacity < (1 << 16)) {
-        nCapacity = (1 << 16);
-    }
-    pResult->resize((int)nCapacity);
+    const qint64 nPreferredCapacity = bOutHintKnown ? (std::max)(1LL, nOutHint) : (1LL << 20);
+    bool bOk = nsisPrepareDecoded(pResult, nProbeLimit, (std::max)(1LL << 16, nPreferredCapacity));
+    bool bStreamComplete = false;
     qint64 nOutPos = 0;
 
-    int nRes = Z_OK;
-
-    for (;;) {
-        if (nOutPos >= pResult->size()) {
-            pResult->resize((int)((qint64)pResult->size() * 2));
+    while (bOk) {
+        if (!isPdStructNotCanceled(pPdStruct)) {
+            bOk = false;
+            break;
+        }
+        if ((nOutPos >= pResult->size()) && !nsisGrowDecoded(pResult, nProbeLimit)) {
+            bOk = false;
+            break;
         }
 
+        const uLong nPreviousOut = stream.total_out;
+        const uInt nPreviousIn = stream.avail_in;
         stream.next_out = (Bytef *)pResult->data() + nOutPos;
         stream.avail_out = (uInt)(pResult->size() - nOutPos);
 
-        nRes = inflate(&stream, Z_NO_FLUSH);
+        const int nRes = inflate(&stream, Z_NO_FLUSH);
         nOutPos = (qint64)stream.total_out;
-
-        if ((nRes == Z_STREAM_END) || (nRes == Z_BUF_ERROR)) {
+        if (nOutPos > nEffectiveLimit) {
+            bOk = false;
             break;
         }
-        if (nRes != Z_OK) {
+        if (nRes == Z_STREAM_END) {
+            bStreamComplete = true;
             break;
         }
-        if (stream.avail_in == 0 && stream.avail_out != 0) {
+        if ((nRes != Z_OK) && (nRes != Z_BUF_ERROR)) {
+            bOk = false;
+            break;
+        }
+        if ((stream.total_out == nPreviousOut) && (stream.avail_in == nPreviousIn)) {
+            break;
+        }
+        if ((stream.avail_in == 0) && (stream.avail_out != 0)) {
             break;
         }
     }
 
     inflateEnd(&stream);
+    bOk = bOk && bStreamComplete && isPdStructNotCanceled(pPdStruct) && (!bOutHintKnown || (nOutPos == nOutHint));
 
-    bool bOk = (nRes == Z_STREAM_END) || (nRes == Z_BUF_ERROR) || (nRes == Z_OK);
-    if (bOutHintKnown) {
-        bOk = bOk && (nOutPos >= nOutHint);
-        if (nOutPos > nOutHint) {
-            nOutPos = nOutHint;
-        }
-    }
-
-    if (bOk && (nOutPos > 0)) {
-        pResult->resize((int)nOutPos);
-        return true;
-    }
-
+    if (bOk && nsisResizeDecoded(pResult, nOutPos)) return true;
     pResult->clear();
     return false;
 }
 
-bool XNSIS::_bzip2Decode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, QByteArray *pResult)
+bool XNSIS::_bzip2Decode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit, QByteArray *pResult,
+                         PDSTRUCT *pPdStruct)
 {
-    if (nSrcSize <= 0) {
+    qint64 nEffectiveLimit = 0;
+    qint64 nProbeLimit = 0;
+    if (!pSrc || !pResult || (nSrcSize <= 0) || (nSrcSize > kNsisMaxPackedBlock) ||
+        !nsisGetDecodeLimits(nOutHint, bOutHintKnown, nOutputLimit, &nEffectiveLimit, &nProbeLimit) ||
+        !isPdStructNotCanceled(pPdStruct)) {
         return false;
     }
 
-    // NSIS uses a modified bzip2 (no "BZh" stream header, no RLE1 pass, no CRC):
-    // the stream starts straight at the first block header (0x31 ...). The vendored
-    // nsis_BZ2_* decoder hardcodes blockSize100k = 9 and consumes that framing.
+    // NSIS uses a modified bzip2 (no "BZh" stream header, no RLE1 pass, no CRC).
     nsis_bzstream strm;
     memset(&strm, 0, sizeof(strm));
     strm.next_in = (unsigned char *)pSrc;
     strm.avail_in = (unsigned int)nSrcSize;
+    if (nsis_BZ2_bzDecompressInit(&strm, 0, 0) != BZ_OK) return false;
 
-    if (nsis_BZ2_bzDecompressInit(&strm, 0, 0) != BZ_OK) {
-        return false;
-    }
-
-    pResult->clear();
-    qint64 nCapacity = bOutHintKnown ? nOutHint : (qint64)(1 << 20);
-    if (nCapacity < (1 << 16)) {
-        nCapacity = (1 << 16);
-    }
-    pResult->resize((int)nCapacity);
+    const qint64 nPreferredCapacity = bOutHintKnown ? (std::max)(1LL, nOutHint) : (1LL << 20);
+    bool bOk = nsisPrepareDecoded(pResult, nProbeLimit, (std::max)(1LL << 16, nPreferredCapacity));
+    bool bStreamComplete = false;
     qint64 nOutPos = 0;
 
-    int nRes = BZ_OK;
-
-    for (;;) {
-        if (nOutPos >= pResult->size()) {
-            pResult->resize((int)((qint64)pResult->size() * 2));
+    while (bOk) {
+        if (!isPdStructNotCanceled(pPdStruct)) {
+            bOk = false;
+            break;
+        }
+        if ((nOutPos >= pResult->size()) && !nsisGrowDecoded(pResult, nProbeLimit)) {
+            bOk = false;
+            break;
         }
 
+        const unsigned int nPreviousOut = strm.total_out_lo32;
+        const unsigned int nPreviousIn = strm.avail_in;
         strm.next_out = (unsigned char *)pResult->data() + nOutPos;
         strm.avail_out = (unsigned int)(pResult->size() - nOutPos);
 
-        nRes = nsis_BZ2_bzDecompress(&strm);
-        nOutPos = (qint64)strm.total_out_lo32;  // header/solid streams are < 4 GiB
-
+        const int nRes = nsis_BZ2_bzDecompress(&strm);
+        if (strm.total_out_hi32 != 0) {
+            bOk = false;
+            break;
+        }
+        nOutPos = (qint64)strm.total_out_lo32;
+        if (nOutPos > nEffectiveLimit) {
+            bOk = false;
+            break;
+        }
         if (nRes == BZ_STREAM_END) {
+            bStreamComplete = true;
             break;
         }
         if (nRes != BZ_OK) {
+            bOk = false;
             break;
         }
-        if (strm.avail_in == 0 && strm.avail_out != 0) {
-            // Input exhausted; NSIS streams carry no explicit end marker.
+        if ((strm.total_out_lo32 == nPreviousOut) && (strm.avail_in == nPreviousIn)) {
+            bStreamComplete = (strm.avail_in == 0);
+            break;
+        }
+        if ((strm.avail_in == 0) && (strm.avail_out != 0)) {
+            // NSIS streams can end when the framed input is exhausted.
+            bStreamComplete = true;
             break;
         }
     }
 
     nsis_BZ2_bzDecompressEnd(&strm);
+    bOk = bOk && bStreamComplete && isPdStructNotCanceled(pPdStruct) && (!bOutHintKnown || (nOutPos == nOutHint));
 
-    bool bOk = (nRes == BZ_STREAM_END) || (nRes == BZ_OK);
-    if (bOutHintKnown) {
-        bOk = bOk && (nOutPos >= nOutHint);
-        if (nOutPos > nOutHint) {
-            nOutPos = nOutHint;
-        }
-    }
-
-    if (bOk && (nOutPos > 0)) {
-        pResult->resize((int)nOutPos);
-        return true;
-    }
-
+    if (bOk && nsisResizeDecoded(pResult, nOutPos)) return true;
     pResult->clear();
     return false;
 }
 
-bool XNSIS::_decodeBlock(NMETHOD method, bool bFilterFlag, const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, QByteArray *pResult,
-                         PDSTRUCT *pPdStruct)
+bool XNSIS::_decodeBlock(NMETHOD method, bool bFilterFlag, const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit,
+                         QByteArray *pResult, PDSTRUCT *pPdStruct)
 {
-    Q_UNUSED(pPdStruct)
-
-    if (bFilterFlag) {
+    if (bFilterFlag || !pSrc || !pResult || !isPdStructNotCanceled(pPdStruct)) {
         // 7-Zip-modified NSIS (BCJ filter) is not supported here.
         return false;
     }
 
     switch (method) {
-        case NMETHOD_LZMA: return _lzmaDecode(pSrc, nSrcSize, nOutHint, bOutHintKnown, pResult);
-        case NMETHOD_DEFLATE: return _inflateRaw(pSrc, nSrcSize, nOutHint, bOutHintKnown, pResult);
-        case NMETHOD_BZIP2: return _bzip2Decode(pSrc, nSrcSize, nOutHint, bOutHintKnown, pResult);
+        case NMETHOD_LZMA: return _lzmaDecode(pSrc, nSrcSize, nOutHint, bOutHintKnown, nOutputLimit, pResult, pPdStruct);
+        case NMETHOD_DEFLATE: return _inflateRaw(pSrc, nSrcSize, nOutHint, bOutHintKnown, nOutputLimit, pResult, pPdStruct);
+        case NMETHOD_BZIP2: return _bzip2Decode(pSrc, nSrcSize, nOutHint, bOutHintKnown, nOutputLimit, pResult, pPdStruct);
         case NMETHOD_COPY: {
-            qint64 nSize = bOutHintKnown ? (std::min)(nOutHint, nSrcSize) : nSrcSize;
-            *pResult = QByteArray((const char *)pSrc, (int)nSize);
-            return true;
+            qint64 nEffectiveLimit = 0;
+            qint64 nProbeLimit = 0;
+            if (!nsisGetDecodeLimits(nOutHint, bOutHintKnown, nOutputLimit, &nEffectiveLimit, &nProbeLimit)) return false;
+            Q_UNUSED(nProbeLimit)
+            const qint64 nSize = bOutHintKnown ? nOutHint : nSrcSize;
+            if ((nSize < 0) || (nSize > nSrcSize) || (nSize > nEffectiveLimit) || (nSize > (std::numeric_limits<int>::max)())) return false;
+            try {
+                *pResult = QByteArray((const char *)pSrc, (int)nSize);
+            } catch (const std::bad_alloc &) {
+                pResult->clear();
+                return false;
+            }
+            return (pResult->size() == nSize) && isPdStructNotCanceled(pPdStruct);
         }
         default: return false;
     }
@@ -834,19 +880,27 @@ bool XNSIS::_decodeSolidStream(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
     }
     pContext->bSolidDecoded = true;
 
+    if ((pContext->nDataSize <= 0) || (pContext->nDataSize > kNsisMaxPackedBlock)) {
+        return false;
+    }
+
     QByteArray baCompressed = read_array_process(pContext->nDataStreamOffset, pContext->nDataSize, pPdStruct);
     if (baCompressed.isEmpty()) {
         return false;
     }
 
-    bool bOk = _decodeBlock(pContext->method, pContext->bFilterFlag, (const quint8 *)baCompressed.constData(), baCompressed.size(), 0, false, &pContext->baSolid,
-                            pPdStruct);
+    bool bOk = _decodeBlock(pContext->method, pContext->bFilterFlag, (const quint8 *)baCompressed.constData(), baCompressed.size(), 0, false,
+                            kNsisMaxSolidDecoded, &pContext->baSolid, pPdStruct);
     return bOk && !pContext->baSolid.isEmpty();
 }
 
 bool XNSIS::_decodeHeader(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
 {
     const quint32 nHeaderSize = pContext->nHeaderSize;
+
+    if (nHeaderSize > (quint32)kNsisMaxHeaderDecoded) {
+        return false;
+    }
 
     if (pContext->bIsSolid) {
         if (!_decodeSolidStream(pContext, pPdStruct)) {
@@ -870,13 +924,17 @@ bool XNSIS::_decodeHeader(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
         return (quint32)pContext->baHeader.size() == nHeaderSize;
     }
 
+    if (pContext->nNonSolidStartOffset > (quint32)kNsisMaxPackedBlock) {
+        return false;
+    }
+
     QByteArray baCompressed = read_array_process(pContext->nDataStreamOffset + 4, pContext->nNonSolidStartOffset, pPdStruct);
     if ((quint32)baCompressed.size() != pContext->nNonSolidStartOffset) {
         return false;
     }
 
     bool bOk = _decodeBlock(pContext->method, pContext->bFilterFlag, (const quint8 *)baCompressed.constData(), baCompressed.size(), nHeaderSize, true,
-                            &pContext->baHeader, pPdStruct);
+                            kNsisMaxHeaderDecoded, &pContext->baHeader, pPdStruct);
     return bOk && ((quint32)pContext->baHeader.size() == nHeaderSize);
 }
 
@@ -1450,6 +1508,37 @@ bool XNSIS::_readEntries(UNPACK_CONTEXT *pContext, quint32 nEntriesOffset, quint
                 break;
             }
 
+            case EW_FOPEN: {
+                // NSIS represents an explicitly created empty file as:
+                //   FileOpen <handle> <name> w
+                //   FileClose <handle>
+                // It has no data-block record, so recognize the instruction
+                // pair instead of mistaking an absent size for zero later.
+                if ((params[1] == kWinGenericWrite) && (params[2] == kWinCreateAlways) && (kkk + 1 < nEntriesNum)) {
+                    const quint8 *pNext = p + kCmdSize;
+                    if ((_getCmd(pContext, rd32(pNext)) == EW_FCLOSE) && (rd32(pNext + 4) == params[0])) {
+                        FILE_ENTRY entry = {};
+                        entry.nSize = 0;
+                        entry.bSizeDefined = true;
+                        entry.bIsEmptyFile = true;
+
+                        const quint32 nName = params[3];
+                        const QString sName = _readStringRaw(pContext, nName);
+                        const bool bIsAbs = _isAbsolutePathVar(pContext, nName) || nsisIsAbsolutePath(sName);
+                        QString sPrefix;
+                        bool bHasPrefix = false;
+                        if (!bIsAbs) {
+                            sPrefix = pPrefixes->last();
+                            bHasPrefix = true;
+                        }
+                        entry.sFileName = nsisReducedName(sPrefix, bHasPrefix, sName);
+                        entry.sPath = nsisReducedPath(sPrefix, bHasPrefix);
+                        pContext->listEntries.append(entry);
+                    }
+                }
+                break;
+            }
+
             case EW_EXTRACTFILE: {
                 FILE_ENTRY entry = {};
                 entry.bSizeDefined = false;
@@ -1491,6 +1580,7 @@ bool XNSIS::_readEntries(UNPACK_CONTEXT *pContext, quint32 nEntriesOffset, quint
                 entry.sPath = nsisReducedPath(sPrefix, bHasPrefix);
                 entry.nPos = params[1];
                 entry.bIsUninstaller = true;
+                entry.nPatchSize = params[2];
                 pContext->listEntries.append(entry);
                 break;
             }
@@ -1504,7 +1594,13 @@ bool XNSIS::_readEntries(UNPACK_CONTEXT *pContext, quint32 nEntriesOffset, quint
 
 bool XNSIS::_fileEntryPosLess(const FILE_ENTRY &a, const FILE_ENTRY &b)
 {
-    return a.nPos < b.nPos;
+    if (a.nPos != b.nPos) {
+        return a.nPos < b.nPos;
+    }
+
+    // Empty files have no data-block position (Pos == 0). Keep them ahead of
+    // real position-zero blocks, matching NSIS's native item ordering.
+    return a.bIsEmptyFile && !b.bIsEmptyFile;
 }
 
 void XNSIS::_sortItems(UNPACK_CONTEXT *pContext)
@@ -1515,7 +1611,8 @@ void XNSIS::_sortItems(UNPACK_CONTEXT *pContext)
 
     // drop consecutive duplicates (same position + same name)
     for (int i = 0; i + 1 < list.size();) {
-        if ((list.at(i).nPos == list.at(i + 1).nPos) && (list.at(i).sFileName == list.at(i + 1).sFileName)) {
+        if (!list.at(i).bIsEmptyFile && !list.at(i + 1).bIsEmptyFile && (list.at(i).nPos == list.at(i + 1).nPos) &&
+            (list.at(i).sFileName == list.at(i + 1).sFileName)) {
             list.removeAt(i + 1);
         } else {
             i++;
@@ -1528,10 +1625,64 @@ void XNSIS::_sortItems(UNPACK_CONTEXT *pContext)
         const quint8 *pSolid = (const quint8 *)pContext->baSolid.constData();
         const qint64 nSolidSize = pContext->baSolid.size();
         for (int i = 0; i < list.size(); i++) {
+            // Synthetic empty files have no solid-stream block. Patched
+            // uninstallers do have a block here, but it is only the patch
+            // stream; its length is not the reconstructed executable's size.
+            if (list[i].bIsEmptyFile ||
+                (list[i].bIsUninstaller && (list[i].nPatchSize != 0))) {
+                continue;
+            }
+
             qint64 nAbs = 4 + (qint64)pContext->nHeaderSize + list[i].nPos;
             if ((nAbs + 4) <= nSolidSize) {
-                list[i].nSize = rd32(pSolid + nAbs);
-                list[i].bSizeDefined = true;
+                const quint32 nSize = rd32(pSolid + nAbs);
+
+                if ((qint64)nSize <= (nSolidSize - (nAbs + 4))) {
+                    list[i].nSize = nSize;
+                    list[i].bSizeDefined = true;
+                }
+            }
+        }
+    } else if (!pContext->bIsSolid && (pContext->nDataStreamOffset >= 0) && (pContext->nDataSize >= 0)) {
+        // A non-solid member starts with [size|compressed-flag:u32]. The
+        // payload size is always known; when the flag is clear it is also the
+        // exact uncompressed size. Compressed members deliberately retain an
+        // unknown uncompressed size until they are decoded.
+        const quint64 nDataStart = (quint64)pContext->nDataStreamOffset;
+        const quint64 nDataSize = (quint64)pContext->nDataSize;
+        const qint64 nFileSize = getSize();
+        if ((nFileSize >= 0) && (nDataSize <= (std::numeric_limits<quint64>::max)() - nDataStart) &&
+            (nDataStart + nDataSize <= (quint64)nFileSize)) {
+            const quint64 nDataEnd = nDataStart + nDataSize;
+            for (int i = 0; i < list.size(); i++) {
+                if (list[i].bIsEmptyFile) {
+                    continue;
+                }
+
+                quint64 nRelative = 4;
+                if ((quint64)pContext->nNonSolidStartOffset > (std::numeric_limits<quint64>::max)() - nRelative) continue;
+                nRelative += pContext->nNonSolidStartOffset;
+                if ((quint64)list[i].nPos > (std::numeric_limits<quint64>::max)() - nRelative) continue;
+                nRelative += list[i].nPos;
+                if (nRelative > (std::numeric_limits<quint64>::max)() - nDataStart) continue;
+                const quint64 nBlockPos = nDataStart + nRelative;
+                if ((nBlockPos > nDataEnd) || ((nDataEnd - nBlockPos) < 4) ||
+                    (nBlockPos > (quint64)(std::numeric_limits<qint64>::max)())) continue;
+
+                const QByteArray baSize = read_array((qint64)nBlockPos, 4);
+                if (baSize.size() != 4) continue;
+                const quint32 nSizeField = rd32((const quint8 *)baSize.constData());
+                const quint32 nPayloadSize = nSizeField & ~kMask_IsCompressed;
+                if ((quint64)nPayloadSize > nDataEnd - (nBlockPos + 4)) continue;
+
+                list[i].bIsCompressed = ((nSizeField & kMask_IsCompressed) != 0);
+                list[i].nCompressedSize = nPayloadSize;
+                list[i].bCompressedSizeDefined = true;
+
+                if (!list[i].bIsCompressed && (!list[i].bIsUninstaller || (list[i].nPatchSize == 0))) {
+                    list[i].nSize = nPayloadSize;
+                    list[i].bSizeDefined = true;
+                }
             }
         }
     }
@@ -1695,18 +1846,28 @@ XBinary::ARCHIVERECORD XNSIS::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStr
 
     const FILE_ENTRY &entry = pContext->listEntries.at(nIndex);
 
-    result.nStreamOffset = pContext->nDataOffset;
-    result.nStreamSize = pContext->nDataSize;
-
     result.mapProperties[FPART_PROP_ORIGINALNAME] = entry.sFileName.isEmpty() ? QString("file_%1").arg(nIndex, 4, 10, QChar('0')) : entry.sFileName;
     // Native SetOutPath directory (kept separate from the full name; surfaced only in advanced mode).
     if (!entry.sPath.isEmpty()) {
         result.mapProperties[FPART_PROP_OPTIONAL_PATH] = entry.sPath;
     }
-    result.mapProperties[FPART_PROP_UNCOMPRESSEDSIZE] = (qint64)(entry.bSizeDefined ? entry.nSize : 0);
-    result.mapProperties[FPART_PROP_HANDLEMETHOD] = pContext->compressMethod;
+    if (entry.bSizeDefined) {
+        result.mapProperties[FPART_PROP_UNCOMPRESSEDSIZE] = (qint64)entry.nSize;
+    }
+    if (entry.bIsEmptyFile) {
+        result.nStreamOffset = 0;
+        result.nStreamSize = 0;
+        result.mapProperties[FPART_PROP_COMPRESSEDSIZE] = (qint64)0;
+    } else {
+        result.nStreamOffset = pContext->nDataOffset;
+        result.nStreamSize = pContext->nDataSize;
+    }
+    if (!entry.bIsEmptyFile && entry.bCompressedSizeDefined) {
+        result.mapProperties[FPART_PROP_COMPRESSEDSIZE] = (qint64)entry.nCompressedSize;
+    }
+    result.mapProperties[FPART_PROP_HANDLEMETHOD] = entry.bIsEmptyFile ? HANDLE_METHOD_STORE : pContext->compressMethod;
     result.mapProperties[FPART_PROP_ISFOLDER] = false;
-    result.mapProperties[FPART_PROP_ISSOLID] = pContext->bIsSolid;
+    result.mapProperties[FPART_PROP_ISSOLID] = entry.bIsEmptyFile ? false : pContext->bIsSolid;
 
     return result;
 }
@@ -1767,7 +1928,9 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
     QByteArray baData;
     QByteArray baSolidTail;  // for a patched uninstaller: the block that follows the patch block
 
-    if (pContext->bIsSolid) {
+    if (entry.bIsEmptyFile) {
+        baData.clear();
+    } else if (pContext->bIsSolid) {
         if (!decoder._decodeSolidStream(pContext, pPdStruct) || !isContextCurrent()) {
             return false;
         }
@@ -1790,44 +1953,71 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
 
         // A patched uninstaller is stored as two consecutive blocks: the patch, then
         // the uninstaller's own stub archive appended after the patched PE stub.
-        if (entry.bIsUninstaller) {
+        if (entry.bIsUninstaller && (entry.nPatchSize != 0)) {
+            if ((quint64)baData.size() != entry.nPatchSize) return false;
             qint64 nAbsB = nAbs + 4 + nSize;
-            if ((nAbsB + 4) <= nSolidSize) {
-                quint32 nSizeB = rd32(pSolid + nAbsB);
-                if ((nSizeB > 0) && ((qint64)(nAbsB + 4 + nSizeB) <= nSolidSize)) {
-                    baSolidTail = QByteArray((const char *)pSolid + nAbsB + 4, (int)nSizeB);
-                }
-            }
+            if ((nAbsB < 0) || ((nAbsB + 4) > nSolidSize)) return false;
+            const quint32 nSizeB = rd32(pSolid + nAbsB);
+            if ((nSizeB == 0) || ((qint64)nSizeB > (nSolidSize - (nAbsB + 4)))) return false;
+            baSolidTail = QByteArray((const char *)pSolid + nAbsB + 4, (int)nSizeB);
         }
     } else {
         // non-solid: [4-byte size|flag][block]
         const qint64 nFileSize = decoder.getSize();
         if (!isContextCurrent()) return false;
-        if ((pContext->nDataStreamOffset < 0) || (nFileSize < 0)) return false;
-        const quint64 nItemPos64 = (quint64)pContext->nDataStreamOffset + 4 + (quint64)pContext->nNonSolidStartOffset + entry.nPos;
-        if ((nItemPos64 > (quint64)nFileSize) || (((quint64)nFileSize - nItemPos64) < 4)) return false;
-        const qint64 nItemPos = (qint64)nItemPos64;
-        quint32 nSizeField = decoder.read_uint32(nItemPos, false);
-        if (!isContextCurrent()) return false;
-        bool bIsCompressed = (nSizeField & kMask_IsCompressed) != 0;
-        quint32 nSize = nSizeField & ~kMask_IsCompressed;
+        if ((pContext->nDataStreamOffset < 0) || (pContext->nDataSize < 0) || (nFileSize < 0)) return false;
 
-        if (nSize == 0) {
-            if (entry.bSizeDefined && (entry.nSize != 0)) return false;
-            baData.clear();
-        }
+        const quint64 nDataStart = (quint64)pContext->nDataStreamOffset;
+        const quint64 nDataSize = (quint64)pContext->nDataSize;
+        if ((nDataSize > (std::numeric_limits<quint64>::max)() - nDataStart) ||
+            (nDataStart + nDataSize > (quint64)nFileSize)) return false;
+        const quint64 nDataEnd = nDataStart + nDataSize;
 
-        QByteArray baBlock = decoder.read_array_process(nItemPos + 4, nSize, pPdStruct);
-        if (!isContextCurrent() || ((quint32)baBlock.size() != nSize)) {
-            return false;
-        }
+        quint64 nItemRelative = 4;
+        if ((quint64)pContext->nNonSolidStartOffset > (std::numeric_limits<quint64>::max)() - nItemRelative) return false;
+        nItemRelative += pContext->nNonSolidStartOffset;
+        if ((quint64)entry.nPos > (std::numeric_limits<quint64>::max)() - nItemRelative) return false;
+        nItemRelative += entry.nPos;
+        if (nItemRelative > (std::numeric_limits<quint64>::max)() - nDataStart) return false;
+        const quint64 nItemPos = nDataStart + nItemRelative;
 
-        if (!bIsCompressed) {
-            baData = baBlock;
-        } else if (!decoder._decodeBlock(pContext->method, pContext->bFilterFlag, (const quint8 *)baBlock.constData(), baBlock.size(), 0, false, &baData,
-                                         pPdStruct) ||
-                   !isContextCurrent()) {
-            return false;
+        auto decodeNonSolidBlock = [&](quint64 nBlockPos, QByteArray *pOutput, quint64 *pNextBlockPos) -> bool {
+            if (!pOutput || (nBlockPos > nDataEnd) || ((nDataEnd - nBlockPos) < 4) ||
+                (nBlockPos > (quint64)(std::numeric_limits<qint64>::max)())) return false;
+
+            const quint32 nSizeField = decoder.read_uint32((qint64)nBlockPos, false);
+            if (!isContextCurrent()) return false;
+            const bool bIsCompressed = (nSizeField & kMask_IsCompressed) != 0;
+            const quint32 nSize = nSizeField & ~kMask_IsCompressed;
+            const quint64 nPayloadPos = nBlockPos + 4;
+            if ((nSize > (quint32)kNsisMaxPackedBlock) || ((quint64)nSize > nDataEnd - nPayloadPos)) return false;
+
+            QByteArray baBlock = decoder.read_array_process((qint64)nPayloadPos, nSize, pPdStruct);
+            if (!isContextCurrent() || ((quint32)baBlock.size() != nSize)) return false;
+
+            if (!bIsCompressed) {
+                *pOutput = baBlock;
+            } else if (!decoder._decodeBlock(pContext->method, pContext->bFilterFlag, (const quint8 *)baBlock.constData(), baBlock.size(), 0, false,
+                                             kNsisMaxMemberDecoded, pOutput, pPdStruct) ||
+                       !isContextCurrent()) {
+                return false;
+            }
+
+            if (pNextBlockPos) *pNextBlockPos = nPayloadPos + nSize;
+            return true;
+        };
+
+        quint64 nNextBlockPos = 0;
+        if (!decodeNonSolidBlock(nItemPos, &baData, &nNextBlockPos)) return false;
+        if (entry.bSizeDefined && (entry.nSize != (quint64)baData.size())) return false;
+
+        // A patched non-solid uninstaller has a second independently framed
+        // block immediately after its patch block. It contains the
+        // uninstaller's own NSIS archive and must be appended after patching
+        // the executable stub (the same two-decode sequence used by 7-Zip).
+        if (entry.bIsUninstaller && (entry.nPatchSize != 0)) {
+            if ((quint64)baData.size() != entry.nPatchSize) return false;
+            if (!decodeNonSolidBlock(nNextBlockPos, &baSolidTail, nullptr)) return false;
         }
     }
 
@@ -1837,17 +2027,18 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
 
     // Patched uninstaller: apply the patch stream onto a copy of the installer's PE stub,
     // then append the following block (the uninstaller's own stub archive).
-    if (entry.bIsUninstaller && (pContext->nFirstHeaderOffset > 0)) {
+    if (entry.bIsUninstaller && (entry.nPatchSize != 0)) {
+        if ((pContext->nFirstHeaderOffset <= 0) || (pContext->nFirstHeaderOffset > kNsisMaxMemberDecoded)) return false;
         QByteArray baStub = decoder.read_array_process(0, pContext->nFirstHeaderOffset, pPdStruct);
         if (!isContextCurrent()) return false;
-        if (baStub.size() == pContext->nFirstHeaderOffset) {
-            QByteArray baPatched = baStub;
-            if (decoder._uninstallerPatch(baData, &baPatched)) {
-                baPatched.append(baSolidTail);
-                baData = baPatched;
-            }
-        }
-        // not a patch stream (e.g. NSIS 3.08 unpatched uninstaller): fall through to raw output
+        if ((baStub.size() != pContext->nFirstHeaderOffset) ||
+            ((qint64)baStub.size() > kNsisMaxMemberDecoded - (qint64)baSolidTail.size())) return false;
+
+        QByteArray baPatched = baStub;
+        if (!decoder._uninstallerPatch(baData, &baPatched) ||
+            ((qint64)baPatched.size() > kNsisMaxMemberDecoded - (qint64)baSolidTail.size())) return false;
+        baPatched.append(baSolidTail);
+        baData = baPatched;
     }
 
     if (!writeUnpackData(&stageState, &stage, baData, pPdStruct) || !isContextCurrent()) return false;

@@ -10,6 +10,7 @@
 #include <QScopedValueRollback>
 #include <QUuid>
 
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 
@@ -87,7 +88,7 @@ XMEW::INTERNAL_INFO XMEW::_getInternalInfo(PDSTRUCT *pPdStruct)
     DETECT d = _detect(pPdStruct);
     result.bIsValid = d.bIsValid;
     result.bUsesLzma = (d.nUseLzma != 0);
-    result.sVersion = d.bIsValid ? QString("11 SE") : QString();
+    result.sVersion = d.bIsValid ? ((d.nVersion == 10) ? QString("10") : QString("11 SE")) : QString();
     return result;
 }
 
@@ -375,17 +376,19 @@ bool XMEW::_lzmaDepack(QByteArray &baBuf, qint64 nContainerOff, quint32 nUseLzma
     const qint64 nBufSize = baBuf.size();
     quint8 *buf = (quint8 *)baBuf.data();
 
-    // "special" tag: byte at buf[uselzma + 8] == 0x50 (push eax) => single block + call de-filter.
-    if (!mewCont(nBufSize, (qint64)nUseLzma + 8, 1)) return false;
-    const bool bSpecial = (buf[nUseLzma + 8] == 0x50);
+    // "special" tag.  The decompressor stub prologue is
+    //   55 8B EC 83 EC 40 53 AD 89 45 D8 <X> ...
+    // where X selects the two container shapes:
+    //   0x56 (push esi)         -> exactly one block, then an x86 call/jmp de-filter
+    //   0x89 (mov [ebp-1c],esi) -> zero-terminated block list
+    // libclamav tests `+8 == 0x50` instead; that byte is 0x89 in both shapes for
+    // the MEW 11/11 SE builds seen here, so it is kept only as a fallback for
+    // other builds.  Both shapes use the same container layout (no extra dword),
+    // and the de-filter covers the whole decoded block.
+    if (!mewCont(nBufSize, (qint64)nUseLzma + 8, 4)) return false;
+    const bool bSpecial = (buf[nUseLzma + 0x0b] == 0x56) || (buf[nUseLzma + 8] == 0x50);
 
     qint64 p = nContainerOff;
-    quint32 nPushedEdx = 0;
-    if (bSpecial) {
-        if (!mewCont(nBufSize, p, 4)) return false;
-        nPushedEdx = mewRd32(buf + p);
-        p += 4;
-    }
     // prob-array RVA (used by MEW's in-buffer model; not needed for the SDK decode)
     if (!mewCont(nBufSize, p, 4)) return false;
     p += 4;
@@ -417,7 +420,7 @@ bool XMEW::_lzmaDepack(QByteArray &baBuf, qint64 nContainerOff, quint32 nUseLzma
         if (!_decodeRawLzma(buf + nStreamOff, nAvail, buf + nDestOff, nUnpSize, nDsize ? nDsize : nUnpSize)) return false;
 
         if (bSpecial) {
-            _bcjFilter(buf + nDestOff, nUnpSize, nPushedEdx);
+            _bcjFilter(buf + nDestOff, nUnpSize, nUnpSize);
             break;  // special mode processes exactly one block
         }
 
@@ -431,7 +434,8 @@ bool XMEW::_lzmaDepack(QByteArray &baBuf, qint64 nContainerOff, quint32 nUseLzma
 // PE rebuild (0x1000-aligned; sections read from buffer at .raw)
 // ---------------------------------------------------------------------------
 
-QByteArray XMEW::_buildPE(const QByteArray &baBuf, const QList<SECT> &listSections, quint32 nImageBase, quint32 nOEP)
+QByteArray XMEW::_buildPE(const QByteArray &baBuf, const QList<SECT> &listSections, quint32 nImageBase, quint32 nOEP,
+                          qint64 nOutputLimit)
 {
     int nSectCount = listSections.size();
     if (nSectCount <= 0) return QByteArray();
@@ -444,13 +448,15 @@ QByteArray XMEW::_buildPE(const QByteArray &baBuf, const QList<SECT> &listSectio
         nRawBase = mewAlign(nHeaderBase + 0x28 * (nSectCount + 1), 0x200);
     }
 
-    quint32 nRawTotal = nRawBase, nMaxVEnd = 0;
+    quint64 nRawTotal = nRawBase;
+    quint32 nMaxVEnd = 0;
     for (int i = 0; i < nSectCount; i++) {
         nRawTotal += mewAlign(listSections.at(i).rsz, 0x1000);
         nMaxVEnd = qMax(nMaxVEnd, listSections.at(i).rva + qMax(listSections.at(i).vsz, listSections.at(i).rsz));
     }
 
-    QByteArray baResult(nRawTotal, (char)0);
+    if ((nRawTotal > INT_MAX) || ((nOutputLimit >= 0) && (nRawTotal > (quint64)nOutputLimit))) return QByteArray();
+    QByteArray baResult((int)nRawTotal, (char)0);
     char *p = baResult.data();
 
     _write_uint16(p + 0, 0x5A4D);
@@ -540,14 +546,37 @@ XMEW::DETECT XMEW::_detect(PDSTRUCT *pPdStruct)
     qint64 nEpOffset = pe.relAddressToOffset(nVep);
     if (nEpOffset == -1) return result;
     QByteArray baEp = read_array_process(nEpOffset, 16, pPdStruct);
-    if ((baEp.size() < 16) || ((quint8)baEp.at(0) != 0xe9)) return result;
+    if (baEp.size() < 16) return result;
 
-    quint32 nFileOffset = nVep + mewRd32((const quint8 *)baEp.constData() + 1) + 5;
-    if ((nFileOffset != 0x154) && (nFileOffset != 0x158)) return result;
+    // MEW 11/11 SE enter with a bare `jmp rel32`; MEW 10 prefixes `xor eax,eax`.
+    qint32 nPrefix = 0;
+    if ((quint8)baEp.at(0) == 0xe9) {
+        nPrefix = 0;
+    } else if (((quint8)baEp.at(0) == 0x33) && ((quint8)baEp.at(1) == 0xc0) && ((quint8)baEp.at(2) == 0xe9)) {
+        nPrefix = 2;
+    } else {
+        return result;
+    }
+
+    quint32 nFileOffset = nVep + nPrefix + mewRd32((const quint8 *)baEp.constData() + nPrefix + 1) + 5;
+    if ((nFileOffset != 0x154) && (nFileOffset != 0x155) && (nFileOffset != 0x158)) return result;
 
     QByteArray baT = read_array_process(nFileOffset, 0xb0, pPdStruct);
     if (baT.size() < 0xb0) return result;
     const quint8 *tbuff = (const quint8 *)baT.constData();
+
+    // Both generations open with `mov esi, imm32`; the following two bytes
+    // separate them.  MEW 10 reads its header with `lodsb / xchg eax,ecx`,
+    // MEW 11 with `mov ebx,esi`.
+    if (tbuff[0] != 0xbe) return result;
+    quint32 nVersion = 0;
+    if ((tbuff[5] == 0xac) && (tbuff[6] == 0x91)) {
+        nVersion = 10;
+    } else if ((tbuff[5] == 0x8b) && (tbuff[6] == 0xde)) {
+        nVersion = 11;
+    } else {
+        return result;
+    }
 
     quint32 nOffDiff = mewRd32(tbuff + 1) - nImageBase;
     const XPE_DEF::IMAGE_SECTION_HEADER &srcSec = listSections.at(i + 1);
@@ -562,11 +591,12 @@ XMEW::DETECT XMEW::_detect(PDSTRUCT *pPdStruct)
     if ((srcSec.SizeOfRawData < nOffDiff + 12) || (srcSec.SizeOfRawData > nSsize)) return result;
 
     quint32 nUseLzma = 0;
-    if (tbuff[0x7b] == 0xe8) {
+    if ((nVersion == 11) && (tbuff[0x7b] == 0xe8)) {
         nUseLzma = mewRd32(tbuff + 0x7c) - (listSections.at(0).VirtualAddress - nFileOffset - 0x80);
     }
 
     result.bIsValid = true;
+    result.nVersion = nVersion;
     result.nIndex = i;
     result.nFileOffset = nFileOffset;
     result.nOffDiff = nOffDiff;
@@ -595,6 +625,8 @@ QMap<XBinary::UNPACK_PROP, QVariant> XMEW::getDefaultUnpackProperties()
 bool XMEW::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
+    qint64 nOutputLimit = -1;
+    if (!getUnpackOutputLimit(mapProperties, &nOutputLimit)) return false;
     const PDSTRUCTLIFETIME progressLifetime = pPdStruct ? retainPdStructLifetime(pPdStruct) : PDSTRUCTLIFETIME();
     const auto isProgressAlive = [&]() -> bool {
         return !pPdStruct || isPdStructLifetimeAlive(progressLifetime);
@@ -646,7 +678,7 @@ bool XMEW::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
         (getDevice() != guardedSource.data()) || !info.bIsValid) return false;
     QByteArray baData;
-    const bool bUnpacked = worker._unpackToBuffer(baData, pPdStruct);
+    const bool bUnpacked = worker._unpackToBuffer(baData, nOutputLimit, pPdStruct);
     if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
         (getDevice() != guardedSource.data()) || !bUnpacked || baData.isEmpty() ||
         !isPdStructNotCanceled(pPdStruct)) return false;
@@ -824,7 +856,66 @@ static bool mewContSum(quint64 nSizeSum, qint64 off, qint64 len)
     return (off >= 0) && (len >= 0) && ((quint64)(off + len) <= nSizeSum);
 }
 
-bool XMEW::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
+// MEW 10 uses the same aPLib bitstream as MEW 11 but a different loader shape:
+// the header is `db nBlocks | dd helperTable | dd sourceVA | nBlocks*dd destVA |
+// dd importFixerVA`, the source stream is continuous across blocks instead of
+// carrying a next-RVA after each one, and the original entry point is the dword
+// immediately preceding the import fixer rather than a header field.
+bool XMEW::_unpackMew10(QByteArray &baBuf, const DETECT &d, QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct)
+{
+    const quint64 nSizeSum = (quint64)d.nSsize + d.nDsize;
+    const quint32 nBase = d.nImageBase;
+    const quint32 nVma = nBase + d.nVadd;
+    quint8 *buf = (quint8 *)baBuf.data();
+
+    const qint64 nHdr = (qint64)d.nDsize + d.nOffDiff;
+    if (!mewContSum(nSizeSum, nHdr, 1)) return false;
+    const quint32 nBlocks = buf[nHdr];
+    if ((nBlocks == 0) || (nBlocks > 64)) return false;
+    if (!mewContSum(nSizeSum, nHdr, 13 + 4 * (qint64)nBlocks)) return false;
+
+    qint64 nLesi = (qint64)mewRd32(buf + nHdr + 5) - nVma;  // continuous source stream
+
+    QList<SECT> listSections;
+    for (quint32 k = 0; k < nBlocks; k++) {
+        if (!isPdStructNotCanceled(pPdStruct)) return false;
+        const quint32 nDestVa = mewRd32(buf + nHdr + 9 + 4 * k);
+        const qint64 nLedi = (qint64)nDestVa - nVma;
+        if ((nLesi < 0) || ((quint64)nLesi >= nSizeSum)) return false;
+        if ((nLedi < 0) || ((quint64)nLedi >= nSizeSum)) return false;
+
+        qint64 nConsumed = 0;
+        const qint64 nProduced =
+            _aplibDepack(buf + nLesi, (qint64)nSizeSum - nLesi, buf + nLedi, (qint64)nSizeSum - nLedi, &nConsumed);
+        if ((nProduced < 0) || (nConsumed <= 0)) return false;
+
+        // The final block lands in the source section: it is the import fixer,
+        // not a section of the original image.
+        if (nLedi + nProduced <= (qint64)d.nDsize) {
+            if (nDestVa < nBase) return false;
+            SECT s;
+            s.raw = (quint32)nLedi;
+            s.rva = nDestVa - nBase;
+            s.rsz = s.vsz = (quint32)nProduced;
+            listSections.append(s);
+        }
+        nLesi += nConsumed;
+    }
+    if (listSections.isEmpty()) return false;
+
+    const qint64 nFixer = (qint64)mewRd32(buf + nHdr + 9 + 4 * nBlocks) - nVma;
+    if (!mewContSum(nSizeSum, nFixer - 4, 4)) return false;
+    const quint32 nStoredOep = mewRd32(buf + nFixer - 4);
+    if (nStoredOep < nBase) return false;
+
+    QByteArray baPE = _buildPE(baBuf, listSections, nBase, nStoredOep - nBase, nOutputLimit);
+    if (baPE.isEmpty()) return false;
+
+    baOut = baPE;
+    return true;
+}
+
+bool XMEW::_unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct)
 {
     baOut.clear();
 
@@ -834,6 +925,7 @@ bool XMEW::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
     const quint32 nSsize = d.nSsize;
     const quint32 nDsize = d.nDsize;
     const quint64 nSizeSum = (quint64)nSsize + nDsize;
+    if ((nSizeSum > INT_MAX) || ((nOutputLimit >= 0) && ((quint64)nDsize > (quint64)nOutputLimit))) return false;
     const quint32 nVadd = d.nVadd;
     const quint32 nBase = d.nImageBase;
     const quint32 nVma = nBase + nVadd;
@@ -846,6 +938,8 @@ bool XMEW::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
 
     quint8 *buf = (quint8 *)baBuf.data();
 
+    if (d.nVersion == 10) return _unpackMew10(baBuf, d, baOut, nOutputLimit, pPdStruct);
+
     if (!mewContSum(nSizeSum, (qint64)nOff, 12)) return false;
 
     qint64 nSourceOff = (qint64)nDsize + nOff;
@@ -853,7 +947,11 @@ bool XMEW::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
     quint32 nEntryPoint = mewRd32(buf + nSourceOff + 4);
     quint32 nNewEdi = mewRd32(buf + nSourceOff + 8);
     qint64 nLedi = (qint64)nNewEdi - nVma;
-    qint64 nLocDs = (qint64)nDsize - (nNewEdi - nVma);
+    // The remaining destination budget spans the whole ssize+dsize buffer, not
+    // just dsize: with LZMA the loader's last aPLib block lands in the *source*
+    // section (it is the LZMA stub), which is above dsize.  Using dsize made
+    // that budget negative and failed every LZMA-packed sample.
+    qint64 nLocDs = (qint64)nSizeSum - ((qint64)nNewEdi - nVma);
     qint64 nLocSs = (qint64)nSsize - 12 - nOff;
 
     QList<SECT> listSections;
@@ -881,7 +979,7 @@ bool XMEW::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
 
         quint32 nNextRva = mewRd32(buf + f1);
         nLedi = (qint64)nNextRva - nVma;
-        nLocDs = (qint64)nDsize - ((qint64)nNextRva - nVma);
+        nLocDs = (qint64)nSizeSum - ((qint64)nNextRva - nVma);
 
         if (!d.nUseLzma) {
             quint32 val = mewAlign((quint32)f2, 0x1000);
@@ -917,7 +1015,7 @@ bool XMEW::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
         s.rsz = s.vsz = nDsize;
         lzmaSections.append(s);
 
-        QByteArray baLzmaPE = _buildPE(baBuf, lzmaSections, nBase, nEntryPoint - nBase);
+        QByteArray baLzmaPE = _buildPE(baBuf, lzmaSections, nBase, nEntryPoint - nBase, nOutputLimit);
         if (baLzmaPE.isEmpty()) return false;
 
         baOut = baLzmaPE;
@@ -928,7 +1026,7 @@ bool XMEW::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
         listSections.removeLast();
     }
 
-    QByteArray baPE = _buildPE(baBuf, listSections, nBase, nEntryPoint - nBase);
+    QByteArray baPE = _buildPE(baBuf, listSections, nBase, nEntryPoint - nBase, nOutputLimit);
     if (baPE.isEmpty()) return false;
 
     baOut = baPE;

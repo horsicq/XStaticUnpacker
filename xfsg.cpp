@@ -10,6 +10,7 @@
 #include <QScopedValueRollback>
 #include <QUuid>
 
+#include <climits>
 #include <cstring>
 
 static inline quint32 fsgRd32(const quint8 *p)
@@ -237,7 +238,8 @@ qint64 XFSG::_aplibDepack(const quint8 *pSrc, qint64 nSrcSize, quint8 *pDst, qin
 // minimal analysis-PE rebuild
 // ---------------------------------------------------------------------------
 
-QByteArray XFSG::_rebuildPE(const QByteArray &baBlob, const QList<SECTIONINFO> &listSections, quint32 nImageBase, quint32 nOEP)
+QByteArray XFSG::_rebuildPE(const QByteArray &baBlob, const QList<SECTIONINFO> &listSections, quint32 nImageBase, quint32 nOEP,
+                            qint64 nOutputLimit)
 {
     if (listSections.isEmpty()) {
         return QByteArray();
@@ -253,14 +255,15 @@ QByteArray XFSG::_rebuildPE(const QByteArray &baBlob, const QList<SECTIONINFO> &
     }
 
     // total raw size
-    quint32 nRawTotal = nRawBase;
+    quint64 nRawTotal = nRawBase;
     quint32 nMaxVirtualEnd = 0;
     for (int i = 0; i < nSects; i++) {
         nRawTotal += fsgAlign(listSections.at(i).nRsz, 0x200);
         nMaxVirtualEnd = qMax(nMaxVirtualEnd, listSections.at(i).nRva + qMax(listSections.at(i).nVsz, listSections.at(i).nRsz));
     }
 
-    QByteArray baResult(nRawTotal, (char)0);
+    if ((nRawTotal > INT_MAX) || ((nOutputLimit >= 0) && (nRawTotal > (quint64)nOutputLimit))) return QByteArray();
+    QByteArray baResult((int)nRawTotal, (char)0);
     char *p = baResult.data();
 
     // DOS header
@@ -375,29 +378,67 @@ XFSG::INTERNAL_INFO XFSG::_detect(PDSTRUCT *pPdStruct)
     const quint8 *ep = (const quint8 *)baEp.constData();
     const quint32 nImageBase = (quint32)pe.getOptionalHeader_ImageBase();
 
+    // The 1.x loader stubs live inside a section while their support table sits
+    // in the PE header, so `support < minSectionRva <= AddressOfEntryPoint`.
+    // This is also what keeps packers whose stub is embedded in the header and
+    // happens to begin with 0xBE (MEW's "mov esi") from being read as FSG.
+    QList<XPE_DEF::IMAGE_SECTION_HEADER> listSections = pe.getSectionHeaders();
+    quint32 nMinRva = 0xFFFFFFFF;
+    for (int i = 0; i < listSections.size(); i++) {
+        nMinRva = qMin(nMinRva, listSections.at(i).VirtualAddress);
+    }
+    const quint32 nAoe = pe.getOptionalHeader_AddressOfEntryPoint();
+    const auto isPlausibleSupport = [&](quint32 nSupportRva) -> bool {
+        return (nSupportRva < nMinRva) && (nAoe >= nMinRva);
+    };
+
     if ((ep[0] == 0x87) && (ep[1] == 0x25)) {
         result.bIsValid = true;
         result.nVersion = 200;
         result.sVersion = "2.0";
     } else if (ep[0] == 0xBE) {
-        // minimum section RVA
-        QList<XPE_DEF::IMAGE_SECTION_HEADER> listSections = pe.getSectionHeaders();
-        quint32 nMinRva = 0xFFFFFFFF;
-        for (int i = 0; i < listSections.size(); i++) {
-            nMinRva = qMin(nMinRva, listSections.at(i).VirtualAddress);
-        }
         quint32 nPtr = fsgRd32(ep + 1) - nImageBase;
-        // The FSG 1.33 loader stub lives inside a section (the entry point is in
-        // section space). Require AddressOfEntryPoint >= nMinRva so that packers
-        // whose stub is embedded in the PE header and which happen to begin with
-        // 0xBE (e.g. MEW's "mov esi") are not misdetected as FSG 1.33.
-        quint32 nAoe = pe.getOptionalHeader_AddressOfEntryPoint();
-        if ((nPtr < nMinRva) && (nAoe >= nMinRva)) {
+        if (isPlausibleSupport(nPtr)) {
             result.bIsValid = true;
             result.nVersion = 133;
             result.sVersion = "1.33";
+            result.nSupportRva = nPtr;
+            result.nJeOffset = 161;
+        }
+    } else if ((ep[0] == 0xBB) && (ep[5] == 0xBF) && (ep[10] == 0xBE) && (ep[15] == 0x53)) {
+        // Shared 1.0/1.3 and 1.31 opener:
+        //   mov ebx,support / mov edi,dest / mov esi,src / push ebx
+        // followed by the generation-specific get-bit routine setup.
+        const quint32 nPtr = fsgRd32(ep + 1) - nImageBase;
+        if (isPlausibleSupport(nPtr)) {
+            if ((ep[16] == 0xE8) && (fsgRd32(ep + 17) == 0x0000000A) && (ep[21] == 0x02) && (ep[22] == 0xD2) && (ep[23] == 0x75) &&
+                (ep[24] == 0x05) && (ep[25] == 0x8A) && (ep[26] == 0x16) && (ep[27] == 0x46) && (ep[28] == 0x12) && (ep[29] == 0xD2) &&
+                (ep[30] == 0xC3)) {
+                result.bIsValid = true;
+                result.nVersion = 100;
+                result.sVersion = "1.0-1.3";
+                result.nJeOffset = 224;
+            } else if ((ep[16] == 0xBB) && (ep[21] == 0xB2) && (ep[22] == 0x80) && (ep[23] == 0xA4) && (ep[24] == 0xB6) && (ep[25] == 0x80) &&
+                       (ep[26] == 0xFF) && (ep[27] == 0xD3) && (ep[28] == 0x73) && (ep[29] == 0xF9)) {
+                result.bIsValid = true;
+                result.nVersion = 131;
+                result.sVersion = "1.31";
+                result.nJeOffset = 218;
+            }
+            if (result.bIsValid) {
+                result.nSupportRva = nPtr;
+                result.nDestVa = fsgRd32(ep + 6);
+                result.nSrcVa = fsgRd32(ep + 11);
+                result.bWordList = true;
+            }
         }
     }
+
+    // FSG 1.1/1.2 is deliberately absent: those builds hide the loader behind a
+    // polymorphic byte-decryption loop at the entry point, so the stub carries
+    // no stable signature and the original entry point cannot be read without
+    // reproducing the decryptor.  They stay undetected rather than being
+    // reported as a family this class cannot actually restore.
 
     return result;
 }
@@ -483,7 +524,7 @@ void XFSG::setInternalInfo(void *pInternalInfo)
 // streaming API
 // ---------------------------------------------------------------------------
 
-bool XFSG::_unpackV200(XPE *pPE, qint32 nIndex, QByteArray &baOut, PDSTRUCT *pPdStruct)
+bool XFSG::_unpackV200(XPE *pPE, qint32 nIndex, QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct)
 {
     QList<XPE_DEF::IMAGE_SECTION_HEADER> listSections = pPE->getSectionHeaders();
     if (nIndex + 1 >= listSections.size()) {
@@ -496,7 +537,8 @@ bool XFSG::_unpackV200(XPE *pPE, qint32 nIndex, QByteArray &baOut, PDSTRUCT *pPd
 
     const quint32 nSsize = secSrc.SizeOfRawData;
     const quint32 nDsize = secDst.Misc.VirtualSize;
-    if ((nSsize <= 0x19) || (nDsize <= nSsize)) {
+    if ((nSsize <= 0x19) || (nDsize <= nSsize) ||
+        ((nOutputLimit >= 0) && ((quint64)nDsize > (quint64)nOutputLimit))) {
         return false;
     }
 
@@ -540,7 +582,7 @@ bool XFSG::_unpackV200(XPE *pPE, qint32 nIndex, QByteArray &baOut, PDSTRUCT *pPd
     si.nVsz = (quint32)nProduced;
     listOut.append(si);
 
-    QByteArray baPE = _rebuildPE(baDest, listOut, nImageBase, nOEP);
+    QByteArray baPE = _rebuildPE(baDest, listOut, nImageBase, nOEP, nOutputLimit);
     if (baPE.isEmpty()) return false;
 
     baOut = baPE;
@@ -553,7 +595,7 @@ bool XFSG::_sectionRvaLess(const SECTIONINFO &a, const SECTIONINFO &b)
     return a.nRva < b.nRva;
 }
 
-bool XFSG::_unpackV133(XPE *pPE, qint32 nIndex, QByteArray &baOut, PDSTRUCT *pPdStruct)
+bool XFSG::_unpackV133(XPE *pPE, qint32 nIndex, QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct)
 {
     QList<XPE_DEF::IMAGE_SECTION_HEADER> listSections = pPE->getSectionHeaders();
     if (nIndex + 1 >= listSections.size()) {
@@ -566,7 +608,8 @@ bool XFSG::_unpackV133(XPE *pPE, qint32 nIndex, QByteArray &baOut, PDSTRUCT *pPd
 
     const quint32 nSsize = secSrc.SizeOfRawData;
     const quint32 nDsize = secDst.Misc.VirtualSize;
-    if ((nSsize <= 0x19) || (nDsize <= nSsize)) return false;
+    if ((nSsize <= 0x19) || (nDsize <= nSsize) ||
+        ((nOutputLimit >= 0) && ((quint64)nDsize > (quint64)nOutputLimit))) return false;
 
     qint64 nEpOffset = pPE->relAddressToOffset(pPE->getOptionalHeader_AddressOfEntryPoint());
     QByteArray baEp = read_array_process(nEpOffset, 0xC0, pPdStruct);
@@ -647,7 +690,7 @@ bool XFSG::_unpackV133(XPE *pPE, qint32 nIndex, QByteArray &baOut, PDSTRUCT *pPd
         }
     }
 
-    QByteArray baPE = _rebuildPE(baDest, listOut, nImageBase, nOEP);
+    QByteArray baPE = _rebuildPE(baDest, listOut, nImageBase, nOEP, nOutputLimit);
     if (baPE.isEmpty()) return false;
 
     baOut = baPE;
@@ -655,7 +698,143 @@ bool XFSG::_unpackV133(XPE *pPE, qint32 nIndex, QByteArray &baOut, PDSTRUCT *pPd
     return true;
 }
 
-bool XFSG::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
+// FSG 1.0/1.3, 1.31 and 1.1/1.2.  These predate the 32-bit support table of
+// 1.33: the destination and the packed stream come from entry-point immediates
+// (or, when the stub is encrypted, from the section pair), and the per-section
+// RVA list is a 16-bit record list stored in the PE header.
+//
+// Record grammar, walked from the start of the table:
+//   1  -> the next dword is the rebuilt import-table VA (record is 6 bytes)
+//   2  -> end of list
+//   W  -> section VA = (W - 2) << 12          (the stub does `dec edi` twice
+//                                              before `shl edi, 0xC`)
+bool XFSG::_unpackV1x(XPE *pPE, qint32 nIndex, const INTERNAL_INFO &info, QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct)
+{
+    QList<XPE_DEF::IMAGE_SECTION_HEADER> listSections = pPE->getSectionHeaders();
+    if (nIndex + 1 >= listSections.size()) return false;
+
+    const XPE_DEF::IMAGE_SECTION_HEADER &secDst = listSections.at(nIndex);
+    const XPE_DEF::IMAGE_SECTION_HEADER &secSrc = listSections.at(nIndex + 1);
+    const quint32 nImageBase = (quint32)pPE->getOptionalHeader_ImageBase();
+
+    const quint32 nSsize = secSrc.SizeOfRawData;
+    const quint32 nDsize = secDst.Misc.VirtualSize;
+    if ((nSsize <= 0x19) || (nDsize <= nSsize) ||
+        ((nOutputLimit >= 0) && ((quint64)nDsize > (quint64)nOutputLimit))) return false;
+
+    const quint32 nDestRva = info.nDestVa - nImageBase;
+    const quint32 nSrcRva = info.nSrcVa - nImageBase;
+    if (nDestRva != secDst.VirtualAddress) return false;
+    if ((nSrcRva < secSrc.VirtualAddress) || (nSrcRva - secSrc.VirtualAddress >= nSsize)) return false;
+
+    qint64 nSupportOffset = pPE->relAddressToOffset(info.nSupportRva);
+    if (nSupportOffset == -1) return false;
+    const qint64 nGpSigned = (qint64)secSrc.PointerToRawData - nSupportOffset;
+    if ((nGpSigned < 4) || (nGpSigned > 0x10000)) return false;
+    const quint32 nGp = (quint32)nGpSigned;
+
+    QByteArray baSupport = read_array_process(nSupportOffset, nGp, pPdStruct);
+    if ((quint32)baSupport.size() != nGp) return false;
+    const quint8 *support = (const quint8 *)baSupport.constData();
+
+    QList<quint32> listRva;
+    listRva.append(nDestRva);
+    bool bTerminated = false;
+    for (quint32 t = 0; t + 2 <= nGp;) {
+        const quint32 w = (quint32)support[t] | ((quint32)support[t + 1] << 8);
+        if (w == 2) {
+            bTerminated = true;
+            break;
+        }
+        if (w == 1) {
+            if (t + 6 > nGp) return false;  // import record
+            t += 6;
+            continue;
+        }
+        const quint32 nRva = ((w - 2) << 12) - nImageBase;
+        if ((nRva < secDst.VirtualAddress) || (nRva - secDst.VirtualAddress >= nDsize)) return false;
+        listRva.append(nRva);
+        if (listRva.size() > 96) return false;
+        t += 2;
+    }
+    if (!bTerminated) return false;
+
+    QByteArray baSrc = read_array_process(secSrc.PointerToRawData, nSsize, pPdStruct);
+    if ((quint32)baSrc.size() != nSsize) return false;
+    const quint8 *src = (const quint8 *)baSrc.constData();
+
+    quint32 nOEP = 0;
+    if (!_resolveOep(pPE, info, &nOEP, pPdStruct)) return false;
+
+    QByteArray baDest(nDsize, (char)0);
+    QList<SECTIONINFO> listOut;
+    qint64 nSrcPos = nSrcRva - secSrc.VirtualAddress;
+    qint64 nDstPos = 0;
+
+    for (int k = 0; k < listRva.size(); k++) {
+        qint64 nConsumed = 0;
+        qint64 nProduced =
+            _aplibDepack(src + nSrcPos, (qint64)nSsize - nSrcPos, (quint8 *)baDest.data() + nDstPos, (qint64)nDsize - nDstPos, &nConsumed);
+        if (nProduced < 0) return false;
+
+        SECTIONINFO si;
+        si.nRva = listRva.at(k);
+        si.nRaw = (quint32)nDstPos;
+        si.nRsz = (quint32)nProduced;
+        si.nVsz = 0;
+        listOut.append(si);
+
+        nSrcPos += nConsumed;
+        nDstPos += nProduced;
+        if (!isPdStructNotCanceled(pPdStruct)) return false;
+    }
+
+    std::sort(listOut.begin(), listOut.end(), _sectionRvaLess);
+
+    quint32 nLast = nDsize;
+    for (int k = 0; k < listOut.size(); k++) {
+        if (k + 1 < listOut.size()) {
+            listOut[k].nVsz = listOut.at(k + 1).nRva - listOut.at(k).nRva;
+            if (nLast >= listOut[k].nVsz) nLast -= listOut[k].nVsz;
+        } else {
+            listOut[k].nVsz = nLast;
+        }
+    }
+
+    QByteArray baPE = _rebuildPE(baDest, listOut, nImageBase, nOEP, nOutputLimit);
+    if (baPE.isEmpty()) return false;
+
+    baOut = baPE;
+
+    return true;
+}
+
+// The original entry point is the target of the stub's single `0F 84` (je),
+// anchored by the preceding `FE 0F` / `FE 0E` (`dec byte ptr [edi]`).  The
+// anchor is located rather than trusted so a stub that shifted by a byte fails
+// closed instead of producing a plausible-looking wrong entry point.
+bool XFSG::_resolveOep(XPE *pPE, const INTERNAL_INFO &info, quint32 *pnOEP, PDSTRUCT *pPdStruct)
+{
+    if (!pnOEP || (info.nJeOffset < 0)) return false;
+
+    const quint32 nAoe = pPE->getOptionalHeader_AddressOfEntryPoint();
+    const qint64 nEpOffset = pPE->relAddressToOffset(nAoe);
+    if (nEpOffset == -1) return false;
+
+    const qint64 nNeeded = (qint64)info.nJeOffset + 6;
+    QByteArray baStub = read_array_process(nEpOffset, nNeeded + 0x40, pPdStruct);
+    if (baStub.size() < nNeeded) return false;
+    const quint8 *stub = (const quint8 *)baStub.constData();
+
+    if ((stub[info.nJeOffset] != 0x0F) || (stub[info.nJeOffset + 1] != 0x84)) return false;
+    if ((info.nJeOffset >= 2) && (stub[info.nJeOffset - 2] != 0xFE)) return false;
+
+    *pnOEP = nAoe + (quint32)info.nJeOffset + 6 + fsgRd32(stub + info.nJeOffset + 2);
+
+    return true;
+}
+
+bool XFSG::_unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct)
 {
     baOut.clear();
 
@@ -669,9 +848,11 @@ bool XFSG::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
     if (!info.bIsValid) return false;
 
     if (info.nVersion == 200) {
-        return _unpackV200(&pe, nIndex, baOut, pPdStruct);
+        return _unpackV200(&pe, nIndex, baOut, nOutputLimit, pPdStruct);
     } else if (info.nVersion == 133) {
-        return _unpackV133(&pe, nIndex, baOut, pPdStruct);
+        return _unpackV133(&pe, nIndex, baOut, nOutputLimit, pPdStruct);
+    } else if (info.bWordList && !info.bEncryptedStub) {
+        return _unpackV1x(&pe, nIndex, info, baOut, nOutputLimit, pPdStruct);
     }
 
     return false;
@@ -687,6 +868,8 @@ QMap<XBinary::UNPACK_PROP, QVariant> XFSG::getDefaultUnpackProperties()
 bool XFSG::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
+    qint64 nOutputLimit = -1;
+    if (!getUnpackOutputLimit(mapProperties, &nOutputLimit)) return false;
     const PDSTRUCTLIFETIME progressLifetime = pPdStruct ? retainPdStructLifetime(pPdStruct) : PDSTRUCTLIFETIME();
     const auto isProgressAlive = [&]() -> bool {
         return !pPdStruct || isPdStructLifetimeAlive(progressLifetime);
@@ -738,7 +921,7 @@ bool XFSG::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
         (getDevice() != guardedSource.data()) || !info.bIsValid) return false;
     QByteArray baData;
-    const bool bUnpacked = worker._unpackToBuffer(baData, pPdStruct);
+    const bool bUnpacked = worker._unpackToBuffer(baData, nOutputLimit, pPdStruct);
     if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
         (getDevice() != guardedSource.data()) || !bUnpacked || baData.isEmpty() ||
         !isPdStructNotCanceled(pPdStruct)) return false;

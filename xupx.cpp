@@ -116,15 +116,19 @@ const qint64 XUPX_MIN_PACK_HEADER_SIZE = 20;
 
 static quint8 upxMachFormatFromHeader(quint32 nCpuType, quint32 nFileType)
 {
-    const bool bIsDylib = (nFileType == XMACH_DEF::S_MH_DYLIB);
+    // The in-process Mach rebuilder currently handles executable images only.
+    // Dylibs, bundles, objects, and other Mach types would otherwise be
+    // advertised as one extractable UPX record and then unconditionally reach
+    // the disabled external-tool fallback in _unpackMach().
+    if (nFileType != XMACH_DEF::S_MH_EXECUTE) return 0;
 
     switch (nCpuType) {
-        case XMACH_DEF::S_CPU_TYPE_I386: return bIsDylib ? XUPX::UPX_F_DYLIB_i386 : XUPX::UPX_F_MACH_i386;
-        case XMACH_DEF::S_CPU_TYPE_X86_64: return bIsDylib ? XUPX::UPX_F_DYLIB_AMD64 : XUPX::UPX_F_MACH_AMD64;
+        case XMACH_DEF::S_CPU_TYPE_I386: return XUPX::UPX_F_MACH_i386;
+        case XMACH_DEF::S_CPU_TYPE_X86_64: return XUPX::UPX_F_MACH_AMD64;
         case XMACH_DEF::S_CPU_TYPE_ARM: return XUPX::UPX_F_MACH_ARM;
         case XMACH_DEF::S_CPU_TYPE_ARM64: return XUPX::UPX_F_MACH_ARM64;
-        case XMACH_DEF::S_CPU_TYPE_POWERPC: return bIsDylib ? XUPX::UPX_F_DYLIB_PPC32 : XUPX::UPX_F_MACH_PPC32;
-        case XMACH_DEF::S_CPU_TYPE_POWERPC64: return bIsDylib ? XUPX::UPX_F_DYLIB_PPC64 : XUPX::UPX_F_MACH_PPC64;
+        case XMACH_DEF::S_CPU_TYPE_POWERPC: return XUPX::UPX_F_MACH_PPC32;
+        case XMACH_DEF::S_CPU_TYPE_POWERPC64: return XUPX::UPX_F_MACH_PPC64;
         default: break;
     }
 
@@ -559,8 +563,14 @@ static bool upxIsMethodSupported(quint8 nMethod)
 static bool upxValidateMachDataOffset(XUPX *pUpx, XMACH *pMach, quint32 nHeaderSize, bool bIsBigEndian, quint8 nFormat, XBinary::PDSTRUCT *pPdStruct, qint64 nDataOffset,
                                       XUPX::INTERNAL_INFO *pResult)
 {
-    if ((!pResult) || (nDataOffset < nHeaderSize) || ((nDataOffset + (qint64)sizeof(XUPX::p_info) + (qint64)sizeof(XUPX::b_info)) > pUpx->getSize()) ||
-        (nDataOffset & 3)) {
+    if ((!pUpx) || (!pMach) || (!pResult)) {
+        return false;
+    }
+
+    const qint64 nPackedSize = pUpx->getSize();
+    const qint64 nInfoSize = (qint64)sizeof(XUPX::p_info) + (qint64)sizeof(XUPX::b_info);
+
+    if ((nPackedSize <= 0) || (nDataOffset < nHeaderSize) || (nDataOffset > nPackedSize) || (nInfoSize > (nPackedSize - nDataOffset)) || (nDataOffset & 3)) {
         return false;
     }
 
@@ -577,13 +587,23 @@ static bool upxValidateMachDataOffset(XUPX *pUpx, XMACH *pMach, quint32 nHeaderS
     XBinary::_copyMemory((char *)&programInfo, baProgramInfo.constData(), sizeof(programInfo));
     XBinary::_copyMemory((char *)&blockInfo, baBlockInfo.constData(), sizeof(blockInfo));
 
+    const quint32 nProgramId = XBinary::_read_uint32((char *)&programInfo.p_progid, bIsBigEndian);
     const quint32 nOrigFileSize = XBinary::_read_uint32((char *)&programInfo.p_filesize, bIsBigEndian);
     const quint32 nBlockSize = XBinary::_read_uint32((char *)&programInfo.p_blocksize, bIsBigEndian);
     const quint32 nHeaderUnpackedSize = XBinary::_read_uint32((char *)&blockInfo.sz_unc, bIsBigEndian);
     const quint32 nHeaderCompressedSize = XBinary::_read_uint32((char *)&blockInfo.sz_cpr, bIsBigEndian);
+    const qint64 nMachBaseHeaderSize = pMach->getHeaderSize();
+    const qint64 nHeaderPayloadOffset = nDataOffset + nInfoSize;
 
-    if ((!nOrigFileSize) || (!nBlockSize) || (nBlockSize > nOrigFileSize) || (nOrigFileSize <= (quint32)pUpx->getSize()) || (nHeaderUnpackedSize != nHeaderSize) ||
-        (!nHeaderCompressedSize) || (nHeaderCompressedSize > nBlockSize) || (!upxIsMethodSupported(blockInfo.b_method))) {
+    // b_info.sz_unc describes the original Mach-O header block, not the
+    // smaller packed loader header.  UPX 3.95 executables therefore commonly
+    // have values such as 0xfa0 versus 0x210.  Keep the p_info identity and
+    // every source bound strict here; _unpackMach subsequently parses the
+    // decoded original header and verifies its CPU/type and complete stream.
+    if (nProgramId || (!nOrigFileSize) || (nBlockSize != nOrigFileSize) || ((quint64)nOrigFileSize <= (quint64)nPackedSize) ||
+        (nMachBaseHeaderSize <= 0) || ((quint64)nMachBaseHeaderSize > nHeaderUnpackedSize) || (nHeaderUnpackedSize > nBlockSize) ||
+        (!nHeaderCompressedSize) || (nHeaderCompressedSize > nHeaderUnpackedSize) || ((qint64)nHeaderCompressedSize > (nPackedSize - nHeaderPayloadOffset)) ||
+        (!upxIsMethodSupported(blockInfo.b_method))) {
         return false;
     }
 
@@ -728,6 +748,26 @@ bool XUPX::_detectGenericInfo(INTERNAL_INFO *pInfo, PDSTRUCT *pPdStruct)
         return false;
     }
 
+    // ELF, Mach-O, and PE have format-specific structural detectors above.
+    // Falling through to a bare UPX! string match would label any ordinary
+    // executable containing those four bytes as packed when its dedicated
+    // validation failed. The generic header layout is only for DOS here.
+    XPE pe(this->getDevice(), this->isImage(), this->getModuleAddress());
+    XELF elf(this->getDevice(), this->isImage(), this->getModuleAddress());
+    XMACH mach(this->getDevice(), this->isImage(), this->getModuleAddress());
+
+    if (pe.isValid(pPdStruct) || elf.isValid(pPdStruct) ||
+        mach.isValid(pPdStruct)) {
+        return false;
+    }
+
+    if (!_isDOSFormat(info.format) || !upxIsMethodSupported(info.method) ||
+        !info.u_len || !info.c_len ||
+        (info.nDataOffset < 0) || (info.nDataOffset > getSize()) ||
+        ((qint64)info.c_len > (getSize() - info.nDataOffset))) {
+        return false;
+    }
+
     XMSDOS msdos(this->getDevice(), this->isImage(), this->getModuleAddress());
 
     if (msdos.isValid(pPdStruct)) {
@@ -747,13 +787,17 @@ XUPX::INTERNAL_INFO XUPX::_read_packheader(char *pInfoData, qint32 nDataSize, bo
 {
     XUPX::INTERNAL_INFO result = {};
 
-    if (nDataSize >= 8) {
-        memcpy(result.magic, pInfoData, 4);
-        result.version = (quint8)pInfoData[4];
-        result.format = (quint8)pInfoData[5];
-        result.method = (quint8)pInfoData[6];
-        result.level = (quint8)pInfoData[7];
-    }
+    // Every supported pack header contains the eight-byte prefix followed by
+    // both Adler fields.  In particular, a trailing "UPX!" marker found by a
+    // bounded search is not itself a header.  Return before touching the Adler
+    // offsets so a marker in the last 4..15 bytes cannot read past the buffer.
+    if ((!pInfoData) || (nDataSize < 16)) return result;
+
+    memcpy(result.magic, pInfoData, 4);
+    result.version = (quint8)pInfoData[4];
+    result.format = (quint8)pInfoData[5];
+    result.method = (quint8)pInfoData[6];
+    result.level = (quint8)pInfoData[7];
 
     if (result.format < 128) {
         result.u_adler = _read_uint32(pInfoData + 8, bIsBigEndian);
@@ -1259,6 +1303,7 @@ bool XUPX::_unpackToFile(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 
         if (nWritten != (qint64)info.u_file_size) {
             _errorMessage(QString("UPX: rebuilt file size %1 does not match the recorded original size %2").arg(nWritten).arg(info.u_file_size), pPdStruct);
+            bResult = false;
         }
     }
 
@@ -1338,6 +1383,9 @@ QMap<XBinary::UNPACK_PROP, QVariant> XUPX::getDefaultUnpackProperties()
 bool XUPX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState || !pState->baUnpackSourceToken.isEmpty()) return false;
+    qint64 nOutputLimit = -1;
+    if (!getUnpackOutputLimit(mapProperties, &nOutputLimit)) return false;
+    Q_UNUSED(nOutputLimit)
     QSharedPointer<UNPACK_LIFETIME_STATE> pLifetime = m_pUnpackLifetimeState;
     UpxOperationGuard operationGuard(pLifetime);
     if (!operationGuard.isAcquired()) return false;
@@ -1368,6 +1416,7 @@ bool XUPX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     const qint64 nTotalSize = guardedSource->size();
     INTERNAL_INFO info = detector._getInternalInfo(pPdStruct);
     if (!guardedThis || !guardedSource || (nTotalSize < 0) || !info.bIsValid ||
+        !isUnpackOutputSizeAllowed(mapProperties, (qint64)(info.u_file_size ? info.u_file_size : info.u_len)) ||
         !pSourceValidator->isUnpackSourceCurrent(&sourceValidationState, pPdStruct) || !guardedThis || !guardedSource) {
         pSourceValidator->releaseUnpackSource(&sourceValidationState);
         delete pSourceValidator;
@@ -1443,6 +1492,10 @@ bool XUPX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
         !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !guardedOutput ||
         !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return false;
 
+    const ARCHIVERECORD &record = pContext->listRecords.at(pState->nCurrentIndex);
+    if (!isUnpackOutputSizeAllowed(pState->mapUnpackProperties,
+                                   record.mapProperties.value(FPART_PROP_UNCOMPRESSEDSIZE).toLongLong())) return false;
+
     const bool bOuterIsImage = isImage();
     const XADDR nOuterModuleAddress = getModuleAddress();
     XUPX decoder(pContext->pOuterSourceDevice.data(), bOuterIsImage, nOuterModuleAddress);
@@ -1451,6 +1504,11 @@ bool XUPX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
         !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||
         !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !guardedOutput ||
         !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return false;
+    // The advertised size was preflighted by initUnpack(), but a malformed
+    // header or reconstruction bug must not publish a larger staged result.
+    // Recheck the bytes actually produced before caller-owned output changes.
+    if (!isUnpackOutputSizeAllowed(pState->mapUnpackProperties,
+                                   stage.size())) return false;
     UpxPublisher publisher(pContext->pOuterSourceDevice.data());
     UNPACK_STATE publicationState = {};
     if (!publisher.bindUnpackSource(&publicationState, pPdStruct) ||
@@ -2461,6 +2519,40 @@ bool XUPX::_unpackELF(QIODevice *pDevice, const INTERNAL_INFO &info, PDSTRUCT *p
             }
 
             QList<qint64> listCandidateOffsets;
+
+            // Modern ET_DYN loaders place the secondary stream containing the
+            // original inter-segment gaps immediately after a file-backed
+            // packed PT_LOAD.  Deriving that position from the loader entry and
+            // l_lsize can land in alignment padding (UPX 3.95 x86-64 can be
+            // eight bytes late), so also try each structurally bounded segment
+            // end.  decodeGapExtentsFromOffset still has to validate and decode
+            // every exact gap extent before a candidate is accepted.
+            const qint64 nPackedSizeSigned = pUpx->getSize();
+
+            if ((nPackedSizeSigned > 0) && (info.nDataOffset >= 0)) {
+                const quint64 nPackedSize = (quint64)nPackedSizeSigned;
+                const quint64 nDataOffset = (quint64)info.nDataOffset;
+
+                if (nDataOffset <= nPackedSize && sizeof(p_info) <= (nPackedSize - nDataOffset)) {
+                    const quint64 nMinimumCandidate = nDataOffset + sizeof(p_info);
+
+                    for (qint32 i = 0; i < listPackedProgramHeaders.size(); i++) {
+                        const XELF_DEF::Elf_Phdr &programHeader = listPackedProgramHeaders.at(i);
+
+                        if ((programHeader.p_type != XELF_DEF::S_PT_LOAD) || (!programHeader.p_filesz) ||
+                            (programHeader.p_offset > nPackedSize) || (programHeader.p_filesz > (nPackedSize - programHeader.p_offset))) {
+                            continue;
+                        }
+
+                        const quint64 nFileEnd = programHeader.p_offset + programHeader.p_filesz;
+                        const quint64 nAlignedFileEnd = upxAlignUp(nFileEnd, 4);
+
+                        if ((nAlignedFileEnd >= nFileEnd) && (nAlignedFileEnd >= nMinimumCandidate) && (nAlignedFileEnd < nPackedSize)) {
+                            upxAddCandidateOffset(&listCandidateOffsets, nPackedSizeSigned, (qint64)nAlignedFileEnd);
+                        }
+                    }
+                }
+            }
 
             if ((listPackedProgramHeaders.size() >= 2) && (listPackedProgramHeaders.at(0).p_filesz == 0x1000) && (listPackedProgramHeaders.at(0).p_offset == 0) &&
                 (listPackedProgramHeaders.at(1).p_offset == 0) && (listPackedProgramHeaders.at(1).p_filesz == listPackedProgramHeaders.at(1).p_memsz)) {

@@ -12,13 +12,12 @@
 
 class XMaterializedUnpackGuard;
 
-/* Static unpacker for Petite 2.x packed PE files. Clean-room implementation:
+/* Static unpacker for Petite packed PE files. Clean-room implementation:
  * the Petite loader layout, its NRV-like LZ (XOR-obfuscated literals) and the
  * entry-point decryption / import walk were understood from the (GPL) libclamav
- * petite.c / pe.c reference, then reimplemented here from scratch.
- *
- * NOTE: not yet verified against real samples. Import unmangling is not
- * performed (as in the reference); the rebuilt PE is for static analysis. */
+ * petite.c / pe.c reference, then reimplemented here from scratch. Newer
+ * embedded decoder variants run only inside the bounded XEmulator sandbox.
+ * Import unmangling is not performed; the rebuilt PE is for static analysis. */
 
 class XPETITE : public XBinary {
     Q_OBJECT
@@ -76,7 +75,7 @@ private:
         ~LIFETIME_STATE();
     };
     QSharedPointer<LIFETIME_STATE> m_pUnpackLifetimeState;
-    bool _unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct);
+    bool _unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct);
     struct USECT {
         quint32 rva;
         quint32 rsz;
@@ -95,8 +94,9 @@ private:
     static qint64 _findOpTable(const quint8 *buf, quint32 bufsz, quint32 nMinRva, quint32 nLoaderRva, quint32 nLoaderVsz, quint32 nImageBase);
     static int _doubledl(const quint8 *buf, qint64 bufsz, qint64 *pSrcOff, quint8 *pMydl);
     static bool _inflate(quint8 *buf, quint32 nMinRva, quint32 bufsz, const QList<XPE_DEF::IMAGE_SECTION_HEADER> &listSections, int nSectCount, quint32 nImageBase,
-                         quint32 nPep, int nVersion, QList<USECT> *pOut, quint32 *pEncEp);
-    static QByteArray _buildPE(const QByteArray &baBuf, const QList<USECT> &listOut, quint32 nImageBase, quint32 nOEP, quint32 nResRva, quint32 nResSize);
+                         quint32 nPep, int nVersion, QList<USECT> *pOut, quint32 *pEncEp, PDSTRUCT *pPdStruct);
+    static QByteArray _buildPE(const QByteArray &baBuf, const QList<USECT> &listOut, quint32 nImageBase, quint32 nOEP, quint32 nResRva,
+                               quint32 nResSize, qint64 nOutputLimit = -1);
 };
 
 #endif  // XPETITE_H

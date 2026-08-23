@@ -11,7 +11,189 @@
 #include <QUuid>
 
 #include <climits>
+#include <cstdio>
 #include <cstring>
+
+#ifdef USE_XEMULATOR
+#include "../XEmulator/arch/xemux86.h"
+#include "../XEmulator/xemumemorymanager.h"
+#include "../XEmulator/xemuregisters.h"
+#endif
+
+static inline quint32 petRd32(const quint8 *p);
+static inline bool petCont(quint32 bufsz, qint64 off, qint64 len);
+
+namespace {
+
+#ifdef USE_XEMULATOR
+
+const quint32 PET_EMU_STACK = 0x50000000;
+const quint32 PET_EMU_STACK_SIZE = 0x00100000;
+const quint32 PET_EMU_SCRATCH = 0x51000000;
+const quint32 PET_EMU_SCRATCH_SIZE = 0x00010000;
+const quint32 PET_EMU_TRAP = 0x52000000;
+const quint64 PET_EMU_MAX_STEPS = Q_UINT64_C(100000000);
+const qint64 PET_EMU_CANCEL_STEPS = 100000;
+
+struct PET_DECODER_INFO {
+    bool bValid = false;
+    quint32 nFunctionRva = 0;
+    quint32 anTableOffsets[5] = {};
+};
+
+static PET_DECODER_INFO petFindEmbeddedDecoder(const quint8 *pBuffer, quint32 nBufferSize, quint32 nMinRva,
+                                               quint32 nLoaderRva, quint32 nLoaderVsz, quint32 nImageBase)
+{
+    PET_DECODER_INFO result;
+    if (!pBuffer || !nBufferSize || (nImageBase > 0xFFFFFFFFu - nLoaderRva)) return result;
+
+    const qint64 nLoaderOffset = (qint64)nLoaderRva - nMinRva;
+    const qint64 nLoaderEnd = qMin<qint64>(nBufferSize, nLoaderOffset + nLoaderVsz);
+    if ((nLoaderOffset < 0) || (nLoaderEnd <= nLoaderOffset) || (nLoaderEnd - nLoaderOffset < 0x100)) return result;
+
+    // Newer Petite loaders pass five loader-local helper addresses to their
+    // embedded decoder.  Recover the addresses from the exact push/add run,
+    // but reject loose byte-pattern matches in arbitrary packed data.
+    qint64 nArgumentRun = -1;
+    for (qint64 i = nLoaderOffset + 6; i + 25 <= nLoaderEnd; i++) {
+        if ((pBuffer[i - 6] != 0x68) || (petRd32(pBuffer + i - 5) != nImageBase) ||
+            (pBuffer[i - 1] < 0x50) || (pBuffer[i - 1] > 0x57)) continue;
+
+        bool bRun = true;
+        bool abSeen[256] = {};
+        for (int j = 0; j < 5; j++) {
+            const qint64 nAt = i + j * 5;
+            if ((pBuffer[nAt] != 0x50) || (pBuffer[nAt + 1] != 0x80) || (pBuffer[nAt + 2] != 0x04) ||
+                (pBuffer[nAt + 3] != 0x24) || !pBuffer[nAt + 4] || abSeen[pBuffer[nAt + 4]] ||
+                (pBuffer[nAt + 4] >= nLoaderVsz)) {
+                bRun = false;
+                break;
+            }
+            abSeen[pBuffer[nAt + 4]] = true;
+        }
+        if (!bRun) continue;
+        if (nArgumentRun != -1) return PET_DECODER_INFO();
+        nArgumentRun = i;
+    }
+    if (nArgumentRun == -1) return result;
+
+    for (int j = 0; j < 5; j++) result.anTableOffsets[j] = pBuffer[nArgumentRun + j * 5 + 4];
+
+    // The normal section loop pushes {op,size,destination,source} immediately
+    // before a direct relative call.  Accept one unambiguous decoder only.
+    qint64 nCallOffset = -1;
+    quint32 nFunctionRva = 0;
+    const qint64 nCallEnd = qMin<qint64>(nLoaderEnd, nArgumentRun + 0x180);
+    for (qint64 i = nArgumentRun + 25; i + 11 <= nCallEnd; i++) {
+        static const quint8 kCallPrefix[] = {0x52, 0x53, 0x57, 0x03, 0x02, 0x50, 0xE8};
+        if (memcmp(pBuffer + i, kCallPrefix, sizeof(kCallPrefix))) continue;
+        const qint32 nRelative = (qint32)petRd32(pBuffer + i + 7);
+        const qint64 nTargetRva64 = (qint64)nMinRva + i + 11 + nRelative;
+        if ((nTargetRva64 < nLoaderRva) || (nTargetRva64 + 9 > (qint64)nLoaderRva + nLoaderVsz)) continue;
+        const qint64 nTargetOffset = nTargetRva64 - nMinRva;
+        if (!petCont(nBufferSize, nTargetOffset, 9)) continue;
+        const quint8 *pTarget = pBuffer + nTargetOffset;
+        if ((pTarget[0] != 0x55) || (pTarget[1] != 0x8B) || (pTarget[2] != 0xEC) ||
+            (pTarget[3] != 0x81) || (pTarget[4] != 0xEC)) continue;
+        const quint32 nLocalStack = petRd32(pTarget + 5);
+        if ((nLocalStack < 0x100) || (nLocalStack > 0x000F0000)) continue;
+        if (nCallOffset != -1) return PET_DECODER_INFO();
+        nCallOffset = i;
+        nFunctionRva = (quint32)nTargetRva64;
+    }
+    if (nCallOffset == -1) return PET_DECODER_INFO();
+
+    result.bValid = true;
+    result.nFunctionRva = nFunctionRva;
+    return result;
+}
+
+static bool petRunEmbeddedDecoder(quint8 *pBuffer, quint32 nBufferSize, quint32 nMinRva, quint32 nImageBase,
+                                  quint32 nLoaderRva, const PET_DECODER_INFO &decoder, qint64 nOpOffset,
+                                  quint32 nSourceRva, quint32 nDestinationRva, quint32 nOutputSize,
+                                  quint64 *pnStepsRemaining, XBinary::PDSTRUCT *pPdStruct)
+{
+    if (!pBuffer || !decoder.bValid || !pnStepsRemaining || !*pnStepsRemaining || !nOutputSize) return false;
+    if ((nImageBase > 0xFFFFFFFFu - nMinRva) || (nImageBase > 0xFFFFFFFFu - nLoaderRva) ||
+        (nImageBase > 0xFFFFFFFFu - decoder.nFunctionRva)) return false;
+    if (!petCont(nBufferSize, (qint64)nSourceRva - nMinRva, 1) ||
+        !petCont(nBufferSize, (qint64)nDestinationRva - nMinRva, nOutputSize) ||
+        !petCont(nBufferSize, nOpOffset, 16)) return false;
+
+    const quint32 nImageAddress = nImageBase + nMinRva;
+    const quint32 nSourceAddress = nImageBase + nSourceRva;
+    const quint32 nDestinationAddress = nImageBase + nDestinationRva;
+    const quint32 nLoaderAddress = nImageBase + nLoaderRva;
+    const quint32 nFunctionAddress = nImageBase + decoder.nFunctionRva;
+    if ((nImageAddress > 0xFFFFFFFFu - nBufferSize) ||
+        (nDestinationAddress > 0xFFFFFFFFu - nOutputSize) ||
+        (nLoaderAddress > 0xFFFFFFFFu - 0xFF) ||
+        ((quint64)nImageBase + nMinRva + nOpOffset > 0xFFFFFFFFu)) return false;
+    const quint32 nOpAddress = nImageBase + nMinRva + (quint32)nOpOffset;
+
+    XEmuMemoryManager memory;
+    memory.setBits(32);
+    const XEmuMemoryManager::MEMORY_FLAGS rwx(true, true, true, false);
+    const XEmuMemoryManager::MEMORY_FLAGS rw(true, true, false, false);
+    if (!memory.mapFixed(nImageAddress, nBufferSize, rwx, QStringLiteral("Petite image")) ||
+        !memory.mapFixed(PET_EMU_STACK, PET_EMU_STACK_SIZE, rw, QStringLiteral("Petite stack")) ||
+        !memory.mapFixed(PET_EMU_SCRATCH, PET_EMU_SCRATCH_SIZE, rw, QStringLiteral("Petite scratch")) ||
+        !memory.mapFixed(PET_EMU_TRAP, 0x1000, rwx, QStringLiteral("Petite return trap")) ||
+        !memory.write(nImageAddress, pBuffer, nBufferSize) || !memory.writeByte(PET_EMU_TRAP, 0xF4)) {
+        return false;
+    }
+
+    const quint32 nSavedStack = PET_EMU_STACK + PET_EMU_STACK_SIZE - 0x10000;
+    const quint32 nStack = PET_EMU_STACK + PET_EMU_STACK_SIZE - 0x1000;
+    quint32 anArguments[12] = {
+        nSourceAddress, nDestinationAddress, nOutputSize, nOpAddress,
+        nLoaderAddress + decoder.anTableOffsets[4], nLoaderAddress + decoder.anTableOffsets[3],
+        nLoaderAddress + decoder.anTableOffsets[2], nLoaderAddress + decoder.anTableOffsets[1],
+        nLoaderAddress + decoder.anTableOffsets[0], nSavedStack, nImageBase, PET_EMU_SCRATCH
+    };
+    if (!memory.writeDword(nStack, PET_EMU_TRAP)) return false;
+    for (int i = 0; i < 12; i++) {
+        if (!memory.writeDword(nStack + 4 + i * 4, anArguments[i])) return false;
+    }
+
+    XEmuX86 arch(&memory, 32);
+    XEmuRegisters registers;
+    registers.setGPR(XEmuRegisters::GPR_RSP, 4, nStack);
+    registers.nRIP = nFunctionAddress;
+
+    bool bReturned = false;
+    while (*pnStepsRemaining) {
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+        const qint64 nChunk = (qint64)qMin<quint64>(*pnStepsRemaining, (quint64)PET_EMU_CANCEL_STEPS);
+        XEmuArch::STEP_INFO stopInfo;
+        const qint64 nRan = arch.run(&registers, nChunk, &stopInfo);
+        if ((nRan <= 0) || (nRan > nChunk)) return false;
+        *pnStepsRemaining -= (quint64)nRan;
+        if (stopInfo.result == XEmuArch::STEP_OK) {
+            if (nRan != nChunk) return false;
+            continue;
+        }
+        if ((stopInfo.result != XEmuArch::STEP_HALT) || (stopInfo.nAddress != PET_EMU_TRAP)) return false;
+        bReturned = true;
+        break;
+    }
+    if (!bReturned) return false;
+
+    bool bOk = false;
+    const quint32 nConsumedEnd = (quint32)registers.getGPR(XEmuRegisters::GPR_RAX, 4);
+    const quint32 nUpdatedDestination = memory.readDword(nStack + 8, &bOk);
+    if (!bOk || (nUpdatedDestination != nDestinationAddress + nOutputSize) ||
+        (nConsumedEnd <= nSourceAddress) || (nConsumedEnd > nImageAddress + nBufferSize)) return false;
+
+    QByteArray baDecoded = memory.read(nDestinationAddress, nOutputSize, &bOk);
+    if (!bOk || ((quint32)baDecoded.size() != nOutputSize)) return false;
+    memcpy(pBuffer + ((qint64)nDestinationRva - nMinRva), baDecoded.constData(), nOutputSize);
+    return true;
+}
+
+#endif
+
+}  // namespace
 
 static inline quint32 petRd32(const quint8 *p)
 {
@@ -282,7 +464,7 @@ bool XPETITE::_usectRvaLess(const USECT &a, const USECT &b)
 }
 
 bool XPETITE::_inflate(quint8 *buf, quint32 nMinRva, quint32 bufsz, const QList<XPE_DEF::IMAGE_SECTION_HEADER> &listSections, int nSectCount, quint32 nImageBase,
-                       quint32 nPep, int nVersion, QList<USECT> *pOut, quint32 *pEncEp)
+                       quint32 nPep, int nVersion, QList<USECT> *pOut, quint32 *pEncEp, PDSTRUCT *pPdStruct)
 {
     quint32 grown = 0x355, skew = 0x35;
     if (nVersion != 2) {
@@ -300,6 +482,13 @@ bool XPETITE::_inflate(quint8 *buf, quint32 nMinRva, quint32 bufsz, const QList<
     if (pk == -1) {
         pk = petRel(nMinRva, nLoaderRva) + ((nVersion == 2) ? 0x1b8 : 0x178);
     }
+
+#ifdef USE_XEMULATOR
+    const PET_DECODER_INFO embeddedDecoder = petFindEmbeddedDecoder(buf, bufsz, nMinRva, nLoaderRva, nLoaderVsz, nImageBase);
+    quint64 nEmulatorStepsRemaining = PET_EMU_MAX_STEPS;
+#else
+    Q_UNUSED(pPdStruct)
+#endif
 
     QList<USECT> usects;
     quint32 bottom = 0, enc_ep = 0, irva = 0, workdone = 0;
@@ -369,6 +558,13 @@ bool XPETITE::_inflate(quint8 *buf, quint32 nMinRva, quint32 bufsz, const QList<
                 }
             }
 
+#ifdef USE_XEMULATOR
+            // Embedded-decoder Petite builds do not append the older encrypted
+            // entry-point trailer. Their section loop hands control into the
+            // first restored image section, which is the safest rebuild OEP.
+            if (!enc_ep && embeddedDecoder.bValid) enc_ep = usects.at(0).rva;
+#endif
+
             // compact data into sequential raw offsets
             for (int t = 0; t < j; t++) {
                 usects[t].raw = (t > 0) ? (usects[t - 1].raw + usects[t - 1].rsz) : 0;
@@ -406,6 +602,7 @@ bool XPETITE::_inflate(quint8 *buf, quint32 nMinRva, quint32 bufsz, const QList<
             quint8 mydl = 0;
             quint8 goback;
 
+            const qint64 nOpOffset = pk;
             if (!petCont(bufsz, pk + 4, 8)) return false;
             size = petR32(buf, pk + 4);
             quint32 thisrva = petR32(buf, pk + 8);
@@ -441,82 +638,96 @@ bool XPETITE::_inflate(quint8 *buf, quint32 nMinRva, quint32 bufsz, const QList<
 
             usects.append(us);
 
-            if (size < 0x10000) {
+            bool bDecodedByEmulator = false;
+#ifdef USE_XEMULATOR
+            if (embeddedDecoder.bValid) {
+                if (!petRunEmbeddedDecoder(buf, bufsz, nMinRva, nImageBase, nLoaderRva, embeddedDecoder, nOpOffset,
+                                           srva, thisrva, size, &nEmulatorStepsRemaining, pPdStruct)) {
+                    return false;
+                }
+                ddst += size;
+                bDecodedByEmulator = true;
+            }
+#endif
+
+            if (!bDecodedByEmulator && (size < 0x10000)) {
                 check1 = 0x0FFFFC060;
                 check2 = 0x0FFFFFC60;
                 goback = 5;
-            } else if (size < 0x40000) {
+            } else if (!bDecodedByEmulator && (size < 0x40000)) {
                 check1 = 0x0FFFF8180;
                 check2 = 0x0FFFFF980;
                 goback = 7;
-            } else {
+            } else if (!bDecodedByEmulator) {
                 check1 = 0x0FFFF8300;
                 check2 = 0x0FFFFFB00;
                 goback = 8;
             }
 
-            if (!petCont(bufsz, ssrc, 1) || !petCont(bufsz, ddst, 1)) return false;
-            size--;
-            buf[ddst++] = buf[ssrc++];
-            int backbytes = 0, oldback = 0, addsize;
+            if (!bDecodedByEmulator) {
+                if (!petCont(bufsz, ssrc, 1) || !petCont(bufsz, ddst, 1)) return false;
+                size--;
+                buf[ddst++] = buf[ssrc++];
+                int backbytes = 0, oldback = 0, addsize;
 
-            while (size > 0) {
-                int oob = _doubledl(buf, bufsz, &ssrc, &mydl);
-                if (oob == -1) return false;
-                if (!oob) {
-                    if (!petCont(bufsz, ssrc, 1) || !petCont(bufsz, ddst, 1)) return false;
-                    buf[ddst++] = (quint8)(buf[ssrc++] ^ (size & 0xff));
-                    size--;
-                } else {
-                    addsize = 0;
-                    backbytes++;
-                    for (;;) {
-                        if ((oob = _doubledl(buf, bufsz, &ssrc, &mydl)) == -1) return false;
-                        if (backbytes >= INT_MAX / 2) return false;
-                        backbytes = backbytes * 2 + oob;
-                        if ((oob = _doubledl(buf, bufsz, &ssrc, &mydl)) == -1) return false;
-                        if (!oob) break;
-                    }
-                    backbytes -= 3;
-                    quint32 backsize;
-                    if (backbytes >= 0) {
-                        backsize = goback;
-                        do {
+                while (size > 0) {
+                    int oob = _doubledl(buf, bufsz, &ssrc, &mydl);
+                    if (oob == -1) return false;
+                    if (!oob) {
+                        if (!petCont(bufsz, ssrc, 1) || !petCont(bufsz, ddst, 1)) return false;
+                        buf[ddst++] = (quint8)(buf[ssrc++] ^ (size & 0xff));
+                        size--;
+                    } else {
+                        addsize = 0;
+                        backbytes++;
+                        for (;;) {
                             if ((oob = _doubledl(buf, bufsz, &ssrc, &mydl)) == -1) return false;
                             if (backbytes >= INT_MAX / 2) return false;
                             backbytes = backbytes * 2 + oob;
-                            backsize--;
-                        } while (backsize);
-                        backbytes ^= 0xffffffff;
-                        addsize += 1 + (backbytes < (int)check2) + (backbytes < (int)check1);
-                        oldback = backbytes;
-                    } else {
-                        backsize = backbytes + 1;
-                        backbytes = oldback;
-                    }
-
-                    if ((oob = _doubledl(buf, bufsz, &ssrc, &mydl)) == -1) return false;
-                    backsize = backsize * 2 + oob;
-                    if ((oob = _doubledl(buf, bufsz, &ssrc, &mydl)) == -1) return false;
-                    backsize = backsize * 2 + oob;
-                    if (!backsize) {
-                        backsize++;
-                        for (;;) {
-                            if ((oob = _doubledl(buf, bufsz, &ssrc, &mydl)) == -1) return false;
-                            backsize = backsize * 2 + oob;
                             if ((oob = _doubledl(buf, bufsz, &ssrc, &mydl)) == -1) return false;
                             if (!oob) break;
                         }
-                        backsize += 2;
+                        backbytes -= 3;
+                        quint32 backsize;
+                        if (backbytes >= 0) {
+                            backsize = goback;
+                            do {
+                                if ((oob = _doubledl(buf, bufsz, &ssrc, &mydl)) == -1) return false;
+                                if (backbytes >= INT_MAX / 2) return false;
+                                backbytes = backbytes * 2 + oob;
+                                backsize--;
+                            } while (backsize);
+                            backbytes ^= 0xffffffff;
+                            addsize += 1 + (backbytes < (int)check2) + (backbytes < (int)check1);
+                            oldback = backbytes;
+                        } else {
+                            backsize = backbytes + 1;
+                            backbytes = oldback;
+                        }
+
+                        if ((oob = _doubledl(buf, bufsz, &ssrc, &mydl)) == -1) return false;
+                        backsize = backsize * 2 + oob;
+                        if ((oob = _doubledl(buf, bufsz, &ssrc, &mydl)) == -1) return false;
+                        backsize = backsize * 2 + oob;
+                        if (!backsize) {
+                            backsize++;
+                            for (;;) {
+                                if ((oob = _doubledl(buf, bufsz, &ssrc, &mydl)) == -1) return false;
+                                backsize = backsize * 2 + oob;
+                                if ((oob = _doubledl(buf, bufsz, &ssrc, &mydl)) == -1) return false;
+                                if (!oob) break;
+                            }
+                            backsize += 2;
+                        }
+                        backsize += addsize;
+                        if ((backsize > size) || !petCont(bufsz, ddst, backsize) || !petCont(bufsz, ddst + backbytes, backsize)) return false;
+                        size -= backsize;
+                        while (backsize--) {
+                            buf[ddst] = buf[ddst + backbytes];
+                            ddst++;
+                        }
+                        backbytes = 0;
                     }
-                    backsize += addsize;
-                    size -= backsize;
-                    if (!petCont(bufsz, ddst, backsize) || !petCont(bufsz, ddst + backbytes, backsize)) return false;
-                    while (backsize--) {
-                        buf[ddst] = buf[ddst + backbytes];
-                        ddst++;
-                    }
-                    backbytes = 0;
                 }
             }
 
@@ -557,7 +768,8 @@ bool XPETITE::_inflate(quint8 *buf, quint32 nMinRva, quint32 bufsz, const QList<
 // PE rebuild (sections read from the compacted buffer at .raw)
 // ---------------------------------------------------------------------------
 
-QByteArray XPETITE::_buildPE(const QByteArray &baBuf, const QList<USECT> &listOut, quint32 nImageBase, quint32 nOEP, quint32 nResRva, quint32 nResSize)
+QByteArray XPETITE::_buildPE(const QByteArray &baBuf, const QList<USECT> &listOut, quint32 nImageBase, quint32 nOEP, quint32 nResRva,
+                             quint32 nResSize, qint64 nOutputLimit)
 {
     int nSectCount = listOut.size();
     if (nSectCount <= 0) return QByteArray();
@@ -570,13 +782,15 @@ QByteArray XPETITE::_buildPE(const QByteArray &baBuf, const QList<USECT> &listOu
         nRawBase = petAlign(nHeaderBase + 0x28 * (nSectCount + 1), 0x200);
     }
 
-    quint32 nRawTotal = nRawBase, nMaxVEnd = 0;
+    quint64 nRawTotal = nRawBase;
+    quint32 nMaxVEnd = 0;
     for (int i = 0; i < nSectCount; i++) {
         nRawTotal += petAlign(listOut.at(i).rsz, 0x200);
         nMaxVEnd = qMax(nMaxVEnd, listOut.at(i).rva + qMax(listOut.at(i).vsz, listOut.at(i).rsz));
     }
 
-    QByteArray baResult(nRawTotal, (char)0);
+    if ((nRawTotal > INT_MAX) || ((nOutputLimit >= 0) && (nRawTotal > (quint64)nOutputLimit))) return QByteArray();
+    QByteArray baResult((int)nRawTotal, (char)0);
     char *p = baResult.data();
 
     _write_uint16(p + 0, 0x5A4D);
@@ -699,6 +913,8 @@ QMap<XBinary::UNPACK_PROP, QVariant> XPETITE::getDefaultUnpackProperties()
 bool XPETITE::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
+    qint64 nOutputLimit = -1;
+    if (!getUnpackOutputLimit(mapProperties, &nOutputLimit)) return false;
     const PDSTRUCTLIFETIME progressLifetime = pPdStruct ? retainPdStructLifetime(pPdStruct) : PDSTRUCTLIFETIME();
     const auto isProgressAlive = [&]() -> bool {
         return !pPdStruct || isPdStructLifetimeAlive(progressLifetime);
@@ -750,7 +966,7 @@ bool XPETITE::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant>
     if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
         (getDevice() != guardedSource.data()) || !info.bIsValid) return false;
     QByteArray baData;
-    const bool bUnpacked = worker._unpackToBuffer(baData, pPdStruct);
+    const bool bUnpacked = worker._unpackToBuffer(baData, nOutputLimit, pPdStruct);
     if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
         (getDevice() != guardedSource.data()) || !bUnpacked || baData.isEmpty() ||
         !isPdStructNotCanceled(pPdStruct)) return false;
@@ -923,7 +1139,7 @@ bool XPETITE::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *
     return true;
 }
 
-bool XPETITE::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
+bool XPETITE::_unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct)
 {
     baOut.clear();
 
@@ -947,7 +1163,8 @@ bool XPETITE::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
     }
     if (nMax <= nMin) return false;
     quint32 dsize = nMax - nMin;
-    if (dsize > (256u * 1024 * 1024)) return false;
+    if ((dsize > (256u * 1024 * 1024)) ||
+        ((nOutputLimit >= 0) && ((quint64)dsize > (quint64)nOutputLimit))) return false;
 
     QByteArray baBuf(dsize, (char)0);
     for (int i = 0; i < n; i++) {
@@ -968,11 +1185,9 @@ bool XPETITE::_unpackToBuffer(QByteArray &baOut, PDSTRUCT *pPdStruct)
 
     QList<USECT> listOut;
     quint32 nEncEp = 0;
-    if (!_inflate((quint8 *)baBuf.data(), nMin, dsize, listSections, nSectCount, nImageBase, nVep, info.nVersion, &listOut, &nEncEp)) {
-        return false;
-    }
+    if (!_inflate((quint8 *)baBuf.data(), nMin, dsize, listSections, nSectCount, nImageBase, nVep, info.nVersion, &listOut, &nEncEp, pPdStruct)) return false;
 
-    QByteArray baPE = _buildPE(baBuf, listOut, nImageBase, nEncEp, resDir.VirtualAddress, resDir.Size);
+    QByteArray baPE = _buildPE(baBuf, listOut, nImageBase, nEncEp, resDir.VirtualAddress, resDir.Size, nOutputLimit);
     if (baPE.isEmpty()) return false;
 
     baOut = baPE;
