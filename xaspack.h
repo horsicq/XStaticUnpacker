@@ -32,7 +32,9 @@ public:
         AVER_212,
         AVER_22,     // 2.2x
         AVER_OTHER,  // >2.12, <2.42
-        AVER_242
+        AVER_242,
+        AVER_211,    // 2.11 and 2.11r share one stub layout (encrypted head)
+        AVER_211C    // 2.11c and 2.11d share one stub layout (encrypted head)
     };
 
     struct INTERNAL_INFO : public XBinary::INTERNAL_INFO {

@@ -101,13 +101,24 @@ private:
     static bool _decompress(quint32 nTre, quint32 nAllocsz, quint32 nFirstByte, const quint8 *pSrc, quint32 nSsize, quint8 *pDst, quint32 nDsize, quint16 *pTable,
                             quint32 nTableEntries);
     // Reverse NsPack's E8/E9 CALL/JMP address filter over the decompressed blob.
-    static void _deFilterCallJmp(quint8 *pData, quint32 nSize);
+    // The packer filtered only SOME sites: those whose operand byte 0 equals
+    // nMarker, up to nCount of them, and only when nGate is nonzero. Rewriting
+    // every E8/E9 (the old behaviour) corrupted the unfiltered sites and crashed
+    // 25 of 34 restored samples. bControlValid==false or nGate==0 falls back to
+    // the old rewrite-all pass so no input ever produces newly-wrong bytes.
+    static void _deFilterCallJmp(quint8 *pData, quint32 nSize, quint32 nCount, quint8 nMarker, quint8 nGate, bool bControlValid);
+    // Read the call/jmp filter control fields (count/marker/gate) from the
+    // loader's parameter block, using the same self-validating loader anchor as
+    // _reconstructImports. Returns false (fail-safe) on an unknown layout.
+    bool _readCallJmpControl(quint32 *pnCount, quint8 *pnMarker, quint8 *pnGate, PDSTRUCT *pPdStruct);
     // Rebuild the original import directory from NsPack's descriptor stream. Fills the
     // IAT inside *pBaBlob and returns the bytes of a fresh import section to be placed
     // at RVA nImpRva (empty on failure / no imports). Sets *pnDescSize.
     QByteArray _reconstructImports(QByteArray *pBaBlob, quint32 nRva, quint32 nImpRva, quint32 *pnDescSize, PDSTRUCT *pPdStruct);
-    static QByteArray _buildPE(const QByteArray &baBlob, quint32 nRva, quint32 nImageBase, quint32 nOEP, const QByteArray &baImportSection = QByteArray(),
-                               quint32 nImpRva = 0, quint32 nDescSize = 0, qint64 nOutputLimit = -1);
+    // Not static: restoring the dropped data directories (TLS/resource) needs to
+    // read the packed PE's own optional header, so it needs the device.
+    QByteArray _buildPE(const QByteArray &baBlob, quint32 nRva, quint32 nImageBase, quint32 nOEP, const QByteArray &baImportSection = QByteArray(),
+                        quint32 nImpRva = 0, quint32 nDescSize = 0, qint64 nOutputLimit = -1, PDSTRUCT *pPdStruct = nullptr);
 
     bool _unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct);
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);

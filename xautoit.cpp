@@ -405,10 +405,16 @@ QList<XAUTOIT::RECORD> XAUTOIT::_parseV2(const quint8 *pData, qint64 nSize, qint
                                          UNPACK_MEMORY_RESERVATION *pRecordReservation, PDSTRUCT *pPdStruct)
 {
     QList<RECORD> listResult;
+    // The trailing backlink DWORD is NOT required to equal nBase: some genuine
+    // Aut2Exe builds leave it pointing into the PE image rather than at the
+    // container, and _detect locates the container by its signature in that
+    // case. The record chain itself is the authoritative validator - every
+    // marker must decrypt to "FILE", every size must fit, and the walk must land
+    // exactly on nTrailer (checked at the end) - so a coincidental signature
+    // match cannot produce output.
     if (!pData || !pRecordReservation || !pRecordReservation->isActive() ||
         (nSize < 25) || (nBase < 0) || (nBase > nSize - 25) ||
-        (memcmp(pData + nBase, AI_V2_SIGNATURE, sizeof(AI_V2_SIGNATURE)) != 0) ||
-        (aiRd32(pData + nSize - 4) != static_cast<quint32>(nBase))) return listResult;
+        (memcmp(pData + nBase, AI_V2_SIGNATURE, sizeof(AI_V2_SIGNATURE)) != 0)) return listResult;
 
     const qint64 nTrailer = nSize - 4;
     nBase += sizeof(AI_V2_SIGNATURE);
@@ -760,6 +766,28 @@ XAUTOIT::INTERNAL_INFO XAUTOIT::_detect(PDSTRUCT *pPdStruct)
                 result.nVersion = 2;
                 result.sVersion = QStringLiteral("v2");
                 result.nMarkerOffset = nV2Offset;
+                return result;
+            }
+        }
+    }
+
+    // Some Aut2Exe builds do not write the trailing backlink DWORD - it points
+    // into the PE image instead of the container start (observed on a genuine
+    // v2 executable whose container sits at the PE overlay while the final
+    // DWORD indexes .text). Fall back to locating the container by its 16-byte
+    // magic followed by subtype 1. That full magic is specific enough that a
+    // coincidental match in arbitrary PE data is not a real concern, and a
+    // non-container match fails closed at the _parseV2 stage (empty record list
+    // -> "Cannot open archive") rather than producing output.
+    if (isPdStructNotCanceled(pPdStruct)) {
+        const qint64 nScan = find_array(0, nSize, reinterpret_cast<const char *>(AI_V2_SIGNATURE), sizeof(AI_V2_SIGNATURE), pPdStruct);
+        if ((nScan != -1) && ((nScan + static_cast<qint64>(sizeof(AI_V2_SIGNATURE))) < nSize)) {
+            const QByteArray baSubtype = read_array_process(nScan + sizeof(AI_V2_SIGNATURE), 1, pPdStruct);
+            if ((baSubtype.size() == 1) && (static_cast<quint8>(baSubtype.at(0)) == 1)) {
+                result.bIsValid = true;
+                result.nVersion = 2;
+                result.sVersion = QStringLiteral("v2");
+                result.nMarkerOffset = nScan;
                 return result;
             }
         }

@@ -14,6 +14,12 @@
 #include <cstring>
 #include <vector>
 
+#ifdef USE_XEMULATOR
+#include "../XEmulator/arch/xemux86.h"
+#include "../XEmulator/xemumemorymanager.h"
+#include "../XEmulator/xemuregisters.h"
+#endif
+
 // Stub layout table.  `nEpBuffOff` is relative to AddressOfEntryPoint; every
 // other offset is relative to (AddressOfEntryPoint - 1), which is where the
 // stub's own base pointer lands.  The values were derived per generation from
@@ -46,6 +52,17 @@ const ASPACK_LAYOUT g_aspackLayouts[] = {
     {XASPACK::AVER_242, "\x60\xe8\x03\x00\x00\x00\xe9\xeb", 8, 0x42b, 0x5e4, 12, 0x776, 0x73e, 0x148, 0x40d, "2.42"},
     {XASPACK::AVER_200, "\x60\xe8\x70\x05\x00\x00\xeb", 7, 0x4fb, 0x0de, 8, 0x623, 0x5eb, 0x292, 0x0d2, "2.00"},
     {XASPACK::AVER_201, "\x60\xe8\x72\x05\x00\x00\xeb", 7, 0x4fd, 0x0de, 8, 0x625, 0x5ed, 0x294, 0x0d2, "2.01/2.1"},
+#ifdef USE_XEMULATOR
+    // 2.11/2.11c wrap the stub head (mark byte + OEP dword) in a per-file
+    // polymorphic self-decryptor, so their layout is only usable when the
+    // emulator can decrypt the head (see decryptStubHead). nEpBuffOff is the
+    // sentinel 0xffffffff because the "68 00 00 00 00 c3" marker lives inside
+    // the still-encrypted head and cannot be matched statically; detection keys
+    // on the exact EP signature and the plaintext compB table instead. Two
+    // rows cover four sub-versions (2.11==2.11r, 2.11c==2.11d).
+    {XASPACK::AVER_211, "\x60\xe9\x3d\x04\x00\x00", 6, 0xffffffff, 0x6e9, 8, 0x87b, 0x843, 0x14b, 0x7d, "2.11/2.11r"},
+    {XASPACK::AVER_211C, "\x60\xe8\x02\x00\x00\x00\xeb\x09", 8, 0xffffffff, 0x715, 8, 0x8a7, 0x86f, 0x157, 0x3a1, "2.11c/2.11d"},
+#endif
 };
 
 const ASPACK_LAYOUT *aspackLayout(XASPACK::AVER version)
@@ -55,6 +72,60 @@ const ASPACK_LAYOUT *aspackLayout(XASPACK::AVER version)
     }
     return nullptr;
 }
+
+#ifdef USE_XEMULATOR
+// 2.11/2.11c hide the call/jmp mark byte and the original-entry-point dword
+// inside a per-file polymorphic self-decryptor at the entry point. Emulate the
+// stub from AddressOfEntryPoint until execution reaches the deterministic
+// address where the decrypted head is entered (nEp+nLandingOff), then copy the
+// now-plaintext head [nEp, nEp+0x800) back over `image`. After this the mark and
+// OEP reads in the main path see plaintext. Returns false (fall back to the
+// generic route) on any emulation fault, cancellation, or step-cap overrun - so
+// a mis-emulated file is never restored with a wrong OEP.
+bool decryptStubHead(quint32 nImageBase, quint32 nEp, quint32 nLandingOff, quint8 *image, quint32 nImageSize, XBinary::PDSTRUCT *pPdStruct)
+{
+    const quint32 ASP_STACK = 0x50000000u;
+    const quint32 ASP_STACK_SIZE = 0x00100000u;
+    const quint32 ASP_HEAD_SIZE = 0x800u;
+    const quint64 ASP_MAX_STEPS = Q_UINT64_C(8000000);
+
+    if (!image || !nImageSize) return false;
+    if (((quint64)nEp + ASP_HEAD_SIZE) > nImageSize) return false;
+    if (((quint64)nEp + nLandingOff) >= nImageSize) return false;
+    // Keep the image below the emulator scratch regions.
+    if (((quint64)nImageBase + nImageSize) > ASP_STACK) return false;
+
+    XEmuMemoryManager memory;
+    memory.setBits(32);
+    const XEmuMemoryManager::MEMORY_FLAGS rwx(true, true, true, false);
+    const XEmuMemoryManager::MEMORY_FLAGS rw(true, true, false, false);
+    if (!memory.mapFixed(nImageBase, nImageSize, rwx, QStringLiteral("ASPack image")) ||
+        !memory.mapFixed(ASP_STACK, ASP_STACK_SIZE, rw, QStringLiteral("ASPack stack")) ||
+        !memory.write(nImageBase, image, nImageSize)) {
+        return false;
+    }
+
+    XEmuX86 arch(&memory, 32);
+    XEmuRegisters registers;
+    registers.setGPR(XEmuRegisters::GPR_RSP, 4, ASP_STACK + ASP_STACK_SIZE - 0x1000u);
+    const quint32 nTarget = nImageBase + nEp + nLandingOff;
+    registers.nRIP = nImageBase + nEp + 1;  // AddressOfEntryPoint
+
+    quint64 nSteps = 0;
+    while ((quint32)registers.nRIP != nTarget) {
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+        if (nSteps++ >= ASP_MAX_STEPS) return false;
+        XEmuArch::STEP_INFO stepInfo = arch.step(&registers);
+        if (stepInfo.result != XEmuArch::STEP_OK) return false;
+    }
+
+    bool bOk = false;
+    QByteArray baHead = memory.read(nImageBase + nEp, ASP_HEAD_SIZE, &bOk);
+    if (!bOk || ((quint32)baHead.size() != ASP_HEAD_SIZE)) return false;
+    memcpy(image + nEp, baHead.constData(), ASP_HEAD_SIZE);
+    return true;
+}
+#endif
 
 // The 0x72-byte constant table the decoder indexes as `stuff[]`.  Requiring it
 // at the layout's offset keeps detection specific to a real ASPack stub.
@@ -606,7 +677,10 @@ XASPACK::INTERNAL_INFO XASPACK::_detect(PDSTRUCT *pPdStruct)
         return result;
     }
 
-    QByteArray baEp = read_array_process(nEpOffset, 0x800, pPdStruct);
+    // 0x1000, not 0x800: the 2.11 compB table ends near AEP+0x8e0, past the old
+    // window. read_array_process clamps to EOF, and every row re-checks bounds
+    // before each memcmp, so the larger read never over-reads a small file.
+    QByteArray baEp = read_array_process(nEpOffset, 0x1000, pPdStruct);
     if (baEp.size() < 0x3bf) {
         return result;
     }
@@ -617,8 +691,13 @@ XASPACK::INTERNAL_INFO XASPACK::_detect(PDSTRUCT *pPdStruct)
     for (const ASPACK_LAYOUT &layout : g_aspackLayouts) {
         if (nEpSize < layout.nSignatureSize) continue;
         if (memcmp(ep, layout.pszSignature, (size_t)layout.nSignatureSize) != 0) continue;
-        if (nEpSize < (qint64)layout.nEpBuffOff + 6) continue;
-        if (memcmp(ep + layout.nEpBuffOff, kMark, 6) != 0) continue;
+        // The 2.11 rows use the sentinel 0xffffffff because their push/ret
+        // marker is inside the encrypted head; they rely on the signature and
+        // compB anchor below instead. Every other row still requires the marker.
+        if (layout.nEpBuffOff != 0xffffffffu) {
+            if (nEpSize < (qint64)layout.nEpBuffOff + 6) continue;
+            if (memcmp(ep + layout.nEpBuffOff, kMark, 6) != 0) continue;
+        }
         // The constant decoder table is stored (AddressOfEntryPoint - 1)-relative.
         const qint64 nCompBEpOff = (qint64)layout.nCompBOff - 1;
         if ((nCompBEpOff < 0) || (nEpSize < nCompBEpOff + (qint64)sizeof(g_aspackCompBTable))) continue;
@@ -923,6 +1002,16 @@ bool XASPACK::_unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *
         memcpy(baImage.data() + nRva, baSect.constData(), nRsz);
     }
     quint8 *image = (quint8 *)baImage.data();
+
+#ifdef USE_XEMULATOR
+    // 2.11/2.11c carry an encrypted stub head; decrypt it in place before the
+    // mark and OEP reads below, which then work exactly as for the plaintext
+    // versions. The deterministic post-decrypt landing address differs per row.
+    if ((info.version == AVER_211) || (info.version == AVER_211C)) {
+        const quint32 nLandingOff = (info.version == AVER_211) ? 0x43bu : 0x467u;
+        if (!decryptStubHead(nImageBase, nEp, nLandingOff, image, nImageSize, pPdStruct)) return false;
+    }
+#endif
 
     QByteArray baWrk(0x1800, (char)0);
     quint8 *wrkbuf = (quint8 *)baWrk.data();

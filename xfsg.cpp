@@ -18,6 +18,39 @@ static inline quint32 fsgRd32(const quint8 *p)
     return (quint32)(p[0] | ((quint32)p[1] << 8) | ((quint32)p[2] << 16) | ((quint32)p[3] << 24));
 }
 
+// FSG 1.1/1.2 hide the v100 loader behind a fixed single-layer byte-decryptor.
+// The stub is a fixed 0x80 bytes at the entry point and the 0xF4-byte encrypted
+// body follows at EP+0x80. Between the loop instructions the stub inserts
+// EB 02 CD 20 (jmp $+2 ; int 0x20) anti-disassembly padding, so the transform
+// cannot be read at fixed EP offsets - but the transform itself is CONSTANT
+// across every observed build: add 0x72, add 0xEA, xor 0xB6, add 0x46, xor 0x02,
+// which reduces to the stateless per-byte map below (0x72+0xEA == 0x5C mod 256).
+// Verified byte-exact against the pre-pack oracles on all three local samples
+// (1.1/in_fpc, 1.2/in_fpc, 1.2/in_tcc). A build using a different transform
+// would decrypt to garbage and fail the v100 opener check at the call sites, so
+// this stays fail-closed without disassembling the loop.
+static inline quint8 fsgDecryptByte(quint8 x)
+{
+    quint8 t = (quint8)(x + 0x5C);
+    t = (quint8)(t ^ 0xB6);
+    t = (quint8)(t + 0x46);
+    t = (quint8)(t ^ 0x02);
+    return t;
+}
+
+static void fsgDecryptStub(QByteArray *pBa)
+{
+    if (!pBa) return;
+    quint8 *p = (quint8 *)pBa->data();
+    for (int i = 0; i < pBa->size(); i++) {
+        p[i] = fsgDecryptByte(p[i]);
+    }
+}
+
+// Encrypted-stub geometry, shared by _detect and _resolveOep.
+static const qint64 FSG_ENC_STUB_SIZE = 0x80;
+static const qint64 FSG_ENC_BODY_SIZE = 0xF4;
+
 static inline quint32 fsgAlign(quint32 nValue, quint32 nAlign)
 {
     return (nValue + nAlign - 1) & ~(nAlign - 1);
@@ -371,7 +404,9 @@ XFSG::INTERNAL_INFO XFSG::_detect(PDSTRUCT *pPdStruct)
         return result;
     }
 
-    QByteArray baEp = read_array_process(nEpOffset, 0x20, pPdStruct);
+    // Read enough for the encrypted-stub arm (0x80); the plaintext arms only
+    // need the first 0x20, so keep that guard and let the new arm require 0x80.
+    QByteArray baEp = read_array_process(nEpOffset, FSG_ENC_STUB_SIZE, pPdStruct);
     if (baEp.size() < 0x20) {
         return result;
     }
@@ -434,11 +469,39 @@ XFSG::INTERNAL_INFO XFSG::_detect(PDSTRUCT *pPdStruct)
         }
     }
 
-    // FSG 1.1/1.2 is deliberately absent: those builds hide the loader behind a
-    // polymorphic byte-decryption loop at the entry point, so the stub carries
-    // no stable signature and the original entry point cannot be read without
-    // reproducing the decryptor.  They stay undetected rather than being
-    // reported as a family this class cannot actually restore.
+    // FSG 1.1/1.2: the v100 loader wrapped by a fixed byte-decryptor (see
+    // fsgDecryptByte). ep[0]==0xE8 does not collide with the arms above, which
+    // require ep[0] in {0x87, 0xBE, 0xBB}. Decrypt the 0xF4-byte body at EP+0x80,
+    // then require the plaintext v100 opener (BB.. BF.. BE.. 53) before claiming
+    // the family - that check is what makes a wrong transform fail closed rather
+    // than yield a wrong image. The support/dest/src fields come from the
+    // DECRYPTED opener, not the encrypted entry point.
+    else if ((ep[0] == 0xE8) && (baEp.size() >= FSG_ENC_STUB_SIZE)) {
+        const quint32 nBodyRva = nAoe + (quint32)FSG_ENC_STUB_SIZE;
+        const qint64 nBodyOffset = pe.relAddressToOffset(nBodyRva);
+        if (nBodyOffset != -1) {
+            QByteArray baBody = read_array_process(nBodyOffset, FSG_ENC_BODY_SIZE, pPdStruct);
+            if (baBody.size() == FSG_ENC_BODY_SIZE) {
+                fsgDecryptStub(&baBody);
+                const quint8 *b = (const quint8 *)baBody.constData();
+                if ((b[0] == 0xBB) && (b[5] == 0xBF) && (b[10] == 0xBE) && (b[15] == 0x53)) {
+                    const quint32 nPtr = fsgRd32(b + 1) - nImageBase;
+                    if (isPlausibleSupport(nPtr)) {
+                        result.bIsValid = true;
+                        result.nVersion = 112;
+                        result.sVersion = "1.1/1.2";
+                        result.nSupportRva = nPtr;
+                        result.nDestVa = fsgRd32(b + 6);
+                        result.nSrcVa = fsgRd32(b + 11);
+                        result.bWordList = true;
+                        result.bEncryptedStub = true;
+                        // OEP lives inside the encrypted body; _resolveOep scans
+                        // the decrypted stub instead of trusting a fixed nJeOffset.
+                    }
+                }
+            }
+        }
+    }
 
     return result;
 }
@@ -815,7 +878,33 @@ bool XFSG::_unpackV1x(XPE *pPE, qint32 nIndex, const INTERNAL_INFO &info, QByteA
 // closed instead of producing a plausible-looking wrong entry point.
 bool XFSG::_resolveOep(XPE *pPE, const INTERNAL_INFO &info, quint32 *pnOEP, PDSTRUCT *pPdStruct)
 {
-    if (!pnOEP || (info.nJeOffset < 0)) return false;
+    if (!pnOEP) return false;
+
+    // FSG 1.1/1.2: the `0F 84` OEP jump lives inside the encrypted body. Decrypt
+    // it, then scan for exactly one `0F 84` preceded by `FE` (its anchor is at
+    // stub+225, one byte later than v100's plaintext 224, so it must be scanned
+    // rather than trusted). A non-unique or absent anchor fails closed.
+    if (info.bEncryptedStub) {
+        const quint32 nAoe = pPE->getOptionalHeader_AddressOfEntryPoint();
+        const qint64 nBodyOffset = pPE->relAddressToOffset(nAoe + (quint32)FSG_ENC_STUB_SIZE);
+        if (nBodyOffset == -1) return false;
+        QByteArray baBody = read_array_process(nBodyOffset, FSG_ENC_BODY_SIZE, pPdStruct);
+        if (baBody.size() != FSG_ENC_BODY_SIZE) return false;
+        fsgDecryptStub(&baBody);
+        const quint8 *body = (const quint8 *)baBody.constData();
+        int nHit = -1;
+        for (int i = 2; i + 6 <= baBody.size(); i++) {
+            if ((body[i] == 0x0F) && (body[i + 1] == 0x84) && (body[i - 2] == 0xFE)) {
+                if (nHit != -1) return false;  // must be unique
+                nHit = i;
+            }
+        }
+        if (nHit == -1) return false;
+        *pnOEP = nAoe + (quint32)FSG_ENC_STUB_SIZE + (quint32)nHit + 6 + fsgRd32(body + nHit + 2);
+        return true;
+    }
+
+    if (info.nJeOffset < 0) return false;
 
     const quint32 nAoe = pPE->getOptionalHeader_AddressOfEntryPoint();
     const qint64 nEpOffset = pPE->relAddressToOffset(nAoe);
@@ -851,7 +940,11 @@ bool XFSG::_unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPd
         return _unpackV200(&pe, nIndex, baOut, nOutputLimit, pPdStruct);
     } else if (info.nVersion == 133) {
         return _unpackV133(&pe, nIndex, baOut, nOutputLimit, pPdStruct);
-    } else if (info.bWordList && !info.bEncryptedStub) {
+    } else if (info.bWordList) {
+        // Includes the encrypted 1.1/1.2 stub: its support/dest/src fields were
+        // read from the DECRYPTED v100 opener in _detect, and _resolveOep
+        // decrypts the body to recover the OEP, so the word-list path applies
+        // unchanged - the aPLib payload itself is not encrypted.
         return _unpackV1x(&pe, nIndex, info, baOut, nOutputLimit, pPdStruct);
     }
 

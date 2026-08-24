@@ -479,25 +479,126 @@ bool XNSPACK::_decompress(quint32 nTre, quint32 nAllocsz, quint32 nFirstByte, co
 // sides. For each opcode at offset i the stored value is (rel + (i + 1)) in
 // big-endian, hence rel = big_endian(operand) - (i + 1), written back little-
 // endian.
-void XNSPACK::_deFilterCallJmp(quint8 *pData, quint32 nSize)
+void XNSPACK::_deFilterCallJmp(quint8 *pData, quint32 nSize, quint32 nCount, quint8 nMarker, quint8 nGate, bool bControlValid)
 {
     if ((!pData) || (nSize < 5)) {
         return;
     }
 
+    // Fail-safe: control fields unreadable / unknown layout / unobserved
+    // gate==0 "rewrite-all" mode -> reproduce the historical behaviour exactly,
+    // so an input that reaches this path is never left newly-wrong relative to
+    // the old code. gate==0 is not seen on the 34-sample corpus, so this branch
+    // is specified rather than corpus-verified.
+    if ((!bControlValid) || (nGate == 0)) {
+        for (quint32 i = 0; i + 5 <= nSize;) {
+            if ((pData[i] == 0xE8) || (pData[i] == 0xE9)) {
+                quint32 nBE = ((quint32)pData[i + 1] << 24) | ((quint32)pData[i + 2] << 16) | ((quint32)pData[i + 3] << 8) | (quint32)pData[i + 4];
+                quint32 nRel = nBE - (i + 1);
+                pData[i + 1] = (quint8)(nRel & 0xff);
+                pData[i + 2] = (quint8)((nRel >> 8) & 0xff);
+                pData[i + 3] = (quint8)((nRel >> 16) & 0xff);
+                pData[i + 4] = (quint8)((nRel >> 24) & 0xff);
+                i += 5;
+            } else {
+                i++;
+            }
+        }
+        return;
+    }
+
+    // Marker-gated inverse of the loader's own E8/E9 restore loop. The packer
+    // filtered only sites whose operand byte 0 equals nMarker, at most nCount of
+    // them, and stored a 24-bit big-endian ABSOLUTE target in the upper three
+    // operand bytes (the marker byte itself is consumed, not part of the value).
+    // On a non-matching E8/E9 the loader advances a single byte, so this does
+    // too. Both under- and over-application produce a crashing image, which is
+    // why the strict count bound and the marker test must both hold.
+    quint32 nDone = 0;
     for (quint32 i = 0; i + 5 <= nSize;) {
         if ((pData[i] == 0xE8) || (pData[i] == 0xE9)) {
-            quint32 nBE = ((quint32)pData[i + 1] << 24) | ((quint32)pData[i + 2] << 16) | ((quint32)pData[i + 3] << 8) | (quint32)pData[i + 4];
-            quint32 nRel = nBE - (i + 1);
-            pData[i + 1] = (quint8)(nRel & 0xff);
-            pData[i + 2] = (quint8)((nRel >> 8) & 0xff);
-            pData[i + 3] = (quint8)((nRel >> 16) & 0xff);
-            pData[i + 4] = (quint8)((nRel >> 24) & 0xff);
-            i += 5;
+            if ((pData[i + 1] == nMarker) && (nDone < nCount)) {
+                quint32 nBE24 = ((quint32)pData[i + 2] << 16) | ((quint32)pData[i + 3] << 8) | (quint32)pData[i + 4];
+                quint32 nRel = (nBE24 - (i + 1)) & 0x00FFFFFF;
+                if (nRel & 0x00800000) nRel |= 0xFF000000;  // sign-extend 24 -> 32
+                pData[i + 1] = (quint8)(nRel & 0xff);
+                pData[i + 2] = (quint8)((nRel >> 8) & 0xff);
+                pData[i + 3] = (quint8)((nRel >> 16) & 0xff);
+                pData[i + 4] = (quint8)((nRel >> 24) & 0xff);
+                nDone++;
+                i += 5;
+            } else {
+                i++;
+            }
         } else {
             i++;
         }
     }
+}
+
+bool XNSPACK::_readCallJmpControl(quint32 *pnCount, quint8 *pnMarker, quint8 *pnGate, PDSTRUCT *pPdStruct)
+{
+    if (pnCount) *pnCount = 0;
+    if (pnMarker) *pnMarker = 0;
+    if (pnGate) *pnGate = 0;
+
+    XPE pe(getDevice(), isImage(), getModuleAddress());
+    if (!pe.isValid(pPdStruct)) return false;
+
+    // Same self-validating loader anchor _reconstructImports uses: follow an
+    // optional E9 redirector at the entry point, require the stub prologue, and
+    // take the section that contains the loader.
+    quint32 nEpRva = pe.getOptionalHeader_AddressOfEntryPoint();
+    qint64 nLoaderOffset = pe.relAddressToOffset(nEpRva);
+    if (nLoaderOffset == -1) return false;
+    QByteArray baEp = read_array_process(nLoaderOffset, 8, pPdStruct);
+    if ((baEp.size() >= 5) && ((quint8)baEp.at(0) == 0xe9)) {
+        nEpRva = nspRd32((const quint8 *)baEp.constData() + 1) + nEpRva + 5;
+        nLoaderOffset = pe.relAddressToOffset(nEpRva);
+        if (nLoaderOffset == -1) return false;
+        baEp = read_array_process(nLoaderOffset, 8, pPdStruct);
+    }
+    if ((baEp.size() < 8) || (memcmp(baEp.constData(), "\x9c\x60\xe8\x00\x00\x00\x00\x5d", 8) != 0)) return false;
+    XADDR nLoaderRva = pe.offsetToRelAddress(nLoaderOffset);
+    if (nLoaderRva == (XADDR)-1) return false;
+
+    QList<XPE_DEF::IMAGE_SECTION_HEADER> listStubSections = pe.getSectionHeaders();
+    quint32 nStubHdrRva = 0;
+    bool bStubHdrFound = false;
+    for (int i = 0; i < listStubSections.count(); i++) {
+        const XPE_DEF::IMAGE_SECTION_HEADER &s = listStubSections.at(i);
+        const quint32 nSecSize = qMax(s.Misc.VirtualSize, s.SizeOfRawData);
+        if ((s.SizeOfRawData == 0) || (nSecSize == 0)) continue;
+        if (((quint32)nLoaderRva >= s.VirtualAddress) && ((quint32)nLoaderRva < s.VirtualAddress + nSecSize)) {
+            nStubHdrRva = s.VirtualAddress;
+            bStubHdrFound = true;
+            break;
+        }
+    }
+    if (!bStubHdrFound) return false;
+    qint64 nStubHdrOffset = pe.relAddressToOffset(nStubHdrRva);
+    if (nStubHdrOffset == -1) return false;
+    QByteArray baStubHdr = read_array_process(nStubHdrOffset, 0x54, pPdStruct);
+    if (baStubHdr.size() < 0x54) return false;
+    const quint8 *stubHdr = (const quint8 *)baStubHdr.constData();
+
+    // Classify with the exact discriminator _reconstructImports uses: the field
+    // holding the loader RVA tells the two field strides apart.
+    //   3.1-3.7 : +0x10 = loader RVA, count +0x48 (u32), marker +0x50, gate +0x51
+    //   1.4     : +0x08 = loader RVA, count +0x24 (u32), marker +0x28, gate +0x29
+    if (nspRd32(stubHdr + 0x10) == (quint32)nLoaderRva) {
+        if (pnCount) *pnCount = nspRd32(stubHdr + 0x48);
+        if (pnMarker) *pnMarker = stubHdr[0x50];
+        if (pnGate) *pnGate = stubHdr[0x51];
+        return true;
+    } else if (nspRd32(stubHdr + 0x08) == (quint32)nLoaderRva) {
+        if (pnCount) *pnCount = nspRd32(stubHdr + 0x24);
+        if (pnMarker) *pnMarker = stubHdr[0x28];
+        if (pnGate) *pnGate = stubHdr[0x29];
+        return true;
+    }
+
+    return false;  // unknown stub layout (e.g. NsPack 2.x): fail-safe
 }
 
 // ---------------------------------------------------------------------------
@@ -523,9 +624,15 @@ QByteArray XNSPACK::_reconstructImports(QByteArray *pBaBlob, quint32 nRva, quint
     if (!pe.isValid(pPdStruct)) return QByteArray();
 
     // The NsPack loader sits at the entry point (2.x reaches it through an E9
-    // redirector). Follow that, then confirm the common stub prologue. The import
-    // header fields ([loader-0x20f], loaderRva-0xd3) are shared by 2.x and 3.x;
-    // other layouts (e.g. 1.4) simply fail the range check below and yield no imports.
+    // redirector). Follow that, then confirm the common stub prologue.
+    //
+    // The previous description of the import header here was wrong in both
+    // halves, which is why this function produced no imports on any of the 34
+    // corpus samples: there is no field at [loader-0x20f] (that offset is
+    // fiction, and being a file offset it landed inside the PE headers), and
+    // the DLL-name table is not at loaderRva-0xd3 - it is not in the blob at
+    // all. 1.4 does not "simply fail the range check"; it uses the same
+    // descriptor format and works. See the anchor derivation below.
     quint32 nEpRva = pe.getOptionalHeader_AddressOfEntryPoint();
     qint64 nLoaderOffset = pe.relAddressToOffset(nEpRva);
     if (nLoaderOffset == -1) return QByteArray();
@@ -540,10 +647,62 @@ QByteArray XNSPACK::_reconstructImports(QByteArray *pBaBlob, quint32 nRva, quint
     XADDR nLoaderRva = pe.offsetToRelAddress(nLoaderOffset);
     if (nLoaderRva == (XADDR)-1) return QByteArray();
 
-    QByteArray baDescField = read_array_process(nLoaderOffset - 0x20f, 4, pPdStruct);
-    if (baDescField.size() < 4) return QByteArray();
-    quint32 nDescRva = nspRd32((const quint8 *)baDescField.constData());
-    quint32 nDllTblRva = (quint32)nLoaderRva - 0xd3;
+    // The loader's parameter block starts at the beginning of the section that
+    // contains the loader, and the descriptor-stream RVA is one of its fields.
+    // Two layouts exist - the same field array with a different stride: 3.1-3.7
+    // store each value as a qword, 1.4 as a dword. They are told apart by the
+    // field holding the loader RVA itself, because the stub recovers the image
+    // base with "mov eax,ebp / sub eax,[that field]". Testing "field ==
+    // nLoaderRva" is therefore self-validating and needs no version sniffing.
+    //   3.1-3.7 : +0x08 = descriptor RVA, +0x10 = loader RVA
+    //   1.4     : +0x04 = descriptor RVA, +0x08 = loader RVA
+    QList<XPE_DEF::IMAGE_SECTION_HEADER> listStubSections = pe.getSectionHeaders();
+    quint32 nStubHdrRva = 0;
+    bool bStubHdrFound = false;
+    for (int i = 0; i < listStubSections.count(); i++) {
+        const XPE_DEF::IMAGE_SECTION_HEADER &s = listStubSections.at(i);
+        const quint32 nSecSize = qMax(s.Misc.VirtualSize, s.SizeOfRawData);
+        if ((s.SizeOfRawData == 0) || (nSecSize == 0)) continue;
+        if (((quint32)nLoaderRva >= s.VirtualAddress) && ((quint32)nLoaderRva < s.VirtualAddress + nSecSize)) {
+            nStubHdrRva = s.VirtualAddress;
+            bStubHdrFound = true;
+            break;
+        }
+    }
+    if (!bStubHdrFound) return QByteArray();
+    qint64 nStubHdrOffset = pe.relAddressToOffset(nStubHdrRva);
+    if (nStubHdrOffset == -1) return QByteArray();
+    QByteArray baStubHdr = read_array_process(nStubHdrOffset, 0x14, pPdStruct);
+    if (baStubHdr.size() < 0x14) return QByteArray();
+    const quint8 *stubHdr = (const quint8 *)baStubHdr.constData();
+
+    quint32 nDescRva = 0;
+    if (nspRd32(stubHdr + 0x10) == (quint32)nLoaderRva) {
+        nDescRva = nspRd32(stubHdr + 0x08);  // NsPack 3.1-3.7
+    } else if (nspRd32(stubHdr + 0x08) == (quint32)nLoaderRva) {
+        nDescRva = nspRd32(stubHdr + 0x04);  // NsPack 1.4
+    } else {
+        return QByteArray();  // unknown stub layout (e.g. 2.x): fail closed
+    }
+    if (nDescRva == 0) return QByteArray();  // the stub's own "or esi,esi / je": no imports
+
+    // DLL names are NOT in the blob. NsPack appends the original program's DLL
+    // names to its own import-name string pool, whose base is this file's first
+    // IMAGE_IMPORT_DESCRIPTOR::Name ("KERNEL32.DLL"); nNameOff indexes into it.
+    XPE_DEF::IMAGE_DATA_DIRECTORY ddImport = pe.getOptionalHeader_DataDirectory(XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_IMPORT);
+    if (ddImport.VirtualAddress == 0) return QByteArray();
+    qint64 nImpDirOffset = pe.relAddressToOffset(ddImport.VirtualAddress);
+    if (nImpDirOffset == -1) return QByteArray();
+    QByteArray baStubDesc0 = read_array_process(nImpDirOffset, 20, pPdStruct);
+    if (baStubDesc0.size() < 20) return QByteArray();
+    quint32 nDllTblRva = nspRd32((const quint8 *)baStubDesc0.constData() + 12);
+    if (nDllTblRva == 0) return QByteArray();
+    // Fail closed on an unexpected pool: the base string is literally
+    // "KERNEL32.DLL" on every known NsPack stub, whether or not the packed
+    // program imports it (1.4/in_tcc's only descriptor has nNameOff == 13).
+    qint64 nDllTblOffset = pe.relAddressToOffset(nDllTblRva);
+    if (nDllTblOffset == -1) return QByteArray();
+    if (read_array_process(nDllTblOffset, 13, pPdStruct).toUpper() != QByteArray("KERNEL32.DLL\0", 13)) return QByteArray();
 
     const quint32 nBlobSize = (quint32)pBaBlob->size();
     if ((nDescRva < nRva) || ((quint64)(nDescRva - nRva) + 16 > (quint64)nBlobSize)) return QByteArray();
@@ -579,6 +738,13 @@ QByteArray XNSPACK::_reconstructImports(QByteArray *pBaBlob, quint32 nRva, quint
             lp++;
         }
         if (lp >= nBlobSize) return QByteArray();
+        // dword[0] is not an opaque marker - it is the record size, i.e. the
+        // byte distance to the next descriptor (16 + nLengths + 1). This is the
+        // guard that makes a wrong anchor bail out instead of silently emitting
+        // a bogus import table, which is the dangerous failure here: a
+        // well-formed but wrong table produces output that looks restored and
+        // then calls the wrong API. Holds on all 58 descriptors of the corpus.
+        if (nMarker != (lp + 1 - d)) return QByteArray();
 
         qint64 nDllNameOffset = pe.relAddressToOffset(nDllTblRva + nNameOff);
         if (nDllNameOffset == -1) return QByteArray();
@@ -684,7 +850,7 @@ QByteArray XNSPACK::_reconstructImports(QByteArray *pBaBlob, quint32 nRva, quint
 // ---------------------------------------------------------------------------
 
 QByteArray XNSPACK::_buildPE(const QByteArray &baBlob, quint32 nRva, quint32 nImageBase, quint32 nOEP, const QByteArray &baImportSection, quint32 nImpRva,
-                             quint32 nDescSize, qint64 nOutputLimit)
+                             quint32 nDescSize, qint64 nOutputLimit, PDSTRUCT *pPdStruct)
 {
     const bool bImports = !baImportSection.isEmpty();
     const quint32 nHeaderBase = 0x40 + 4 + 20 + 0xE0;
@@ -733,6 +899,59 @@ QByteArray XNSPACK::_buildPE(const QByteArray &baBlob, quint32 nRva, quint32 nIm
     if (bImports) {
         _write_uint32(oh + 104, nImpRva);     // DataDirectory[1] (import) RVA
         _write_uint32(oh + 108, nDescSize);   // DataDirectory[1] size
+    }
+
+    // Restore the original data directories NsPack drops (everything but import).
+    // The TLS directory is the only load-critical one: without DataDirectory[9]
+    // the Windows loader skips TLS callbacks and a TLS-using CRT (Borland) faults
+    // before main. NsPack does not store the original directory table anywhere,
+    // but it keeps its OWN DD[9] pointing at a relocated 0x18-byte copy of the
+    // TLS structure whose first 12 bytes (Start/End/Index VAs) are identical to
+    // the original the decompressor already restored into baBlob at its original
+    // RVA. Matching those 12 bytes into the blob recovers that RVA. Every branch
+    // is fail-closed: anything ambiguous or absent leaves the slot as today.
+    {
+        XPE peSrc(getDevice(), isImage(), getModuleAddress());
+        if (peSrc.isValid(pPdStruct)) {
+            XPE_DEF::IMAGE_DATA_DIRECTORY ddTls = peSrc.getOptionalHeader_DataDirectory(XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_TLS);
+            if ((ddTls.VirtualAddress != 0) && (ddTls.Size >= 0x18)) {
+                qint64 nTlsOff = peSrc.relAddressToOffset(ddTls.VirtualAddress);
+                if (nTlsOff != -1) {
+                    QByteArray baStub = read_array_process(nTlsOff, 0x18, pPdStruct);
+                    if ((baStub.size() >= 0x18) && (nspRd32((const quint8 *)baStub.constData()) != 0)) {
+                        const QByteArray baSig = baStub.left(12);  // Start/End/Index VAs
+                        int nCount = 0, nFound = -1, nLive = 0, nLiveFound = -1;
+                        int nPos = baBlob.indexOf(baSig, 0);
+                        while (nPos != -1) {
+                            nCount++;
+                            nFound = nPos;
+                            // A "live" copy has a nonzero AddressOfCallBacks at +0xC;
+                            // the stub copy zeroes it, so this disambiguates.
+                            if ((nPos + 16 <= baBlob.size()) && (nspRd32((const quint8 *)baBlob.constData() + nPos + 12) != 0)) {
+                                nLive++;
+                                nLiveFound = nPos;
+                            }
+                            nPos = baBlob.indexOf(baSig, nPos + 1);
+                        }
+                        const int nSel = (nLive == 1) ? nLiveFound : (((nLive == 0) && (nCount == 1)) ? nFound : -1);
+                        if (nSel != -1) {
+                            _write_uint32(oh + 96 + 9 * 8, nRva + (quint32)nSel);  // DataDirectory[9] (TLS) RVA
+                            _write_uint32(oh + 96 + 9 * 8 + 4, ddTls.Size);        // DataDirectory[9] size
+                        }
+                    }
+                }
+            }
+
+            // Resource directory: NsPack keeps it verbatim and the bytes are
+            // already in baBlob at the same RVA, so a bounds-checked copy-through
+            // restores it. Not load-critical, but completes the directory set.
+            XPE_DEF::IMAGE_DATA_DIRECTORY ddRes = peSrc.getOptionalHeader_DataDirectory(XPE_DEF::S_IMAGE_DIRECTORY_ENTRY_RESOURCE);
+            if ((ddRes.VirtualAddress != 0) && (ddRes.Size != 0) && (ddRes.VirtualAddress >= nRva) &&
+                ((quint64)ddRes.VirtualAddress + ddRes.Size <= (quint64)nRva + (quint32)baBlob.size())) {
+                _write_uint32(oh + 96 + 2 * 8, ddRes.VirtualAddress);  // DataDirectory[2] (resource) RVA
+                _write_uint32(oh + 96 + 2 * 8 + 4, ddRes.Size);        // DataDirectory[2] size
+            }
+        }
     }
 
     char *sec = oh + 0xE0;
@@ -1211,13 +1430,17 @@ bool XNSPACK::_unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *
         return false;
     }
 
-    _deFilterCallJmp((quint8 *)baDest.data(), nDsize);
+    quint32 nCjCount = 0;
+    quint8 nCjMarker = 0;
+    quint8 nCjGate = 0;
+    const bool bCjValid = _readCallJmpControl(&nCjCount, &nCjMarker, &nCjGate, pPdStruct);
+    _deFilterCallJmp((quint8 *)baDest.data(), nDsize, nCjCount, nCjMarker, nCjGate, bCjValid);
 
     quint32 nImpRva = nspAlign(info.nRva + (quint32)baDest.size(), 0x1000);
     quint32 nDescSize = 0;
     QByteArray baImports = _reconstructImports(&baDest, info.nRva, nImpRva, &nDescSize, pPdStruct);
 
-    QByteArray baPE = _buildPE(baDest, info.nRva, info.nImageBase, info.nOEP, baImports, nImpRva, nDescSize, nOutputLimit);
+    QByteArray baPE = _buildPE(baDest, info.nRva, info.nImageBase, info.nOEP, baImports, nImpRva, nDescSize, nOutputLimit, pPdStruct);
     if (baPE.isEmpty()) return false;
 
     baOut = baPE;
