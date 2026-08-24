@@ -20,7 +20,11 @@
 #include <QFileInfo>
 #include <QSet>
 #include <QTemporaryFile>
+#if (QT_VERSION_MAJOR < 6) || defined(QT_CORE5COMPAT_LIB)
 #include <QTextCodec>
+#else
+#include <QStringConverter>
+#endif
 
 #ifdef Q_OS_WIN
 #include <qt_windows.h>
@@ -351,7 +355,7 @@ QByteArray XInnoSetup::_encodeLegacyPassword(const QString &sPassword, bool bUni
         innoSecureClear(&baResult);
         return QByteArray();
     }
-#else
+#elif (QT_VERSION_MAJOR < 6) || defined(QT_CORE5COMPAT_LIB)
     QByteArray baCodePageName = QByteArrayLiteral("CP") + QByteArray::number(nAnsiCodePage);
     QTextCodec *pCodec = QTextCodec::codecForName(baCodePageName);
     if (!pCodec) {
@@ -363,6 +367,16 @@ QByteArray XInnoSetup::_encodeLegacyPassword(const QString &sPassword, bool bUni
     QTextCodec::ConverterState state(QTextCodec::ConvertInvalidToNull);
     QByteArray baResult = pCodec->fromUnicode(sPassword.constData(), sPassword.size(), &state);
     if (state.invalidChars != 0) {
+        innoSecureClear(&baResult);
+        return QByteArray();
+    }
+#else
+    // Qt6 without Qt5Compat: QStringConverter only covers the Unicode and
+    // Latin-1 encodings, so an arbitrary Windows code page cannot be produced.
+    if (nAnsiCodePage != 65001U) return QByteArray();
+    QStringEncoder encoder(QStringEncoder::Utf8);
+    QByteArray baResult = encoder.encode(sPassword);
+    if (encoder.hasError()) {
         innoSecureClear(&baResult);
         return QByteArray();
     }
@@ -2050,7 +2064,7 @@ bool XInnoSetup::_decodeAnsiCodePage(const QByteArray &baData, quint32 nCodePage
         bUsedDefault || (baRoundTrip != baData)) return false;
     *psResult = sResult;
     return true;
-#else
+#elif (QT_VERSION_MAJOR < 6) || defined(QT_CORE5COMPAT_LIB)
     QByteArray baCodePageName = QByteArrayLiteral("CP") + QByteArray::number(nCodePage);
     QTextCodec *pCodec = QTextCodec::codecForName(baCodePageName);
     if (!pCodec) {
@@ -2066,6 +2080,17 @@ bool XInnoSetup::_decodeAnsiCodePage(const QByteArray &baData, quint32 nCodePage
     QTextCodec::ConverterState encodeState(QTextCodec::ConvertInvalidToNull);
     const QByteArray baRoundTrip = pCodec->fromUnicode(sResult.constData(), sResult.size(), &encodeState);
     if ((encodeState.invalidChars != 0) || (baRoundTrip != baData)) return false;
+    *psResult = sResult;
+    return true;
+#else
+    // Qt6 without Qt5Compat: see the note in _encodeLegacyPassword above.
+    if (nCodePage != 65001U) return false;
+    QStringDecoder decoder(QStringDecoder::Utf8);
+    const QString sResult = decoder.decode(baData);
+    if (decoder.hasError()) return false;
+    QStringEncoder encoder(QStringEncoder::Utf8);
+    const QByteArray baRoundTrip = encoder.encode(sResult);
+    if (encoder.hasError() || (baRoundTrip != baData)) return false;
     *psResult = sResult;
     return true;
 #endif
