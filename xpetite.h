@@ -75,7 +75,7 @@ private:
         ~LIFETIME_STATE();
     };
     QSharedPointer<LIFETIME_STATE> m_pUnpackLifetimeState;
-    bool _unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct);
+    bool _unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct, bool *pbDegradedOEP = nullptr);
     struct USECT {
         quint32 rva;
         quint32 rsz;
@@ -94,7 +94,7 @@ private:
     static qint64 _findOpTable(const quint8 *buf, quint32 bufsz, quint32 nMinRva, quint32 nLoaderRva, quint32 nLoaderVsz, quint32 nImageBase);
     static int _doubledl(const quint8 *buf, qint64 bufsz, qint64 *pSrcOff, quint8 *pMydl);
     static bool _inflate(quint8 *buf, quint32 nMinRva, quint32 bufsz, const QList<XPE_DEF::IMAGE_SECTION_HEADER> &listSections, int nSectCount, quint32 nImageBase,
-                         quint32 nPep, int nVersion, QList<USECT> *pOut, quint32 *pEncEp, PDSTRUCT *pPdStruct);
+                         quint32 nPep, int nVersion, QList<USECT> *pOut, quint32 *pEncEp, PDSTRUCT *pPdStruct, bool *pbDegradedOEP = nullptr);
     static QByteArray _buildPE(const QByteArray &baBuf, const QList<USECT> &listOut, quint32 nImageBase, quint32 nOEP, quint32 nResRva,
                                quint32 nResSize, qint64 nOutputLimit = -1);
 };

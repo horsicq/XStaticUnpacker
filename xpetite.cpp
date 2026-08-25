@@ -464,8 +464,9 @@ bool XPETITE::_usectRvaLess(const USECT &a, const USECT &b)
 }
 
 bool XPETITE::_inflate(quint8 *buf, quint32 nMinRva, quint32 bufsz, const QList<XPE_DEF::IMAGE_SECTION_HEADER> &listSections, int nSectCount, quint32 nImageBase,
-                       quint32 nPep, int nVersion, QList<USECT> *pOut, quint32 *pEncEp, PDSTRUCT *pPdStruct)
+                       quint32 nPep, int nVersion, QList<USECT> *pOut, quint32 *pEncEp, PDSTRUCT *pPdStruct, bool *pbDegradedOEP)
 {
+    if (pbDegradedOEP) *pbDegradedOEP = false;
     quint32 grown = 0x355, skew = 0x35;
     if (nVersion != 2) {
         grown = 0x323;
@@ -555,6 +556,7 @@ bool XPETITE::_inflate(quint8 *buf, quint32 nMinRva, quint32 bufsz, const QList<
                 enc_ep = nPep + 5 + enc_ep;
                 if (workdone != 1) {
                     enc_ep = usects.at(0).rva;
+                    if (pbDegradedOEP) *pbDegradedOEP = true;
                 }
             }
 
@@ -562,7 +564,10 @@ bool XPETITE::_inflate(quint8 *buf, quint32 nMinRva, quint32 bufsz, const QList<
             // Embedded-decoder Petite builds do not append the older encrypted
             // entry-point trailer. Their section loop hands control into the
             // first restored image section, which is the safest rebuild OEP.
-            if (!enc_ep && embeddedDecoder.bValid) enc_ep = usects.at(0).rva;
+            if (!enc_ep && embeddedDecoder.bValid) {
+                enc_ep = usects.at(0).rva;
+                if (pbDegradedOEP) *pbDegradedOEP = true;
+            }
 #endif
 
             // compact data into sequential raw offsets
@@ -966,7 +971,8 @@ bool XPETITE::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant>
     if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
         (getDevice() != guardedSource.data()) || !info.bIsValid) return false;
     QByteArray baData;
-    const bool bUnpacked = worker._unpackToBuffer(baData, nOutputLimit, pPdStruct);
+    bool bDegradedOEP = false;
+    const bool bUnpacked = worker._unpackToBuffer(baData, nOutputLimit, pPdStruct, &bDegradedOEP);
     if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
         (getDevice() != guardedSource.data()) || !bUnpacked || baData.isEmpty() ||
         !isPdStructNotCanceled(pPdStruct)) return false;
@@ -975,6 +981,13 @@ bool XPETITE::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant>
     pContext->baData = baData;
     pContext->sFileName = sFileName;
     pContext->sInfo = QString("Petite %1").arg(info.sVersion);
+    if (bDegradedOEP) {
+        // OEP recovery failed and the rebuild fell back to the first section's
+        // RVA. Surface it instead of emitting a silently wrong entry point
+        // (see XFU-038): the code section is still restored correctly, but the
+        // reported entry point may be wrong.
+        pContext->sInfo += QLatin1String(" [OEP recovery failed; entry point may be incorrect]");
+    }
     pContext->pSourceDevice = guardedSource;
     pContext->pOwnerState = pState;
     pContext->baToken = QUuid::createUuid().toRfc4122();
@@ -1139,9 +1152,10 @@ bool XPETITE::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *
     return true;
 }
 
-bool XPETITE::_unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct)
+bool XPETITE::_unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct, bool *pbDegradedOEP)
 {
     baOut.clear();
+    if (pbDegradedOEP) *pbDegradedOEP = false;
 
     INTERNAL_INFO info = _detect(pPdStruct);
     if (!info.bIsValid) return false;
@@ -1185,7 +1199,9 @@ bool XPETITE::_unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *
 
     QList<USECT> listOut;
     quint32 nEncEp = 0;
-    if (!_inflate((quint8 *)baBuf.data(), nMin, dsize, listSections, nSectCount, nImageBase, nVep, info.nVersion, &listOut, &nEncEp, pPdStruct)) return false;
+    bool bDegradedOEP = false;
+    if (!_inflate((quint8 *)baBuf.data(), nMin, dsize, listSections, nSectCount, nImageBase, nVep, info.nVersion, &listOut, &nEncEp, pPdStruct, &bDegradedOEP)) return false;
+    if (pbDegradedOEP) *pbDegradedOEP = bDegradedOEP;
 
     QByteArray baPE = _buildPE(baBuf, listOut, nImageBase, nEncEp, resDir.VirtualAddress, resDir.Size, nOutputLimit);
     if (baPE.isEmpty()) return false;
