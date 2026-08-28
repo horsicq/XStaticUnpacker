@@ -2112,6 +2112,25 @@ bool XMSI::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
             (pState->nCurrentIndex >= pContext->listEntries.size())) return false;
         const PAYLOAD_ENTRY entry = pContext->listEntries.at(pState->nCurrentIndex);
         if (entry.nCabinetIndex == -1) {
+            // The external-sidecar route bypasses the base decode chain, so it
+            // must charge the operation budget itself: one entry, entry.nSize
+            // produced bytes (the copy loop is size- and hash-verified).
+            if (pState->spOutputBudget) {
+                if (!pState->spOutputBudget->beginEntry(pState->nCurrentIndex, entry.sName)) {
+                    if (pState->spOutputBudget->isEnforcing()) {
+                        XBinary::setPdStructErrorString(pPdStruct, tr("Unpacked output exceeds the configured limit"));
+                        return false;
+                    }
+                    XBinary::OUTPUT_BUDGET::noteShadowRefusal(pState->spOutputBudget.data());
+                }
+                if (!pState->spOutputBudget->debit(entry.nSize)) {
+                    if (pState->spOutputBudget->isEnforcing()) {
+                        XBinary::setPdStructErrorString(pPdStruct, tr("Unpacked output exceeds the configured limit"));
+                        return false;
+                    }
+                    XBinary::OUTPUT_BUDGET::noteShadowRefusal(pState->spOutputBudget.data());
+                }
+            }
             const bool bResult = unpackExternalPayloadFile(entry, guardedOutput.data(), &pState->nCurrentOffset, pPdStruct);
             if (!guardedThis || !guardedOutput || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
             if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
@@ -2128,6 +2147,9 @@ bool XMSI::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
         CAB_CONTEXT *pCabinet = pContext->listCabinets.at(entry.nCabinetIndex);
         if (!pCabinet || !pCabinet->pArchive) return false;
         pCabinet->state.nCurrentIndex = entry.nCabinetRecordIndex;
+        // XFU-015: the inner cabinet route performs its own entry and output
+        // accounting; share the operation budget into its state.
+        pCabinet->state.spOutputBudget = pState->spOutputBudget;
         const bool bResult = pCabinet->pArchive->unpackCurrent(&pCabinet->state, guardedOutput.data(), pPdStruct);
         if (!guardedThis || !guardedOutput || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
         if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
@@ -2145,6 +2167,9 @@ bool XMSI::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
     if (!pContext->pArchive || (pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
         (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
         (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords)) return false;
+    // XFU-015: the inner CFBF route performs its own entry and output
+    // accounting; share the operation budget into its state.
+    pContext->innerState.spOutputBudget = pState->spOutputBudget;
     bool bResult = pContext->pArchive->unpackCurrent(&pContext->innerState, guardedOutput.data(), pPdStruct);
     if (!guardedThis || !guardedOutput || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
     if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||

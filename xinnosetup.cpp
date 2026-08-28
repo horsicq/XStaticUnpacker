@@ -1244,6 +1244,21 @@ bool XInnoSetup::unpackCurrent(XBinary::UNPACK_STATE *pState, QIODevice *pDevice
 
     if (nUncompressedSize < 0) return false;
 
+    // This override bypasses the base decode chain's per-entry gate; account
+    // the member here. Produced bytes are charged once: by writeUnpackData
+    // through stageState (real format) or by _writeDevice through
+    // decompressState (synthetic store). The publish copy stays uncharged.
+    if (pState->spOutputBudget) {
+        if (!pState->spOutputBudget->beginEntry(pState->nCurrentIndex,
+                                                record.mapProperties.value(FPART_PROP_ORIGINALNAME).toString())) {
+            if (pState->spOutputBudget->isEnforcing()) {
+                XBinary::setPdStructErrorString(pPdStruct, tr("Unpacked output exceeds the configured limit"));
+                return false;
+            }
+            XBinary::OUTPUT_BUDGET::noteShadowRefusal(pState->spOutputBudget.data());
+        }
+    }
+
     if (nUncompressedSize > 0 && pContext->bIsRealFormat) {
         qint64 nDecompressedOffset = record.mapProperties.value(FPART_PROP_STREAMOFFSET).toLongLong();  // Offset within decompressed chunk
         const qint32 nLocationIndex = pContext->listRecordDataEntryIndexes.at(pState->nCurrentIndex);
@@ -1360,6 +1375,7 @@ bool XInnoSetup::unpackCurrent(XBinary::UNPACK_STATE *pState, QIODevice *pDevice
         XBinary::DATAPROCESS_STATE decompressState = {};
         decompressState.mapProperties.insert(XBinary::FPART_PROP_HANDLEMETHOD, XBinary::HANDLE_METHOD_STORE);
         decompressState.mapProperties.insert(XBinary::FPART_PROP_UNCOMPRESSEDSIZE, nStreamSize);
+        decompressState.spOutputBudget = pState->spOutputBudget;
         decompressState.pDeviceInput = pContext->pOuterSourceDevice.data();
         decompressState.pDeviceOutput = &stage;
         decompressState.nInputOffset = nStreamOffset;

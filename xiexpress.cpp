@@ -366,6 +366,7 @@ bool XIExpress::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT
         (pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
         (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
         (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords)) return false;
+    pContext->innerState.spOutputBudget = pState->spOutputBudget;
     bool bResult = pContext->pArchive->unpackCurrent(&pContext->innerState, guardedOutput.data(), pPdStruct);
     if (!guardedThis || !guardedOutput || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
     pState->nCurrentOffset = pContext->innerState.nCurrentOffset;

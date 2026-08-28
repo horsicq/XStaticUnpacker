@@ -947,6 +947,7 @@ bool XAdvancedInstaller::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice,
         !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
         !guardedThis || !guardedOutput || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
 
+    pContext->innerState.spOutputBudget = pState->spOutputBudget;
     bool bResult = pContext->pMSI->unpackCurrent(&pContext->innerState, guardedOutput.data(), pPdStruct);
     if (!guardedThis || !guardedOutput || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
     if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||

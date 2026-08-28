@@ -1089,6 +1089,20 @@ bool XAUTOIT::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *
         (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
         (pContext->baToken != pState->baUnpackSourceToken)) return false;
 
+    // This override bypasses the base decode chain's per-entry gate; account
+    // the member here. Produced bytes are charged by writeUnpackData.
+    if (pState->spOutputBudget) {
+        const RECORD &recEntry = pContext->listRecords.at(nIndex);
+        const QString sEntryName = recEntry.sName.isEmpty() ? QString("autoit_%1").arg(nIndex, 3, 10, QChar('0')) : recEntry.sName;
+        if (!pState->spOutputBudget->beginEntry(pState->nCurrentIndex, sEntryName)) {
+            if (pState->spOutputBudget->isEnforcing()) {
+                XBinary::setPdStructErrorString(pPdStruct, tr("Unpacked output exceeds the configured limit"));
+                return false;
+            }
+            XBinary::OUTPUT_BUDGET::noteShadowRefusal(pState->spOutputBudget.data());
+        }
+    }
+
     const QByteArray &baData = pContext->listRecords.at(nIndex).baData;
     UNPACK_STATE writeState = *pState;
     writeState.pContext = nullptr;

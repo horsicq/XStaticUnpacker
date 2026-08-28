@@ -2041,6 +2041,19 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
         baData = baPatched;
     }
 
+    // This override bypasses the base decode chain's per-entry gate; account
+    // the member here. Produced bytes are charged once by writeUnpackData
+    // through stageState; the publish copy of the stage stays uncharged.
+    if (pState->spOutputBudget) {
+        if (!pState->spOutputBudget->beginEntry(pState->nCurrentIndex, entry.sFileName)) {
+            if (pState->spOutputBudget->isEnforcing()) {
+                XBinary::setPdStructErrorString(pPdStruct, tr("Unpacked output exceeds the configured limit"));
+                return false;
+            }
+            XBinary::OUTPUT_BUDGET::noteShadowRefusal(pState->spOutputBudget.data());
+        }
+    }
+
     if (!writeUnpackData(&stageState, &stage, baData, pPdStruct) || !isContextCurrent()) return false;
     if (!guardedThis || !guardedOutput || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) ||
         (pState->pContext != pContext) ||

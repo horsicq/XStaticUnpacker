@@ -1127,6 +1127,18 @@ bool XPETITE::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *
         (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
         (pContext->baToken != pState->baUnpackSourceToken)) return false;
 
+    // This override bypasses the base decode chain's per-entry gate; account
+    // the member here. Produced bytes are charged by writeUnpackData.
+    if (pState->spOutputBudget) {
+        if (!pState->spOutputBudget->beginEntry(pState->nCurrentIndex, pContext->sFileName)) {
+            if (pState->spOutputBudget->isEnforcing()) {
+                XBinary::setPdStructErrorString(pPdStruct, tr("Unpacked output exceeds the configured limit"));
+                return false;
+            }
+            XBinary::OUTPUT_BUDGET::noteShadowRefusal(pState->spOutputBudget.data());
+        }
+    }
+
     UNPACK_STATE writeState = *pState;
     writeState.pContext = nullptr;
     writeState.baUnpackSourceToken.clear();

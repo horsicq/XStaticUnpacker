@@ -897,6 +897,17 @@ bool XClickteam::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUC
         !guardedOutput || devicesAlias(pContext->pSourceDevice.data(), guardedOutput.data()) || !isAuthenticated() || !guardedOutput) return false;
     if (!XMaterializedUnpackGuard::areCurrent(pContext->pSourceGuard, pContext->listCompanionGuards, pPdStruct) ||
         !guardedOutput || !isAuthenticated()) return false;
+    // This override bypasses the base decode chain's per-entry gate; account the member here.
+    // Produced bytes are charged by writeUnpackData at publication below.
+    if (pState->spOutputBudget) {
+        if (!pState->spOutputBudget->beginEntry(pState->nCurrentIndex, pContext->listEntries.at(nIndex).sName)) {
+            if (pState->spOutputBudget->isEnforcing()) {
+                XBinary::setPdStructErrorString(pPdStruct, tr("Unpacked output exceeds the configured limit"));
+                return false;
+            }
+            XBinary::OUTPUT_BUDGET::noteShadowRefusal(pState->spOutputBudget.data());
+        }
+    }
     const QByteArray baData = pContext->listEntries.at(nIndex).baData;
     QScopedPointer<QIODevice> pStage(createFileBuffer(baData.size(), pPdStruct));
     QPointer<QIODevice> guardedStage(pStage.data());
@@ -904,8 +915,12 @@ bool XClickteam::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUC
     UNPACK_STATE writeState = *pState;
     writeState.pContext = nullptr;
     writeState.baUnpackSourceToken.clear();
+    // The stage copy re-writes bytes charged again at publication below;
+    // detach the budget here so each produced member is charged exactly once.
+    writeState.spOutputBudget.clear();
     if (!writeUnpackData(&writeState, guardedStage.data(), baData, pPdStruct) || !guardedStage || !guardedOutput || !isAuthenticated()) return false;
     writeState.nCurrentOffset = 0;
+    writeState.spOutputBudget = pState->spOutputBudget;
     const bool bPublished = writeUnpackData(&writeState, guardedOutput.data(), baData, pPdStruct);
     const bool bSourceCurrent = bPublished &&
                                 XMaterializedUnpackGuard::areCurrent(pContext->pSourceGuard, pContext->listCompanionGuards, pPdStruct);

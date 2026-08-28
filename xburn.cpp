@@ -1299,6 +1299,9 @@ bool XBurn::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
 
     QTemporaryFile stage;
     if (!stage.open()) return false;
+    // XFU-015: the inner unpackCurrent performs its own entry accounting and
+    // debits its production into the stage; the publish copy is not charged.
+    pContainer->state.spOutputBudget = pState->spOutputBudget;
     if (!pContainer->pCab->unpackCurrent(&pContainer->state, &stage, pPdStruct) ||
         !guardedThis || !guardedOutput || !pLifetime->bOwnerAlive ||
         !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||

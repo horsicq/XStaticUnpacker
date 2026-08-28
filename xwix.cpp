@@ -607,6 +607,9 @@ bool XWiX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
 
     QTemporaryFile stage;
     if (!stage.open()) return false;
+    // XFU-015: the inner unpackCurrent performs its own entry accounting and
+    // debits its production into the stage; the publish copy is not charged.
+    pContext->state.spOutputBudget = pState->spOutputBudget;
     bool bResult = pContext->pMSI->unpackCurrent(&pContext->state, &stage, pPdStruct);
     if (!bResult || !guardedThis || !guardedOutput || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) ||
         (pState->pContext != pContext) ||

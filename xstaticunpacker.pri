@@ -44,6 +44,13 @@ HEADERS += \
     $$PWD/nsis_bzip2/nsis_bzip2_private.h \
     $$PWD/xupx.h \
     $$PWD/xsfx.h \
+    $$PWD/xzipsfx.h \
+    $$PWD/xrarsfx.h \
+    $$PWD/xcabsfx.h \
+    $$PWD/xiscab.h \
+    $$PWD/xrib.h \
+    $$PWD/xfreearcsfx.h \
+    $$PWD/xzpaqsfx.h \
     $$PWD/xfsg.h \
     $$PWD/xyoda.h \
     $$PWD/xnspack.h \
@@ -51,8 +58,7 @@ HEADERS += \
     $$PWD/xpetite.h \
     $$PWD/xmew.h \
     $$PWD/xautoit.h \
-    $$PWD/x7zsfx.h \
-    $$PWD/xwinrarsfx.h \
+    $$PWD/xsevenzipsfx.h \
     $$PWD/xiexpress.h \
     $$PWD/xmsi.h \
     $$PWD/xwix.h \
@@ -80,6 +86,13 @@ SOURCES += \
     $$NSIS_BZIP2_SOURCE \
     $$PWD/xupx.cpp \
     $$PWD/xsfx.cpp \
+    $$PWD/xzipsfx.cpp \
+    $$PWD/xrarsfx.cpp \
+    $$PWD/xcabsfx.cpp \
+    $$PWD/xiscab.cpp \
+    $$PWD/xrib.cpp \
+    $$PWD/xfreearcsfx.cpp \
+    $$PWD/xzpaqsfx.cpp \
     $$PWD/xfsg.cpp \
     $$PWD/xyoda.cpp \
     $$PWD/xnspack.cpp \
@@ -87,8 +100,7 @@ SOURCES += \
     $$PWD/xpetite.cpp \
     $$PWD/xmew.cpp \
     $$PWD/xautoit.cpp \
-    $$PWD/x7zsfx.cpp \
-    $$PWD/xwinrarsfx.cpp \
+    $$PWD/xsevenzipsfx.cpp \
     $$PWD/xiexpress.cpp \
     $$PWD/xmsi.cpp \
     $$PWD/xwix.cpp \

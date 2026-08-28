@@ -1509,6 +1509,26 @@ bool XUPX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
     // Recheck the bytes actually produced before caller-owned output changes.
     if (!isUnpackOutputSizeAllowed(pState->mapUnpackProperties,
                                    stage.size())) return false;
+    // This override bypasses the base decode chain; account the single
+    // rebuilt-PE member here: one entry plus the verified staged size.
+    // publishUnpackOutput below only copies the stage and never debits.
+    if (pState->spOutputBudget) {
+        if (!pState->spOutputBudget->beginEntry(pState->nCurrentIndex,
+                                                record.mapProperties.value(FPART_PROP_ORIGINALNAME).toString())) {
+            if (pState->spOutputBudget->isEnforcing()) {
+                XBinary::setPdStructErrorString(pPdStruct, tr("Unpacked output exceeds the configured limit"));
+                return false;
+            }
+            XBinary::OUTPUT_BUDGET::noteShadowRefusal(pState->spOutputBudget.data());
+        }
+        if (!pState->spOutputBudget->debit(stage.size())) {
+            if (pState->spOutputBudget->isEnforcing()) {
+                XBinary::setPdStructErrorString(pPdStruct, tr("Unpacked output exceeds the configured limit"));
+                return false;
+            }
+            XBinary::OUTPUT_BUDGET::noteShadowRefusal(pState->spOutputBudget.data());
+        }
+    }
     UpxPublisher publisher(pContext->pOuterSourceDevice.data());
     UNPACK_STATE publicationState = {};
     if (!publisher.bindUnpackSource(&publicationState, pPdStruct) ||

@@ -60,6 +60,20 @@ set(XSTATICUNPACKER_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/xupx.h
     ${CMAKE_CURRENT_LIST_DIR}/xsfx.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xsfx.h
+    ${CMAKE_CURRENT_LIST_DIR}/xzipsfx.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xzipsfx.h
+    ${CMAKE_CURRENT_LIST_DIR}/xrarsfx.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xrarsfx.h
+    ${CMAKE_CURRENT_LIST_DIR}/xcabsfx.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xcabsfx.h
+    ${CMAKE_CURRENT_LIST_DIR}/xiscab.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xiscab.h
+    ${CMAKE_CURRENT_LIST_DIR}/xrib.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xrib.h
+    ${CMAKE_CURRENT_LIST_DIR}/xfreearcsfx.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xfreearcsfx.h
+    ${CMAKE_CURRENT_LIST_DIR}/xzpaqsfx.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xzpaqsfx.h
     ${CMAKE_CURRENT_LIST_DIR}/xfsg.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xfsg.h
     ${CMAKE_CURRENT_LIST_DIR}/xyoda.cpp
@@ -74,10 +88,8 @@ set(XSTATICUNPACKER_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/xmew.h
     ${CMAKE_CURRENT_LIST_DIR}/xautoit.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xautoit.h
-    ${CMAKE_CURRENT_LIST_DIR}/x7zsfx.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/x7zsfx.h
-    ${CMAKE_CURRENT_LIST_DIR}/xwinrarsfx.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xwinrarsfx.h
+    ${CMAKE_CURRENT_LIST_DIR}/xsevenzipsfx.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xsevenzipsfx.h
     ${CMAKE_CURRENT_LIST_DIR}/xiexpress.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xiexpress.h
     ${CMAKE_CURRENT_LIST_DIR}/xmsi.cpp
