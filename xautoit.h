@@ -94,18 +94,14 @@ private:
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);
     static void _v2Decrypt(quint8 *pBuf, quint32 nSize, quint32 nSeed);
     static void _mtDecrypt(quint8 *pBuf, quint32 nSize, quint32 nSeed);
-    static bool _inflate(const quint8 *pInput, quint32 nCsize, quint8 *pOutput, quint32 nUsize, bool bEA06 = false,
-                         quint32 *pActualSize = nullptr);
+    static bool _inflate(const quint8 *pInput, quint32 nCsize, quint8 *pOutput, quint32 nUsize, bool bEA06 = false, quint32 *pActualSize = nullptr);
     static bool _inflateV2(const quint8 *pInput, quint32 nCsize, quint8 *pOutput, quint32 nUsize);
     static quint32 _u2a(quint8 *pDest, quint32 nLen);
-    QList<RECORD> _parseV2(const quint8 *pData, qint64 nSize, qint64 nBase, qint64 nOutputLimit,
-                           const QMap<UNPACK_PROP, QVariant> &mapProperties,
+    QList<RECORD> _parseV2(const quint8 *pData, qint64 nSize, qint64 nBase, qint64 nOutputLimit, const QMap<UNPACK_PROP, QVariant> &mapProperties,
                            UNPACK_MEMORY_RESERVATION *pRecordReservation, PDSTRUCT *pPdStruct);
-    QList<RECORD> _parseEA05(const quint8 *pData, qint64 nSize, qint64 nBase, qint64 nOutputLimit,
-                             const QMap<UNPACK_PROP, QVariant> &mapProperties,
+    QList<RECORD> _parseEA05(const quint8 *pData, qint64 nSize, qint64 nBase, qint64 nOutputLimit, const QMap<UNPACK_PROP, QVariant> &mapProperties,
                              UNPACK_MEMORY_RESERVATION *pRecordReservation, PDSTRUCT *pPdStruct);
-    QList<RECORD> _parseEA06(const quint8 *pData, qint64 nSize, qint64 nBase, qint64 nOutputLimit,
-                             const QMap<UNPACK_PROP, QVariant> &mapProperties,
+    QList<RECORD> _parseEA06(const quint8 *pData, qint64 nSize, qint64 nBase, qint64 nOutputLimit, const QMap<UNPACK_PROP, QVariant> &mapProperties,
                              UNPACK_MEMORY_RESERVATION *pRecordReservation, PDSTRUCT *pPdStruct);
 };
 

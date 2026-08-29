@@ -74,8 +74,7 @@ bool XEnigmaVB::isValid(PDSTRUCT *pPdStruct)
 {
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
     QPointer<XEnigmaVB> guardedThis(this);
-    const INTERNAL_INFO *pInfo =
-        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
+    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
     return guardedThis && pInfo && pInfo->bIsValid;
 }
 
@@ -98,8 +97,7 @@ bool XEnigmaVB::handleInternalInfo(PDSTRUCT *pPdStruct)
     if (!guardedThis) return false;
 
     if (!bAlreadyHandled) {
-        const quint64 nTransaction =
-            guardedThis->beginInternalInfoTransaction();
+        const quint64 nTransaction = guardedThis->beginInternalInfoTransaction();
         if (!nTransaction) return false;
 
         // The transaction supplies the recursion sentinel. Keep every
@@ -107,17 +105,14 @@ bool XEnigmaVB::handleInternalInfo(PDSTRUCT *pPdStruct)
         guardedThis->m_internalInfo = INTERNAL_INFO();
         INTERNAL_INFO info = guardedThis->_getInternalInfo(pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
 
-        const auto memoryMap =
-            guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -128,10 +123,7 @@ bool XEnigmaVB::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
         guardedThis->m_internalInfo = info;
-        if (!guardedThis->commitInternalInfoTransaction(
-                nTransaction,
-                static_cast<XBinary::INTERNAL_INFO *>(
-                    &guardedThis->m_internalInfo))) {
+        if (!guardedThis->commitInternalInfoTransaction(nTransaction, static_cast<XBinary::INTERNAL_INFO *>(&guardedThis->m_internalInfo))) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -212,8 +204,7 @@ XEnigmaVB::INTERNAL_INFO XEnigmaVB::_detect(PDSTRUCT *pPdStruct)
         }
     }
 
-    if (!bEnigma1 || !bEnigma2 || (nE1Size < 0x53) || !evbIsRangeValid(nE1Raw, nE1Size, nFileSize) ||
-        (nE2Raw < nE1Raw + nE1Size)) {
+    if (!bEnigma1 || !bEnigma2 || (nE1Size < 0x53) || !evbIsRangeValid(nE1Raw, nE1Size, nFileSize) || (nE2Raw < nE1Raw + nE1Size)) {
         return result;
     }
     const qint64 nContainerSize = nE2Raw + nE2Size - nE1Raw;
@@ -227,8 +218,7 @@ XEnigmaVB::INTERNAL_INFO XEnigmaVB::_detect(PDSTRUCT *pPdStruct)
     if (!XBinary::isPdStructNotCanceled(pPdStruct) || (baHeader.size() != 0x53) || (baHeader.left(4) != QByteArray("EVB\0", 4))) return result;
 
     const quint8 *pHeader = reinterpret_cast<const quint8 *>(baHeader.constData());
-    quint32 nTopCount =
-        (quint32)(pHeader[0x4C] | ((quint32)pHeader[0x4D] << 8) | ((quint32)pHeader[0x4E] << 16) | ((quint32)pHeader[0x4F] << 24));
+    quint32 nTopCount = (quint32)(pHeader[0x4C] | ((quint32)pHeader[0x4D] << 8) | ((quint32)pHeader[0x4E] << 16) | ((quint32)pHeader[0x4F] << 24));
     if (nTopCount > (quint32)EVB_MAX_NODE_COUNT) return result;
 
     result.bIsValid = true;
@@ -238,8 +228,7 @@ XEnigmaVB::INTERNAL_INFO XEnigmaVB::_detect(PDSTRUCT *pPdStruct)
     result.nTreeSize = nE1Size;
 
     // Package-format version: little-endian dword at EVB magic + 0x14.
-    quint32 nFmt =
-        (quint32)(pHeader[0x14] | ((quint32)pHeader[0x15] << 8) | ((quint32)pHeader[0x16] << 16) | ((quint32)pHeader[0x17] << 24));
+    quint32 nFmt = (quint32)(pHeader[0x14] | ((quint32)pHeader[0x15] << 8) | ((quint32)pHeader[0x16] << 16) | ((quint32)pHeader[0x17] << 24));
     if (nFmt && (nFmt < 0x1000)) result.sVersion = QString("package v%1").arg(nFmt);
 
     return result;
@@ -266,8 +255,7 @@ static inline quint64 evbRd64(const quint8 *p)
 
 static bool evbIsSafeBaseName(const QString &sName)
 {
-    if (sName.isEmpty() || (sName.size() > EVB_MAX_NAME_CHARS) || (sName == ".") || (sName == "..") || sName.endsWith(' ') ||
-        sName.endsWith('.')) {
+    if (sName.isEmpty() || (sName.size() > EVB_MAX_NAME_CHARS) || (sName == ".") || (sName == "..") || sName.endsWith(' ') || sName.endsWith('.')) {
         return false;
     }
 
@@ -277,14 +265,14 @@ static bool evbIsSafeBaseName(const QString &sName)
     }
 
     const QString sStem = sName.section('.', 0, 0).toUpper();
-    static const QSet<QString> setReserved = {
-        QStringLiteral("CON"),  QStringLiteral("PRN"),  QStringLiteral("AUX"),  QStringLiteral("NUL"),  QStringLiteral("COM1"),
-        QStringLiteral("COM2"), QStringLiteral("COM3"), QStringLiteral("COM4"), QStringLiteral("COM5"), QStringLiteral("COM6"),
-        QStringLiteral("COM7"), QStringLiteral("COM8"), QStringLiteral("COM9"), QStringLiteral("LPT1"), QStringLiteral("LPT2"),
-        QStringLiteral("LPT3"), QStringLiteral("LPT4"), QStringLiteral("LPT5"), QStringLiteral("LPT6"), QStringLiteral("LPT7"),
-        QStringLiteral("LPT8"), QStringLiteral("LPT9"), QStringLiteral("COM\u00B9"), QStringLiteral("COM\u00B2"),
-        QStringLiteral("COM\u00B3"), QStringLiteral("LPT\u00B9"), QStringLiteral("LPT\u00B2"), QStringLiteral("LPT\u00B3"),
-        QStringLiteral("CONIN$"), QStringLiteral("CONOUT$"), QStringLiteral("CLOCK$")};
+    static const QSet<QString> setReserved = {QStringLiteral("CON"),       QStringLiteral("PRN"),       QStringLiteral("AUX"),       QStringLiteral("NUL"),
+                                              QStringLiteral("COM1"),      QStringLiteral("COM2"),      QStringLiteral("COM3"),      QStringLiteral("COM4"),
+                                              QStringLiteral("COM5"),      QStringLiteral("COM6"),      QStringLiteral("COM7"),      QStringLiteral("COM8"),
+                                              QStringLiteral("COM9"),      QStringLiteral("LPT1"),      QStringLiteral("LPT2"),      QStringLiteral("LPT3"),
+                                              QStringLiteral("LPT4"),      QStringLiteral("LPT5"),      QStringLiteral("LPT6"),      QStringLiteral("LPT7"),
+                                              QStringLiteral("LPT8"),      QStringLiteral("LPT9"),      QStringLiteral("COM\u00B9"), QStringLiteral("COM\u00B2"),
+                                              QStringLiteral("COM\u00B3"), QStringLiteral("LPT\u00B9"), QStringLiteral("LPT\u00B2"), QStringLiteral("LPT\u00B3"),
+                                              QStringLiteral("CONIN$"),    QStringLiteral("CONOUT$"),   QStringLiteral("CLOCK$")};
     return !setReserved.contains(sStem);
 }
 
@@ -314,8 +302,7 @@ static QString evbUniqueOutputName(const QString &sParsedName, qint32 nRecordInd
 
 static bool evbCopyStored(const quint8 *pSrc, qint64 nSize, QByteArray *pOut, XBinary::PDSTRUCT *pPdStruct)
 {
-    if (!pOut || (!pSrc && (nSize != 0)) || (nSize < 0) || (nSize > EVB_MAX_FILE_SIZE) ||
-        !XBinary::isPdStructNotCanceled(pPdStruct)) {
+    if (!pOut || (!pSrc && (nSize != 0)) || (nSize < 0) || (nSize > EVB_MAX_FILE_SIZE) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
         return false;
     }
 
@@ -338,8 +325,7 @@ static bool evbCopyStored(const quint8 *pSrc, qint64 nSize, QByteArray *pOut, XB
 // exact declared output size have all been observed.
 static bool evbAplibDepack(const quint8 *pSrc, qint64 nSrcLen, qint64 nExpectedOutput, QByteArray *pOut, XBinary::PDSTRUCT *pPdStruct)
 {
-    if (!pSrc || !pOut || (nSrcLen <= 0) || (nExpectedOutput <= 0) || (nExpectedOutput > EVB_MAX_FILE_SIZE) ||
-        !XBinary::isPdStructNotCanceled(pPdStruct)) {
+    if (!pSrc || !pOut || (nSrcLen <= 0) || (nExpectedOutput <= 0) || (nExpectedOutput > EVB_MAX_FILE_SIZE) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
         return false;
     }
 
@@ -467,17 +453,14 @@ static bool evbAplibDepack(const quint8 *pSrc, qint64 nSrcLen, qint64 nExpectedO
         }
     }
 
-    return bDone && (nPos == nSrcLen) && ((qint64)pOut->size() == nExpectedOutput) &&
-           XBinary::isPdStructNotCanceled(pPdStruct);
+    return bDone && (nPos == nSrcLen) && ((qint64)pOut->size() == nExpectedOutput) && XBinary::isPdStructNotCanceled(pPdStruct);
 }
 
 bool XEnigmaVB::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
     const PDSTRUCTLIFETIME progressLifetime = pPdStruct ? retainPdStructLifetime(pPdStruct) : PDSTRUCTLIFETIME();
-    const auto isProgressAlive = [&]() -> bool {
-        return !pPdStruct || isPdStructLifetimeAlive(progressLifetime);
-    };
+    const auto isProgressAlive = [&]() -> bool { return !pPdStruct || isPdStructLifetimeAlive(progressLifetime); };
     if (!isProgressAlive()) return false;
     const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
     if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return false;
@@ -486,7 +469,8 @@ bool XEnigmaVB::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
     if (pState->pContext || !pState->baUnpackSourceToken.isEmpty()) {
         UNPACK_CONTEXT *pOldContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
         if (!pOldContext || !pLifetimeState->setContexts.contains(pOldContext) || (pOldContext->pOwnerState != pState) ||
-            (pOldContext->baToken != pState->baUnpackSourceToken)) return false;
+            (pOldContext->baToken != pState->baUnpackSourceToken))
+            return false;
         pLifetimeState->setContexts.remove(pOldContext);
         *pState = UNPACK_STATE();
         delete pOldContext;
@@ -500,32 +484,32 @@ bool XEnigmaVB::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
     const XADDR nModuleAddress = getModuleAddress();
     if (!guardedSource) return false;
     const qint64 nSourceSize = guardedSource->size();
-    if (!isProgressAlive() || !guardedThis || !guardedSource || (nSourceSize < 0) || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data())) return false;
+    if (!isProgressAlive() || !guardedThis || !guardedSource || (nSourceSize < 0) || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+        return false;
     QScopedPointer<XMaterializedUnpackGuard> pSourceGuard(XMaterializedUnpackGuard::bind(guardedSource.data(), pPdStruct));
-    if (!isProgressAlive() || !pSourceGuard || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data())) return false;
+    if (!isProgressAlive() || !pSourceGuard || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+        return false;
     if (!m_bTrustedSnapshot) {
         QScopedPointer<QIODevice> pSnapshot(createFileBuffer(nSourceSize, pPdStruct));
-        if (!isProgressAlive() || !guardedThis || !guardedSource || !pSnapshot || (getDeviceGeneration() != nGeneration) ||
-            (getDevice() != guardedSource.data())) return false;
+        if (!isProgressAlive() || !guardedThis || !guardedSource || !pSnapshot || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+            return false;
         const bool bCopied = copyDeviceMemory(guardedSource.data(), 0, pSnapshot.data(), 0, nSourceSize, pPdStruct);
-        if (!isProgressAlive() || !bCopied || !guardedThis || !guardedSource ||
-            (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data())) return false;
+        if (!isProgressAlive() || !bCopied || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+            return false;
         XEnigmaVB worker(pSnapshot.data(), bIsImage, nModuleAddress);
         worker.m_bTrustedSnapshot = true;
         UNPACK_STATE materializedState = {};
         const bool bMaterialized = worker.initUnpack(&materializedState, mapProperties, pPdStruct);
-        if (!isProgressAlive() || !guardedThis || !guardedSource || !bMaterialized || (getDeviceGeneration() != nGeneration) ||
-            (getDevice() != guardedSource.data())) return false;
+        if (!isProgressAlive() || !guardedThis || !guardedSource || !bMaterialized || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+            return false;
         UNPACK_CONTEXT *pMaterializedContext = static_cast<UNPACK_CONTEXT *>(materializedState.pContext);
         if (!pMaterializedContext) return false;
         QScopedPointer<UNPACK_CONTEXT> pContext(new (std::nothrow) UNPACK_CONTEXT);
         if (!pContext) return false;
         pContext->listEntries = pMaterializedContext->listEntries;
-        if (!worker.finishUnpack(&materializedState, nullptr) || !isProgressAlive() || !guardedThis || !guardedSource ||
-            (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
-            !isPdStructNotCanceled(pPdStruct) || pContext->listEntries.isEmpty()) return false;
+        if (!worker.finishUnpack(&materializedState, nullptr) || !isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
+            (getDevice() != guardedSource.data()) || !isPdStructNotCanceled(pPdStruct) || pContext->listEntries.isEmpty())
+            return false;
         pContext->pSourceDevice = guardedSource;
         pContext->pOwnerState = pState;
         pContext->baToken = QUuid::createUuid().toRfc4122();
@@ -533,9 +517,9 @@ bool XEnigmaVB::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
         pContext->nSourceSize = nSourceSize;
         if (pContext->baToken.isEmpty()) return false;
         const bool bSourceFinal = pSourceGuard->validateAndFinalize(pPdStruct);
-        if (!isProgressAlive() || !bSourceFinal || !guardedThis || !guardedSource ||
-            (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
-            !isPdStructNotCanceled(pPdStruct)) return false;
+        if (!isProgressAlive() || !bSourceFinal || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
+            !isPdStructNotCanceled(pPdStruct))
+            return false;
         pContext->pSourceGuard = pSourceGuard.take();
         pState->nTotalSize = nSourceSize;
         pState->nNumberOfRecords = pContext->listEntries.size();
@@ -551,20 +535,16 @@ bool XEnigmaVB::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
         pState->mapUnpackProperties = mapProperties;
 
         const INTERNAL_INFO info = _detect(pPdStruct);
-        const qint64 nCurrentSize = (isProgressAlive() && guardedThis && guardedSource)
-                                       ? getSize() : -1;
-        if (!isProgressAlive() || !guardedThis || !guardedSource || !info.bIsValid ||
-            (info.nMagicOffset < 0) || (info.nBaseOffset < 0) || (info.nTreeSize < 0x53) ||
-            (info.nBaseSize < info.nTreeSize) ||
-            (info.nBaseSize > EVB_MAX_CONTAINER_SIZE) || (info.nBaseSize > (std::numeric_limits<int>::max)()) ||
+        const qint64 nCurrentSize = (isProgressAlive() && guardedThis && guardedSource) ? getSize() : -1;
+        if (!isProgressAlive() || !guardedThis || !guardedSource || !info.bIsValid || (info.nMagicOffset < 0) || (info.nBaseOffset < 0) || (info.nTreeSize < 0x53) ||
+            (info.nBaseSize < info.nTreeSize) || (info.nBaseSize > EVB_MAX_CONTAINER_SIZE) || (info.nBaseSize > (std::numeric_limits<int>::max)()) ||
             !evbIsRangeValid(info.nBaseOffset, info.nBaseSize, nCurrentSize) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             return false;
         }
 
         std::unique_ptr<UNPACK_CONTEXT> pContext(new UNPACK_CONTEXT);
         const QByteArray baBuf = read_array_process(info.nBaseOffset, info.nBaseSize, pPdStruct);
-        if (!isProgressAlive() || !guardedThis || !guardedSource || !XBinary::isPdStructNotCanceled(pPdStruct) ||
-            ((qint64)baBuf.size() != info.nBaseSize)) return false;
+        if (!isProgressAlive() || !guardedThis || !guardedSource || !XBinary::isPdStructNotCanceled(pPdStruct) || ((qint64)baBuf.size() != info.nBaseSize)) return false;
 
         const quint8 *p = reinterpret_cast<const quint8 *>(baBuf.constData());
         const qint64 nTreeLimit = info.nTreeSize;
@@ -597,8 +577,7 @@ bool XEnigmaVB::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
             }
             stackRemaining.last()--;
 
-            if ((nParsedNodes >= nScheduledNodes) || (nParsedNodes >= EVB_MAX_NODE_COUNT) || (nCursor < 0) ||
-                (nTreeLimit - nCursor < 12)) {
+            if ((nParsedNodes >= nScheduledNodes) || (nParsedNodes >= EVB_MAX_NODE_COUNT) || (nCursor < 0) || (nTreeLimit - nCursor < 12)) {
                 return false;
             }
             nParsedNodes++;
@@ -672,8 +651,7 @@ bool XEnigmaVB::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
             if (!isProgressAlive() || !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
             const TmpRec &record = listTmp.at(i);
-            if ((record.nOrig > (quint64)EVB_MAX_FILE_SIZE) || (nRunning < 0) || (nRunning > nTreeLimit) ||
-                (record.nStored > (quint64)(nTreeLimit - nRunning)) ||
+            if ((record.nOrig > (quint64)EVB_MAX_FILE_SIZE) || (nRunning < 0) || (nRunning > nTreeLimit) || (record.nStored > (quint64)(nTreeLimit - nRunning)) ||
                 (record.nOrig > (quint64)(EVB_MAX_TOTAL_OUTPUT - nTotalOutput))) {
                 return false;
             }
@@ -695,8 +673,7 @@ bool XEnigmaVB::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
                 bDecoded = evbAplibDepack(pBlob + nHeaderSize, nAplibSize, (qint64)record.nOrig, &entry.baData, pPdStruct);
             }
 
-            if (!isProgressAlive() || !guardedThis || !guardedSource || !bDecoded ||
-                ((quint64)entry.baData.size() != record.nOrig) ||
+            if (!isProgressAlive() || !guardedThis || !guardedSource || !bDecoded || ((quint64)entry.baData.size() != record.nOrig) ||
                 ((qint64)entry.baData.size() > EVB_MAX_TOTAL_OUTPUT - nTotalOutput)) {
                 return false;
             }
@@ -724,8 +701,7 @@ bool XEnigmaVB::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
             }
         }
 
-        if (!isProgressAlive() || !XBinary::isPdStructNotCanceled(pPdStruct) ||
-            (pContext->listEntries.size() != listTmp.size())) return false;
+        if (!isProgressAlive() || !XBinary::isPdStructNotCanceled(pPdStruct) || (pContext->listEntries.size() != listTmp.size())) return false;
 
         pContext->pSourceDevice = guardedSource;
         pContext->pOwnerState = pState;
@@ -734,9 +710,9 @@ bool XEnigmaVB::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
         pContext->nSourceSize = nSourceSize;
         if (pContext->baToken.isEmpty()) return false;
         const bool bSourceFinal = pSourceGuard->validateAndFinalize(pPdStruct);
-        if (!isProgressAlive() || !bSourceFinal || !guardedThis || !guardedSource ||
-            (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
-            !isPdStructNotCanceled(pPdStruct)) return false;
+        if (!isProgressAlive() || !bSourceFinal || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
+            !isPdStructNotCanceled(pPdStruct))
+            return false;
         pContext->pSourceGuard = pSourceGuard.take();
         pState->nNumberOfRecords = pContext->listEntries.size();
         pState->pContext = pContext.get();
@@ -758,15 +734,15 @@ XBinary::ARCHIVERECORD XEnigmaVB::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pP
     if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !isPdStructNotCanceled(pPdStruct)) return result;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     qint32 nIndex = pState->nCurrentIndex;
-    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) || (pContext->nDeviceGeneration != getDeviceGeneration()) ||
-        (pContext->pSourceDevice.data() != getDevice()) || (pState->nCurrentOffset != pContext->nCurrentOffset) ||
-        (nIndex != pContext->nCurrentIndex) || (pState->nNumberOfRecords != pContext->listEntries.size()) ||
-        (pState->nTotalSize != pContext->nSourceSize) || (nIndex < 0) || (nIndex >= pContext->listEntries.size())) return result;
-    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis ||
-        !pLifetimeState->bOwnerAlive || !pLifetimeState->setContexts.contains(pContext) ||
-        (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) || (pState->nCurrentIndex != pContext->nCurrentIndex)) return result;
+    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
+        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) ||
+        (pState->nCurrentOffset != pContext->nCurrentOffset) || (nIndex != pContext->nCurrentIndex) || (pState->nNumberOfRecords != pContext->listEntries.size()) ||
+        (pState->nTotalSize != pContext->nSourceSize) || (nIndex < 0) || (nIndex >= pContext->listEntries.size()))
+        return result;
+    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis || !pLifetimeState->bOwnerAlive ||
+        !pLifetimeState->setContexts.contains(pContext) || (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
+        (pContext->baToken != pState->baUnpackSourceToken) || (pState->nCurrentIndex != pContext->nCurrentIndex))
+        return result;
 
     const FILE_ENTRY &e = pContext->listEntries.at(nIndex);
     result.nStreamSize = e.baData.size();
@@ -787,12 +763,12 @@ bool XEnigmaVB::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     const qint32 nIndex = pState->nCurrentIndex;
     const auto isAuthenticated = [&]() -> bool {
-        return guardedThis && pLifetimeState->bOwnerAlive && pLifetimeState->setContexts.contains(pContext) &&
-               (pState->pContext == pContext) && (pContext->pOwnerState == pState) && (pState->baUnpackSourceToken == pContext->baToken) &&
+        return guardedThis && pLifetimeState->bOwnerAlive && pLifetimeState->setContexts.contains(pContext) && (pState->pContext == pContext) &&
+               (pContext->pOwnerState == pState) && (pState->baUnpackSourceToken == pContext->baToken) &&
                (pContext->nDeviceGeneration == guardedThis->getDeviceGeneration()) && (pContext->pSourceDevice.data() == guardedThis->getDevice()) &&
                (pState->nCurrentIndex == pContext->nCurrentIndex) && (pState->nCurrentOffset == pContext->nCurrentOffset) &&
-               (pState->nNumberOfRecords == pContext->listEntries.size()) && (pState->nTotalSize == pContext->nSourceSize) &&
-               (nIndex >= 0) && (nIndex < pContext->listEntries.size());
+               (pState->nNumberOfRecords == pContext->listEntries.size()) && (pState->nTotalSize == pContext->nSourceSize) && (nIndex >= 0) &&
+               (nIndex < pContext->listEntries.size());
     };
     if (!isAuthenticated()) return false;
     const bool bOpen = guardedOutput->isOpen();
@@ -802,8 +778,9 @@ bool XEnigmaVB::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT
     const bool bSequential = guardedOutput->isSequential();
     if (!isAuthenticated() || !guardedOutput || bSequential) return false;
     const QIODevice::OpenMode openMode = guardedOutput->openMode();
-    if (!isAuthenticated() || !guardedOutput || (openMode & (QIODevice::Append | QIODevice::Text)) || !isResizeEnable(guardedOutput.data()) ||
-        !guardedOutput || devicesAlias(pContext->pSourceDevice.data(), guardedOutput.data()) || !isAuthenticated() || !guardedOutput) return false;
+    if (!isAuthenticated() || !guardedOutput || (openMode & (QIODevice::Append | QIODevice::Text)) || !isResizeEnable(guardedOutput.data()) || !guardedOutput ||
+        devicesAlias(pContext->pSourceDevice.data(), guardedOutput.data()) || !isAuthenticated() || !guardedOutput)
+        return false;
     if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedOutput || !isAuthenticated()) return false;
     // This override bypasses the base decode chain's per-entry gate; account the member here.
     // Produced bytes are charged by writeUnpackData at publication below.
@@ -853,15 +830,14 @@ bool XEnigmaVB::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !isPdStructNotCanceled(pPdStruct)) return false;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) ||
-        (pState->nCurrentIndex != pContext->nCurrentIndex) || (pState->nCurrentOffset != pContext->nCurrentOffset) ||
-        (pState->nNumberOfRecords != pContext->listEntries.size()) || (pState->nTotalSize != pContext->nSourceSize) ||
-        (pContext->nCurrentIndex < 0) || (pContext->nCurrentIndex >= pContext->listEntries.size())) return false;
-    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis ||
-        !pLifetimeState->bOwnerAlive || !pLifetimeState->setContexts.contains(pContext) ||
-        (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pContext->nCurrentIndex >= pContext->listEntries.size())) return false;
+        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) || (pState->nCurrentIndex != pContext->nCurrentIndex) ||
+        (pState->nCurrentOffset != pContext->nCurrentOffset) || (pState->nNumberOfRecords != pContext->listEntries.size()) ||
+        (pState->nTotalSize != pContext->nSourceSize) || (pContext->nCurrentIndex < 0) || (pContext->nCurrentIndex >= pContext->listEntries.size()))
+        return false;
+    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis || !pLifetimeState->bOwnerAlive ||
+        !pLifetimeState->setContexts.contains(pContext) || (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
+        (pContext->baToken != pState->baUnpackSourceToken) || (pContext->nCurrentIndex >= pContext->listEntries.size()))
+        return false;
     ++pContext->nCurrentIndex;
     pContext->nCurrentOffset = 0;
     pState->nCurrentIndex = pContext->nCurrentIndex;
@@ -881,8 +857,8 @@ bool XEnigmaVB::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         return true;
     }
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!pContext || !pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken)) return false;
+    if (!pContext || !pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken))
+        return false;
     pLifetimeState->setContexts.remove(pContext);
     *pState = UNPACK_STATE();
     delete pContext;

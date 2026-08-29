@@ -39,7 +39,9 @@ public:
     };
 
     struct UNPACK_CONTEXT {
-        UNPACK_CONTEXT() : nTotalOutput(0), pOwnerState(nullptr), nDeviceGeneration(0), nSourceSize(0), nCurrentOffset(0), nCurrentIndex(0) {}
+        UNPACK_CONTEXT() : nTotalOutput(0), pOwnerState(nullptr), nDeviceGeneration(0), nSourceSize(0), nCurrentOffset(0), nCurrentIndex(0)
+        {
+        }
         ~UNPACK_CONTEXT();
 
         QList<FILE_ENTRY> listEntries;
@@ -85,8 +87,7 @@ private:
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
     INTERNAL_INFO m_internalInfo;
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);
-    bool _scanRecords(const QByteArray &baRegion, const QSet<QString> &setDeclaredNames, UNPACK_CONTEXT *pContext,
-                      PDSTRUCT *pPdStruct);
+    bool _scanRecords(const QByteArray &baRegion, const QSet<QString> &setDeclaredNames, UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
     QSharedPointer<LIFETIME_STATE> m_pUnpackLifetimeState;
     bool m_bTrustedSnapshot = false;
 };

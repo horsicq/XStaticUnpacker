@@ -131,7 +131,7 @@ public:
     struct CHUNK_CACHE {
         quint32 nFirstSlice;
         quint32 nLastSlice;
-        qint64 nChunkOffset;             // Slice-relative or embedded absolute offset
+        qint64 nChunkOffset;  // Slice-relative or embedded absolute offset
         qint64 nChunkCompressedSize;
         INNO_COMPRESSION compression;
         bool bEncrypted;
@@ -167,7 +167,9 @@ public:
     };
 
     struct UNPACK_LIFETIME_STATE {
-        UNPACK_LIFETIME_STATE() : bOperationInProgress(false), bOwnerAlive(true) {}
+        UNPACK_LIFETIME_STATE() : bOperationInProgress(false), bOwnerAlive(true)
+        {
+        }
         ~UNPACK_LIFETIME_STATE();
         bool bOperationInProgress;
         bool bOwnerAlive;
@@ -200,8 +202,8 @@ public:
 protected:
     bool isDeviceReplacementAllowed() const override
     {
-        return m_pUnpackLifetimeState && m_pUnpackLifetimeState->bOwnerAlive &&
-               !m_pUnpackLifetimeState->bOperationInProgress && m_pUnpackLifetimeState->setContexts.isEmpty();
+        return m_pUnpackLifetimeState && m_pUnpackLifetimeState->bOwnerAlive && !m_pUnpackLifetimeState->bOperationInProgress &&
+               m_pUnpackLifetimeState->setContexts.isEmpty();
     }
 
 private:
@@ -214,35 +216,23 @@ private:
 
     // Real InnoSetup format parsing
     OFFSET_TABLE _findOffsetTable(PDSTRUCT *pPdStruct);
-    QByteArray _readBlockStream(qint64 nOffset, qint64 *pnConsumed, PDSTRUCT *pPdStruct, bool b64BitStoredSize,
-                                const QByteArray &baCryptKey = QByteArray(),
-                                const QByteArray &baCryptNonce = QByteArray(),
-                                const INNO_VERSION *pVersion = nullptr);
+    QByteArray _readBlockStream(qint64 nOffset, qint64 *pnConsumed, PDSTRUCT *pPdStruct, bool b64BitStoredSize, const QByteArray &baCryptKey = QByteArray(),
+                                const QByteArray &baCryptNonce = QByteArray(), const INNO_VERSION *pVersion = nullptr);
     QByteArray _stripCRCChunks(const QByteArray &baData, bool *pbValid);
     QByteArray _decompressZlib(const QByteArray &baData, qint64 nExpectedSize = -1);
     QByteArray _decompressLZMA1(const QByteArray &baData);
-    QList<DATA_ENTRY> _parseDataEntries(const QByteArray &baBlock2, const INNO_VERSION &version, bool bRev2,
-                                        qint32 nExpectedCount, INNO_COMPRESSION headerCompression);
+    QList<DATA_ENTRY> _parseDataEntries(const QByteArray &baBlock2, const INNO_VERSION &version, bool bRev2, qint32 nExpectedCount, INNO_COMPRESSION headerCompression);
     // bUnicode selects UTF-16 WideString (Inno >= 5.3.0 Unicode builds, all 6.x) vs single-byte
     // AnsiString (Inno < 5.3.0, e.g. 5.1.x) parsing of the setup-0 file-entry array.
-    QList<FILE_ENTRY> _parseFileEntries(const QByteArray &baBlock1, const HEADER_INFO &headerInfo,
-                                        const INNO_VERSION &version, bool bRev2 = false,
-                                        quint32 nAnsiCodePageOverride = 0,
-                                        quint32 *pnAnsiCodePage = nullptr);
-    QList<FILE_ENTRY> _parseFileEntriesAnsi(const QByteArray &baBlock1, const HEADER_INFO &headerInfo,
-                                            const INNO_VERSION &version,
-                                            quint32 nAnsiCodePageOverride = 0,
+    QList<FILE_ENTRY> _parseFileEntries(const QByteArray &baBlock1, const HEADER_INFO &headerInfo, const INNO_VERSION &version, bool bRev2 = false,
+                                        quint32 nAnsiCodePageOverride = 0, quint32 *pnAnsiCodePage = nullptr);
+    QList<FILE_ENTRY> _parseFileEntriesAnsi(const QByteArray &baBlock1, const HEADER_INFO &headerInfo, const INNO_VERSION &version, quint32 nAnsiCodePageOverride = 0,
                                             quint32 *pnAnsiCodePage = nullptr);
     bool _parseRealInnoSetup(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
-    bool _prepareSliceSources(UNPACK_CONTEXT *pContext, const QList<DATA_ENTRY> &listDataEntries,
-                              PDSTRUCT *pPdStruct);
-    bool _areSliceSourcesCurrent(const UNPACK_CONTEXT *pContext, quint32 nFirstSlice,
-                                 quint32 nLastSlice, PDSTRUCT *pPdStruct) const;
-    bool _readDataChunk(UNPACK_CONTEXT *pContext, const DATA_ENTRY &entry,
-                        QByteArray *pCompressedData, PDSTRUCT *pPdStruct);
-    QByteArray _decompressDataChunk(UNPACK_CONTEXT *pContext, const DATA_ENTRY &entry,
-                                    qint64 nOutputLimit,
-                                    const QMap<UNPACK_PROP, QVariant> &mapProperties,
+    bool _prepareSliceSources(UNPACK_CONTEXT *pContext, const QList<DATA_ENTRY> &listDataEntries, PDSTRUCT *pPdStruct);
+    bool _areSliceSourcesCurrent(const UNPACK_CONTEXT *pContext, quint32 nFirstSlice, quint32 nLastSlice, PDSTRUCT *pPdStruct) const;
+    bool _readDataChunk(UNPACK_CONTEXT *pContext, const DATA_ENTRY &entry, QByteArray *pCompressedData, PDSTRUCT *pPdStruct);
+    QByteArray _decompressDataChunk(UNPACK_CONTEXT *pContext, const DATA_ENTRY &entry, qint64 nOutputLimit, const QMap<UNPACK_PROP, QVariant> &mapProperties,
                                     PDSTRUCT *pPdStruct);
     static INNO_VERSION _parseVersionId(const QByteArray &baVersionId);
     static HEADER_INFO _parseHeaderInfo(const QByteArray &baBlock1, const INNO_VERSION &version);
@@ -254,15 +244,10 @@ private:
     static bool _decodeAnsiCodePage(const QByteArray &baData, quint32 nCodePage, QString *psResult);
     static QString _getOptionalDestinationPath(const QString &sDestination);
     static void _setDestinationProperties(ARCHIVERECORD *pRecord, const QString &sDestination);
-    static bool _deriveEncryptionKey(const QString &sPassword, const QByteArray &baSalt,
-                                     qint32 nIterations, QByteArray *pKey, PDSTRUCT *pPdStruct);
-    static QByteArray _encodeLegacyPassword(const QString &sPassword, bool bUnicode,
-                                            quint32 nAnsiCodePage = 1252,
-                                            bool *pbOk = nullptr);
-    static bool _arcFourCrypt(QByteArray *pData, const QByteArray &baPassword,
-                              const QByteArray &baSalt, INNO_ENCRYPTION encryption);
-    static bool _xChaCha20Crypt(QByteArray *pData, const QByteArray &baKey,
-                                const QByteArray &baNonce);
+    static bool _deriveEncryptionKey(const QString &sPassword, const QByteArray &baSalt, qint32 nIterations, QByteArray *pKey, PDSTRUCT *pPdStruct);
+    static QByteArray _encodeLegacyPassword(const QString &sPassword, bool bUnicode, quint32 nAnsiCodePage = 1252, bool *pbOk = nullptr);
+    static bool _arcFourCrypt(QByteArray *pData, const QByteArray &baPassword, const QByteArray &baSalt, INNO_ENCRYPTION encryption);
+    static bool _xChaCha20Crypt(QByteArray *pData, const QByteArray &baKey, const QByteArray &baNonce);
     QSharedPointer<UNPACK_LIFETIME_STATE> m_pUnpackLifetimeState;
 };
 

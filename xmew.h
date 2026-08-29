@@ -92,16 +92,15 @@ private:
         quint32 nOffDiff;
         quint32 nSsize;
         quint32 nDsize;
-        quint32 nSrcRaw;     // section[i+1] PointerToRawData
-        quint32 nSrcRsz;     // section[i+1] SizeOfRawData
-        quint32 nVadd;       // section[0].rva
+        quint32 nSrcRaw;  // section[i+1] PointerToRawData
+        quint32 nSrcRsz;  // section[i+1] SizeOfRawData
+        quint32 nVadd;    // section[0].rva
         quint32 nImageBase;
         quint32 nUseLzma;
     };
 
     static qint64 _aplibDepack(const quint8 *pSrc, qint64 nSrcSize, quint8 *pDst, qint64 nDstSize, qint64 *pnSrcConsumed);
-    static QByteArray _buildPE(const QByteArray &baBuf, const QList<SECT> &listSections, quint32 nImageBase, quint32 nOEP,
-                               qint64 nOutputLimit = -1);
+    static QByteArray _buildPE(const QByteArray &baBuf, const QList<SECT> &listSections, quint32 nImageBase, quint32 nOEP, qint64 nOutputLimit = -1);
 
     // LZMA path: stock raw LZMA1 (lc=4/lp=0/pb=2) decode + MEW container framing.
     static bool _decodeRawLzma(const quint8 *pSrc, qint64 nSrcSize, quint8 *pDst, quint32 nDstSize, quint32 nDictSize);

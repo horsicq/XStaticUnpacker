@@ -42,8 +42,15 @@ public:
             m_bAcquired = true;
         }
     }
-    ~NsisOperationGuard() { if (m_pState && m_bAcquired) m_pState->bOperationInProgress = false; }
-    bool isAcquired() const { return m_bAcquired; }
+    ~NsisOperationGuard()
+    {
+        if (m_pState && m_bAcquired) m_pState->bOperationInProgress = false;
+    }
+    bool isAcquired() const
+    {
+        return m_bAcquired;
+    }
+
 private:
     QSharedPointer<XNSIS::UNPACK_LIFETIME_STATE> m_pState;
     bool m_bAcquired;
@@ -51,10 +58,12 @@ private:
 
 class NsisPublisher : public XArchive {
 public:
-    explicit NsisPublisher(QIODevice *pDevice) : XArchive(pDevice) {}
+    explicit NsisPublisher(QIODevice *pDevice) : XArchive(pDevice)
+    {
+    }
     using XArchive::publishUnpackOutput;
 };
-}
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Constants (mirror 7-Zip NsisIn.cpp)
@@ -116,15 +125,71 @@ static const qint64 kNsisMaxMemberDecoded = 512LL * 1024 * 1024;
 static const qint64 kNsisMaxSolidDecoded = 512LL * 1024 * 1024;
 static const quint32 kNsisMaxLzmaDictionary = 64U * 1024 * 1024;
 
-static const char *const kVarStrings[] = {"CMDLINE", "INSTDIR", "OUTDIR",     "EXEDIR", "LANGUAGE", "TEMP",
-                                          "PLUGINSDIR", "EXEPATH", "EXEFILE", "HWNDPARENT", "_CLICK", "_OUTDIR"};
+static const char *const kVarStrings[] = {"CMDLINE",    "INSTDIR", "OUTDIR",  "EXEDIR",     "LANGUAGE", "TEMP",
+                                          "PLUGINSDIR", "EXEPATH", "EXEFILE", "HWNDPARENT", "_CLICK",   "_OUTDIR"};
 
-static const char *const kShellStrings[] = {
-    "DESKTOP", "INTERNET", "SMPROGRAMS", "CONTROLS", "PRINTERS", "DOCUMENTS", "FAVORITES", "SMSTARTUP", "RECENT", "SENDTO", "BITBUCKET", "STARTMENU", nullptr, "MUSIC",
-    "VIDEOS", nullptr, "DESKTOP", "DRIVES", "NETWORK", "NETHOOD", "FONTS", "TEMPLATES", "STARTMENU", "SMPROGRAMS", "SMSTARTUP", "DESKTOP", "APPDATA", "PRINTHOOD",
-    "LOCALAPPDATA", "ALTSTARTUP", "ALTSTARTUP", "FAVORITES", "INTERNET_CACHE", "COOKIES", "HISTORY", "APPDATA", "WINDIR", "SYSDIR", "PROGRAM_FILES", "PICTURES",
-    "PROFILE", "SYSTEMX86", "PROGRAM_FILESX86", "PROGRAM_FILES_COMMON", "PROGRAM_FILES_COMMONX8", "TEMPLATES", "DOCUMENTS", "ADMINTOOLS", "ADMINTOOLS", "CONNECTIONS",
-    nullptr, nullptr, nullptr, "MUSIC", "PICTURES", "VIDEOS", "RESOURCES", "RESOURCES_LOCALIZED", "COMMON_OEM_LINKS", "CDBURN_AREA", nullptr, "COMPUTERSNEARME"};
+static const char *const kShellStrings[] = {"DESKTOP",
+                                            "INTERNET",
+                                            "SMPROGRAMS",
+                                            "CONTROLS",
+                                            "PRINTERS",
+                                            "DOCUMENTS",
+                                            "FAVORITES",
+                                            "SMSTARTUP",
+                                            "RECENT",
+                                            "SENDTO",
+                                            "BITBUCKET",
+                                            "STARTMENU",
+                                            nullptr,
+                                            "MUSIC",
+                                            "VIDEOS",
+                                            nullptr,
+                                            "DESKTOP",
+                                            "DRIVES",
+                                            "NETWORK",
+                                            "NETHOOD",
+                                            "FONTS",
+                                            "TEMPLATES",
+                                            "STARTMENU",
+                                            "SMPROGRAMS",
+                                            "SMSTARTUP",
+                                            "DESKTOP",
+                                            "APPDATA",
+                                            "PRINTHOOD",
+                                            "LOCALAPPDATA",
+                                            "ALTSTARTUP",
+                                            "ALTSTARTUP",
+                                            "FAVORITES",
+                                            "INTERNET_CACHE",
+                                            "COOKIES",
+                                            "HISTORY",
+                                            "APPDATA",
+                                            "WINDIR",
+                                            "SYSDIR",
+                                            "PROGRAM_FILES",
+                                            "PICTURES",
+                                            "PROFILE",
+                                            "SYSTEMX86",
+                                            "PROGRAM_FILESX86",
+                                            "PROGRAM_FILES_COMMON",
+                                            "PROGRAM_FILES_COMMONX8",
+                                            "TEMPLATES",
+                                            "DOCUMENTS",
+                                            "ADMINTOOLS",
+                                            "ADMINTOOLS",
+                                            "CONNECTIONS",
+                                            nullptr,
+                                            nullptr,
+                                            nullptr,
+                                            "MUSIC",
+                                            "PICTURES",
+                                            "VIDEOS",
+                                            "RESOURCES",
+                                            "RESOURCES_LOCALIZED",
+                                            "COMMON_OEM_LINKS",
+                                            "CDBURN_AREA",
+                                            nullptr,
+                                            "COMPUTERSNEARME"};
 
 static const unsigned kNumShellStrings = sizeof(kShellStrings) / sizeof(kShellStrings[0]);
 
@@ -321,8 +386,7 @@ XBinary::FT XNSIS::getFileType()
 bool XNSIS::isValid(PDSTRUCT *pPdStruct)
 {
     QPointer<XNSIS> guardedThis(this);
-    const INTERNAL_INFO *pInfo =
-        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
+    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
     return guardedThis && pInfo && pInfo->bIsValid;
 }
 
@@ -339,8 +403,7 @@ bool XNSIS::handleInternalInfo(PDSTRUCT *pPdStruct)
     if (!guardedThis) return false;
 
     if (!bAlreadyHandled) {
-        const quint64 nTransaction =
-            guardedThis->beginInternalInfoTransaction();
+        const quint64 nTransaction = guardedThis->beginInternalInfoTransaction();
         if (!nTransaction) return false;
 
         // The transaction supplies the recursion sentinel. Keep every
@@ -348,17 +411,14 @@ bool XNSIS::handleInternalInfo(PDSTRUCT *pPdStruct)
         guardedThis->m_internalInfo = INTERNAL_INFO();
         INTERNAL_INFO info = guardedThis->_getInternalInfo(pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
 
-        const auto memoryMap =
-            guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -369,10 +429,7 @@ bool XNSIS::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
         guardedThis->m_internalInfo = info;
-        if (!guardedThis->commitInternalInfoTransaction(
-                nTransaction,
-                static_cast<XBinary::INTERNAL_INFO *>(
-                    &guardedThis->m_internalInfo))) {
+        if (!guardedThis->commitInternalInfoTransaction(nTransaction, static_cast<XBinary::INTERNAL_INFO *>(&guardedThis->m_internalInfo))) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -589,8 +646,7 @@ bool XNSIS::_detectMethod(UNPACK_CONTEXT *pContext, const quint8 *pSig, qint64 n
 
 static bool nsisGetDecodeLimits(qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit, qint64 *pnEffectiveLimit, qint64 *pnProbeLimit)
 {
-    if (!pnEffectiveLimit || !pnProbeLimit || (nOutputLimit <= 0) ||
-        (nOutputLimit >= (std::numeric_limits<int>::max)()) ||
+    if (!pnEffectiveLimit || !pnProbeLimit || (nOutputLimit <= 0) || (nOutputLimit >= (std::numeric_limits<int>::max)()) ||
         (bOutHintKnown && ((nOutHint < 0) || (nOutHint > nOutputLimit)))) {
         return false;
     }
@@ -632,15 +688,12 @@ static bool nsisGrowDecoded(QByteArray *pResult, qint64 nProbeLimit)
     return nsisResizeDecoded(pResult, nNext);
 }
 
-bool XNSIS::_lzmaDecode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit, QByteArray *pResult,
-                        PDSTRUCT *pPdStruct)
+bool XNSIS::_lzmaDecode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit, QByteArray *pResult, PDSTRUCT *pPdStruct)
 {
     qint64 nEffectiveLimit = 0;
     qint64 nProbeLimit = 0;
-    if (!pSrc || !pResult || (nSrcSize < 5) || (nSrcSize > kNsisMaxPackedBlock) ||
-        (rd32(pSrc + 1) > kNsisMaxLzmaDictionary) ||
-        !nsisGetDecodeLimits(nOutHint, bOutHintKnown, nOutputLimit, &nEffectiveLimit, &nProbeLimit) ||
-        !isPdStructNotCanceled(pPdStruct)) {
+    if (!pSrc || !pResult || (nSrcSize < 5) || (nSrcSize > kNsisMaxPackedBlock) || (rd32(pSrc + 1) > kNsisMaxLzmaDictionary) ||
+        !nsisGetDecodeLimits(nOutHint, bOutHintKnown, nOutputLimit, &nEffectiveLimit, &nProbeLimit) || !isPdStructNotCanceled(pPdStruct)) {
         return false;
     }
 
@@ -697,14 +750,12 @@ bool XNSIS::_lzmaDecode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bo
     return false;
 }
 
-bool XNSIS::_inflateRaw(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit, QByteArray *pResult,
-                        PDSTRUCT *pPdStruct)
+bool XNSIS::_inflateRaw(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit, QByteArray *pResult, PDSTRUCT *pPdStruct)
 {
     qint64 nEffectiveLimit = 0;
     qint64 nProbeLimit = 0;
     if (!pSrc || !pResult || (nSrcSize <= 0) || (nSrcSize > kNsisMaxPackedBlock) ||
-        !nsisGetDecodeLimits(nOutHint, bOutHintKnown, nOutputLimit, &nEffectiveLimit, &nProbeLimit) ||
-        !isPdStructNotCanceled(pPdStruct)) {
+        !nsisGetDecodeLimits(nOutHint, bOutHintKnown, nOutputLimit, &nEffectiveLimit, &nProbeLimit) || !isPdStructNotCanceled(pPdStruct)) {
         return false;
     }
 
@@ -763,14 +814,12 @@ bool XNSIS::_inflateRaw(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bo
     return false;
 }
 
-bool XNSIS::_bzip2Decode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit, QByteArray *pResult,
-                         PDSTRUCT *pPdStruct)
+bool XNSIS::_bzip2Decode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit, QByteArray *pResult, PDSTRUCT *pPdStruct)
 {
     qint64 nEffectiveLimit = 0;
     qint64 nProbeLimit = 0;
     if (!pSrc || !pResult || (nSrcSize <= 0) || (nSrcSize > kNsisMaxPackedBlock) ||
-        !nsisGetDecodeLimits(nOutHint, bOutHintKnown, nOutputLimit, &nEffectiveLimit, &nProbeLimit) ||
-        !isPdStructNotCanceled(pPdStruct)) {
+        !nsisGetDecodeLimits(nOutHint, bOutHintKnown, nOutputLimit, &nEffectiveLimit, &nProbeLimit) || !isPdStructNotCanceled(pPdStruct)) {
         return false;
     }
 
@@ -889,8 +938,8 @@ bool XNSIS::_decodeSolidStream(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
         return false;
     }
 
-    bool bOk = _decodeBlock(pContext->method, pContext->bFilterFlag, (const quint8 *)baCompressed.constData(), baCompressed.size(), 0, false,
-                            kNsisMaxSolidDecoded, &pContext->baSolid, pPdStruct);
+    bool bOk = _decodeBlock(pContext->method, pContext->bFilterFlag, (const quint8 *)baCompressed.constData(), baCompressed.size(), 0, false, kNsisMaxSolidDecoded,
+                            &pContext->baSolid, pPdStruct);
     return bOk && !pContext->baSolid.isEmpty();
 }
 
@@ -1611,8 +1660,7 @@ void XNSIS::_sortItems(UNPACK_CONTEXT *pContext)
 
     // drop consecutive duplicates (same position + same name)
     for (int i = 0; i + 1 < list.size();) {
-        if (!list.at(i).bIsEmptyFile && !list.at(i + 1).bIsEmptyFile && (list.at(i).nPos == list.at(i + 1).nPos) &&
-            (list.at(i).sFileName == list.at(i + 1).sFileName)) {
+        if (!list.at(i).bIsEmptyFile && !list.at(i + 1).bIsEmptyFile && (list.at(i).nPos == list.at(i + 1).nPos) && (list.at(i).sFileName == list.at(i + 1).sFileName)) {
             list.removeAt(i + 1);
         } else {
             i++;
@@ -1628,8 +1676,7 @@ void XNSIS::_sortItems(UNPACK_CONTEXT *pContext)
             // Synthetic empty files have no solid-stream block. Patched
             // uninstallers do have a block here, but it is only the patch
             // stream; its length is not the reconstructed executable's size.
-            if (list[i].bIsEmptyFile ||
-                (list[i].bIsUninstaller && (list[i].nPatchSize != 0))) {
+            if (list[i].bIsEmptyFile || (list[i].bIsUninstaller && (list[i].nPatchSize != 0))) {
                 continue;
             }
 
@@ -1651,8 +1698,7 @@ void XNSIS::_sortItems(UNPACK_CONTEXT *pContext)
         const quint64 nDataStart = (quint64)pContext->nDataStreamOffset;
         const quint64 nDataSize = (quint64)pContext->nDataSize;
         const qint64 nFileSize = getSize();
-        if ((nFileSize >= 0) && (nDataSize <= (std::numeric_limits<quint64>::max)() - nDataStart) &&
-            (nDataStart + nDataSize <= (quint64)nFileSize)) {
+        if ((nFileSize >= 0) && (nDataSize <= (std::numeric_limits<quint64>::max)() - nDataStart) && (nDataStart + nDataSize <= (quint64)nFileSize)) {
             const quint64 nDataEnd = nDataStart + nDataSize;
             for (int i = 0; i < list.size(); i++) {
                 if (list[i].bIsEmptyFile) {
@@ -1666,8 +1712,7 @@ void XNSIS::_sortItems(UNPACK_CONTEXT *pContext)
                 nRelative += list[i].nPos;
                 if (nRelative > (std::numeric_limits<quint64>::max)() - nDataStart) continue;
                 const quint64 nBlockPos = nDataStart + nRelative;
-                if ((nBlockPos > nDataEnd) || ((nDataEnd - nBlockPos) < 4) ||
-                    (nBlockPos > (quint64)(std::numeric_limits<qint64>::max)())) continue;
+                if ((nBlockPos > nDataEnd) || ((nDataEnd - nBlockPos) < 4) || (nBlockPos > (quint64)(std::numeric_limits<qint64>::max)())) continue;
 
                 const QByteArray baSize = read_array((qint64)nBlockPos, 4);
                 if (baSize.size() != 4) continue;
@@ -1771,8 +1816,8 @@ bool XNSIS::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
     XNSIS detector(guardedSource.data(), isImage(), getModuleAddress());
     const qint64 nTotalSize = guardedSource->size();
     INTERNAL_INFO info = detector._analyse(pPdStruct);
-    if (!guardedThis || !guardedSource || (nTotalSize < 0) || !info.bIsValid ||
-        !pSourceValidator->isUnpackSourceCurrent(&sourceValidationState, pPdStruct) || !guardedThis || !guardedSource) {
+    if (!guardedThis || !guardedSource || (nTotalSize < 0) || !info.bIsValid || !pSourceValidator->isUnpackSourceCurrent(&sourceValidationState, pPdStruct) ||
+        !guardedThis || !guardedSource) {
         pSourceValidator->releaseUnpackSource(&sourceValidationState);
         delete pSourceValidator;
         return false;
@@ -1809,10 +1854,9 @@ bool XNSIS::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
     pContext->nDataOffset = 0;
     pContext->nDataSize = 0;
 
-    if (!detector._findFirstHeader(info.nSignatureOffset, nTotalSize, pContext, pPdStruct) || detector._open(pContext, pPdStruct) == false ||
-        !guardedThis || !guardedSource || !isPdStructNotCanceled(pPdStruct) || pContext->listEntries.isEmpty() ||
-        !pContext->pSourceValidator->validateAndFinalizeUnpackSource(&pContext->sourceValidationState, pPdStruct) ||
-        !guardedThis || !guardedSource) {
+    if (!detector._findFirstHeader(info.nSignatureOffset, nTotalSize, pContext, pPdStruct) || detector._open(pContext, pPdStruct) == false || !guardedThis ||
+        !guardedSource || !isPdStructNotCanceled(pPdStruct) || pContext->listEntries.isEmpty() ||
+        !pContext->pSourceValidator->validateAndFinalizeUnpackSource(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !guardedSource) {
         deleteUnpackContext(pContext);
         return false;
     }
@@ -1838,11 +1882,11 @@ XBinary::ARCHIVERECORD XNSIS::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStr
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     qint32 nIndex = pState->nCurrentIndex;
     if (!pLifetime->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
-        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) ||
-        !pContext->pSourceValidator || (pState->nNumberOfRecords != pContext->listEntries.size()) ||
-        (nIndex < 0) || (nIndex >= pContext->listEntries.size()) ||
-        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis ||
-        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return result;
+        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pSourceValidator ||
+        (pState->nNumberOfRecords != pContext->listEntries.size()) || (nIndex < 0) || (nIndex >= pContext->listEntries.size()) ||
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !pLifetime->bOwnerAlive ||
+        !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
+        return result;
 
     const FILE_ENTRY &entry = pContext->listEntries.at(nIndex);
 
@@ -1889,10 +1933,9 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
     if (!operationGuard.isAcquired()) return false;
     QPointer<XNSIS> guardedThis(this);
     QPointer<QIODevice> guardedOutput(pDevice);
-    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !guardedOutput || !guardedOutput->isOpen() ||
-        !guardedOutput->isWritable() || guardedOutput->isSequential() || !guardedThis || !guardedOutput ||
-        (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) || !XBinary::isResizeEnable(guardedOutput.data()) ||
-        !guardedThis || !guardedOutput || !isPdStructNotCanceled(pPdStruct)) {
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !guardedOutput || !guardedOutput->isOpen() || !guardedOutput->isWritable() ||
+        guardedOutput->isSequential() || !guardedThis || !guardedOutput || (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) ||
+        !XBinary::isResizeEnable(guardedOutput.data()) || !guardedThis || !guardedOutput || !isPdStructNotCanceled(pPdStruct)) {
         return false;
     }
 
@@ -1900,12 +1943,11 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
     qint32 nIndex = pState->nCurrentIndex;
 
     if (!pLifetime->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
-        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) ||
-        !pContext->pSourceValidator || (pState->nNumberOfRecords != pContext->listEntries.size()) ||
-        (nIndex < 0) || (nIndex >= pContext->listEntries.size()) ||
+        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pSourceValidator ||
+        (pState->nNumberOfRecords != pContext->listEntries.size()) || (nIndex < 0) || (nIndex >= pContext->listEntries.size()) ||
         XBinary::devicesAlias(pContext->pOuterSourceDevice.data(), guardedOutput.data()) || !guardedThis || !guardedOutput ||
-        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !guardedOutput ||
-        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) {
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !guardedOutput || !pLifetime->bOwnerAlive ||
+        !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) {
         return false;
     }
 
@@ -1920,8 +1962,8 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
     XNSIS decoder(pContext->pOuterSourceDevice.data(), bOuterIsImage, nOuterModuleAddress);
 
     auto isContextCurrent = [&]() -> bool {
-        return guardedThis && guardedOutput && pLifetime->bOwnerAlive && pLifetime->setContexts.contains(pContext) &&
-               (pContext->pOwnerState == pState) && (pState->pContext == pContext);
+        return guardedThis && guardedOutput && pLifetime->bOwnerAlive && pLifetime->setContexts.contains(pContext) && (pContext->pOwnerState == pState) &&
+               (pState->pContext == pContext);
     };
 
     // Obtain the item's raw (uncompressed) data.
@@ -1969,8 +2011,7 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
 
         const quint64 nDataStart = (quint64)pContext->nDataStreamOffset;
         const quint64 nDataSize = (quint64)pContext->nDataSize;
-        if ((nDataSize > (std::numeric_limits<quint64>::max)() - nDataStart) ||
-            (nDataStart + nDataSize > (quint64)nFileSize)) return false;
+        if ((nDataSize > (std::numeric_limits<quint64>::max)() - nDataStart) || (nDataStart + nDataSize > (quint64)nFileSize)) return false;
         const quint64 nDataEnd = nDataStart + nDataSize;
 
         quint64 nItemRelative = 4;
@@ -1982,8 +2023,7 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
         const quint64 nItemPos = nDataStart + nItemRelative;
 
         auto decodeNonSolidBlock = [&](quint64 nBlockPos, QByteArray *pOutput, quint64 *pNextBlockPos) -> bool {
-            if (!pOutput || (nBlockPos > nDataEnd) || ((nDataEnd - nBlockPos) < 4) ||
-                (nBlockPos > (quint64)(std::numeric_limits<qint64>::max)())) return false;
+            if (!pOutput || (nBlockPos > nDataEnd) || ((nDataEnd - nBlockPos) < 4) || (nBlockPos > (quint64)(std::numeric_limits<qint64>::max)())) return false;
 
             const quint32 nSizeField = decoder.read_uint32((qint64)nBlockPos, false);
             if (!isContextCurrent()) return false;
@@ -2031,12 +2071,10 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
         if ((pContext->nFirstHeaderOffset <= 0) || (pContext->nFirstHeaderOffset > kNsisMaxMemberDecoded)) return false;
         QByteArray baStub = decoder.read_array_process(0, pContext->nFirstHeaderOffset, pPdStruct);
         if (!isContextCurrent()) return false;
-        if ((baStub.size() != pContext->nFirstHeaderOffset) ||
-            ((qint64)baStub.size() > kNsisMaxMemberDecoded - (qint64)baSolidTail.size())) return false;
+        if ((baStub.size() != pContext->nFirstHeaderOffset) || ((qint64)baStub.size() > kNsisMaxMemberDecoded - (qint64)baSolidTail.size())) return false;
 
         QByteArray baPatched = baStub;
-        if (!decoder._uninstallerPatch(baData, &baPatched) ||
-            ((qint64)baPatched.size() > kNsisMaxMemberDecoded - (qint64)baSolidTail.size())) return false;
+        if (!decoder._uninstallerPatch(baData, &baPatched) || ((qint64)baPatched.size() > kNsisMaxMemberDecoded - (qint64)baSolidTail.size())) return false;
         baPatched.append(baSolidTail);
         baData = baPatched;
     }
@@ -2055,16 +2093,16 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
     }
 
     if (!writeUnpackData(&stageState, &stage, baData, pPdStruct) || !isContextCurrent()) return false;
-    if (!guardedThis || !guardedOutput || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) ||
-        (pState->pContext != pContext) ||
-        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !guardedOutput ||
-        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return false;
+    if (!guardedThis || !guardedOutput || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !guardedOutput || !pLifetime->bOwnerAlive ||
+        !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
+        return false;
     NsisPublisher publisher(pContext->pOuterSourceDevice.data());
     UNPACK_STATE publicationState = {};
-    if (!publisher.bindUnpackSource(&publicationState, pPdStruct) ||
-        !publisher.validateAndFinalizeUnpackSource(&publicationState, pPdStruct) || !guardedThis || !guardedOutput ||
-        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||
-        !publisher.publishUnpackOutput(&stage, guardedOutput.data(), &publicationState, pPdStruct) || !isContextCurrent()) return false;
+    if (!publisher.bindUnpackSource(&publicationState, pPdStruct) || !publisher.validateAndFinalizeUnpackSource(&publicationState, pPdStruct) || !guardedThis ||
+        !guardedOutput || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||
+        !publisher.publishUnpackOutput(&stage, guardedOutput.data(), &publicationState, pPdStruct) || !isContextCurrent())
+        return false;
     pState->nCurrentOffset = stage.size();
     return true;
 }
@@ -2081,15 +2119,15 @@ bool XNSIS::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     }
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     if (!pLifetime->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
-        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) ||
-        !pContext->pSourceValidator || (pState->nNumberOfRecords != pContext->listEntries.size()) ||
-        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis ||
-        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return false;
+        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pSourceValidator ||
+        (pState->nNumberOfRecords != pContext->listEntries.size()) || !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
+        !guardedThis || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
+        return false;
     pState->nCurrentIndex++;
     pState->nCurrentOffset = 0;
     const bool bCurrent = pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct);
-    return bCurrent && guardedThis && pLifetime->bOwnerAlive && pLifetime->setContexts.contains(pContext) &&
-           (pState->pContext == pContext) && (pState->nCurrentIndex < pState->nNumberOfRecords);
+    return bCurrent && guardedThis && pLifetime->bOwnerAlive && pLifetime->setContexts.contains(pContext) && (pState->pContext == pContext) &&
+           (pState->nCurrentIndex < pState->nNumberOfRecords);
 }
 
 bool XNSIS::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)

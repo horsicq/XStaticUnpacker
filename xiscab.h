@@ -60,21 +60,14 @@ public:
     OSNAME getOsName() override;
     QString getVersion() override;
     QList<QString> getSearchSignatures() override;
-    XBinary *createInstance(QIODevice *pDevice, bool bIsImage = false,
-                            XADDR nModuleAddress = -1) override;
+    XBinary *createInstance(QIODevice *pDevice, bool bIsImage = false, XADDR nModuleAddress = -1) override;
 
     QMap<UNPACK_PROP, QVariant> getDefaultUnpackProperties() override;
-    bool initUnpack(UNPACK_STATE *pState,
-                    const QMap<UNPACK_PROP, QVariant> &mapProperties,
-                    PDSTRUCT *pPdStruct = nullptr) override;
-    ARCHIVERECORD infoCurrent(UNPACK_STATE *pState,
-                              PDSTRUCT *pPdStruct = nullptr) override;
-    bool unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice,
-                       PDSTRUCT *pPdStruct = nullptr) override;
-    bool moveToNext(UNPACK_STATE *pState,
-                    PDSTRUCT *pPdStruct = nullptr) override;
-    bool finishUnpack(UNPACK_STATE *pState,
-                      PDSTRUCT *pPdStruct = nullptr) override;
+    bool initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct = nullptr) override;
+    ARCHIVERECORD infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
+    bool unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
+    bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
+    bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     QList<FPART_PROP> getAvailableFPARTProperties() override;
 
 private:
@@ -112,19 +105,10 @@ private:
     };
 
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
-    bool _readCommonHeader(QIODevice *pDevice, COMMON_HEADER *pHeader,
-                           PDSTRUCT *pPdStruct) const;
-    bool _loadCatalog(QByteArray *pCatalog, QString *pMediaPrefix,
-                      QString *pSourcePath, COMMON_HEADER *pHeader,
-                      PDSTRUCT *pPdStruct) const;
-    bool _parseCatalog(const QByteArray &baCatalog,
-                       const COMMON_HEADER &common,
-                       QList<FILE_ENTRY> *pEntries,
-                       QList<qint32> *pVisibleIndices,
-                       PDSTRUCT *pPdStruct) const;
-    bool _extractEntry(const UNPACK_CONTEXT *pContext, qint32 nEntryIndex,
-                       QIODevice *pStageDevice, UNPACK_STATE *pState,
-                       PDSTRUCT *pPdStruct) const;
+    bool _readCommonHeader(QIODevice *pDevice, COMMON_HEADER *pHeader, PDSTRUCT *pPdStruct) const;
+    bool _loadCatalog(QByteArray *pCatalog, QString *pMediaPrefix, QString *pSourcePath, COMMON_HEADER *pHeader, PDSTRUCT *pPdStruct) const;
+    bool _parseCatalog(const QByteArray &baCatalog, const COMMON_HEADER &common, QList<FILE_ENTRY> *pEntries, QList<qint32> *pVisibleIndices, PDSTRUCT *pPdStruct) const;
+    bool _extractEntry(const UNPACK_CONTEXT *pContext, qint32 nEntryIndex, QIODevice *pStageDevice, UNPACK_STATE *pState, PDSTRUCT *pPdStruct) const;
 
 private:
     INTERNAL_INFO m_internalInfo;

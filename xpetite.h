@@ -95,8 +95,8 @@ private:
     static int _doubledl(const quint8 *buf, qint64 bufsz, qint64 *pSrcOff, quint8 *pMydl);
     static bool _inflate(quint8 *buf, quint32 nMinRva, quint32 bufsz, const QList<XPE_DEF::IMAGE_SECTION_HEADER> &listSections, int nSectCount, quint32 nImageBase,
                          quint32 nPep, int nVersion, QList<USECT> *pOut, quint32 *pEncEp, PDSTRUCT *pPdStruct, bool *pbDegradedOEP = nullptr);
-    static QByteArray _buildPE(const QByteArray &baBuf, const QList<USECT> &listOut, quint32 nImageBase, quint32 nOEP, quint32 nResRva,
-                               quint32 nResSize, qint64 nOutputLimit = -1);
+    static QByteArray _buildPE(const QByteArray &baBuf, const QList<USECT> &listOut, quint32 nImageBase, quint32 nOEP, quint32 nResRva, quint32 nResSize,
+                               qint64 nOutputLimit = -1);
 };
 
 #endif  // XPETITE_H

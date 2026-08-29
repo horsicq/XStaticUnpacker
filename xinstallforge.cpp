@@ -28,15 +28,16 @@ void installForgeCRCProgressCallback(void *pUserData, XBinary::PDSTRUCT *pLocalP
     InstallForgeCRCProgressBridge *pBridge = static_cast<InstallForgeCRCProgressBridge *>(pUserData);
     if (!pBridge || !pLocalProgress) return;
 
-    if (!XBinary::isPdStructLifetimeAlive(pBridge->originalLifetime) ||
-        !XBinary::isPdStructNotCanceled(pBridge->pOriginal)) {
+    if (!XBinary::isPdStructLifetimeAlive(pBridge->originalLifetime) || !XBinary::isPdStructNotCanceled(pBridge->pOriginal)) {
         XBinary::setPdStructStopped(pLocalProgress);
     }
 }
 
 class XInstallForgeTarBzip2 : public XTAR_BZIP2 {
 public:
-    explicit XInstallForgeTarBzip2(QIODevice *pDevice) : XTAR_BZIP2(pDevice) {}
+    explicit XInstallForgeTarBzip2(QIODevice *pDevice) : XTAR_BZIP2(pDevice)
+    {
+    }
 
 protected:
     bool getOuterStreamInfo(qint64 &nOuterStreamOffset, qint64 &nOuterStreamSize, HANDLE_METHOD &handleMethod) override
@@ -50,34 +51,31 @@ protected:
 
 class XInstallForgeTarGzip : public XTAR_GZ {
 public:
-    explicit XInstallForgeTarGzip(QIODevice *pDevice) : XTAR_GZ(pDevice) {}
+    explicit XInstallForgeTarGzip(QIODevice *pDevice) : XTAR_GZ(pDevice)
+    {
+    }
 
     bool initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct = nullptr) override
     {
         QPointer<XInstallForgeTarGzip> guardedArchive(this);
         const XBinary::PDSTRUCTLIFETIME progressLifetime = XBinary::retainPdStructLifetime(pPdStruct);
-        if (!XTAR_GZ::initUnpack(pState, mapProperties, pPdStruct) || !guardedArchive ||
-            (pPdStruct && !XBinary::isPdStructLifetimeAlive(progressLifetime))) return false;
+        if (!XTAR_GZ::initUnpack(pState, mapProperties, pPdStruct) || !guardedArchive || (pPdStruct && !XBinary::isPdStructLifetimeAlive(progressLifetime))) return false;
 
         const qint64 nCompressedSize = guardedArchive->getSize();
         if (!guardedArchive || (pPdStruct && !XBinary::isPdStructLifetimeAlive(progressLifetime))) return false;
         QPointer<QIODevice> guardedDecompressed(guardedArchive->m_pDecompressedData);
         const qint64 nDecompressedSize = guardedDecompressed ? guardedDecompressed->size() : -1;
-        if (!guardedArchive || !guardedDecompressed ||
-            (pPdStruct && !XBinary::isPdStructLifetimeAlive(progressLifetime))) return false;
+        if (!guardedArchive || !guardedDecompressed || (pPdStruct && !XBinary::isPdStructLifetimeAlive(progressLifetime))) return false;
         bool bIntegrityValid = (nCompressedSize >= 18) && (nDecompressedSize >= 0);
         if (bIntegrityValid) {
             const quint32 nStoredSize = guardedArchive->read_uint32(nCompressedSize - 4);
-            if (!guardedArchive || !guardedDecompressed ||
-                (pPdStruct && !XBinary::isPdStructLifetimeAlive(progressLifetime))) return false;
-            bIntegrityValid = ((quint64)nDecompressedSize == (quint64)nStoredSize) &&
-                              XBinary::isPdStructNotCanceled(pPdStruct);
+            if (!guardedArchive || !guardedDecompressed || (pPdStruct && !XBinary::isPdStructLifetimeAlive(progressLifetime))) return false;
+            bIntegrityValid = ((quint64)nDecompressedSize == (quint64)nStoredSize) && XBinary::isPdStructNotCanceled(pPdStruct);
         }
 
         if (bIntegrityValid) {
             const quint32 nStoredCRC32 = guardedArchive->read_uint32(nCompressedSize - 8);
-            if (!guardedArchive || !guardedDecompressed ||
-                (pPdStruct && !XBinary::isPdStructLifetimeAlive(progressLifetime))) return false;
+            if (!guardedArchive || !guardedDecompressed || (pPdStruct && !XBinary::isPdStructLifetimeAlive(progressLifetime))) return false;
 
             // The footer check must not invoke the caller callback after the
             // base archive has published state owned by pState.  A private
@@ -90,11 +88,8 @@ public:
                 crcProgress.nFileBufferSize.storeRelease(progressSnapshot.nFileBufferSize.loadAcquire());
                 XBinary::setPdStructCallback(&crcProgress, installForgeCRCProgressCallback, &progressBridge);
             }
-            bIntegrityValid = XBinary::checkCRC(guardedDecompressed.data(), CRC_TYPE_FFFFFFFF_EDB88320_FFFFFFFFF,
-                                                nStoredCRC32, &crcProgress) &&
-                              guardedArchive && guardedDecompressed &&
-                              (!pPdStruct || XBinary::isPdStructLifetimeAlive(progressLifetime)) &&
-                              XBinary::isPdStructNotCanceled(pPdStruct);
+            bIntegrityValid = XBinary::checkCRC(guardedDecompressed.data(), CRC_TYPE_FFFFFFFF_EDB88320_FFFFFFFFF, nStoredCRC32, &crcProgress) && guardedArchive &&
+                              guardedDecompressed && (!pPdStruct || XBinary::isPdStructLifetimeAlive(progressLifetime)) && XBinary::isPdStructNotCanceled(pPdStruct);
         }
 
         if (!bIntegrityValid) {
@@ -114,15 +109,13 @@ bool decodeInstallForgeName(const QString &sEncodedName, QString *pResult)
     const QByteArray baDecoded = QByteArray::fromBase64(baEncoded);
 
     // InstallForge stores entry names as canonical base64(UTF-16LE(name)).
-    if (baDecoded.isEmpty() || (baDecoded.size() > 0x10000) ||
-        ((baDecoded.size() & 1) != 0) || (baDecoded.toBase64() != baEncoded)) return false;
+    if (baDecoded.isEmpty() || (baDecoded.size() > 0x10000) || ((baDecoded.size() & 1) != 0) || (baDecoded.toBase64() != baEncoded)) return false;
 
     QString sResult;
     sResult.reserve(baDecoded.size() / 2);
 
     for (qint32 i = 0; i < baDecoded.size(); i += 2) {
-        const quint16 nCodeUnit = static_cast<quint8>(baDecoded.at(i)) |
-                                  (static_cast<quint16>(static_cast<quint8>(baDecoded.at(i + 1))) << 8);
+        const quint16 nCodeUnit = static_cast<quint8>(baDecoded.at(i)) | (static_cast<quint16>(static_cast<quint8>(baDecoded.at(i + 1))) << 8);
         if (nCodeUnit == 0) {
             if (i != (baDecoded.size() - 2)) return false;
             break;
@@ -130,8 +123,7 @@ bool decodeInstallForgeName(const QString &sEncodedName, QString *pResult)
 
         if ((nCodeUnit >= 0xD800) && (nCodeUnit <= 0xDBFF)) {
             if (i + 3 >= baDecoded.size()) return false;
-            const quint16 nLow = static_cast<quint8>(baDecoded.at(i + 2)) |
-                                 (static_cast<quint16>(static_cast<quint8>(baDecoded.at(i + 3))) << 8);
+            const quint16 nLow = static_cast<quint8>(baDecoded.at(i + 2)) | (static_cast<quint16>(static_cast<quint8>(baDecoded.at(i + 3))) << 8);
             if ((nLow < 0xDC00) || (nLow > 0xDFFF)) return false;
             sResult.append(QChar(nCodeUnit));
             sResult.append(QChar(nLow));
@@ -149,12 +141,11 @@ bool decodeInstallForgeName(const QString &sEncodedName, QString *pResult)
     if (QDir::isAbsolutePath(sResult) || sResult.startsWith('/') || sResult.contains(':')) return false;
 
     static const QString sForbidden = QStringLiteral("<>:\"\\|?*");
-    static const QSet<QString> setReserved = {
-        QStringLiteral("CON"),  QStringLiteral("PRN"),  QStringLiteral("AUX"),  QStringLiteral("NUL"),  QStringLiteral("COM1"),
-        QStringLiteral("COM2"), QStringLiteral("COM3"), QStringLiteral("COM4"), QStringLiteral("COM5"), QStringLiteral("COM6"),
-        QStringLiteral("COM7"), QStringLiteral("COM8"), QStringLiteral("COM9"), QStringLiteral("LPT1"), QStringLiteral("LPT2"),
-        QStringLiteral("LPT3"), QStringLiteral("LPT4"), QStringLiteral("LPT5"), QStringLiteral("LPT6"), QStringLiteral("LPT7"),
-        QStringLiteral("LPT8"), QStringLiteral("LPT9")};
+    static const QSet<QString> setReserved = {QStringLiteral("CON"),  QStringLiteral("PRN"),  QStringLiteral("AUX"),  QStringLiteral("NUL"),  QStringLiteral("COM1"),
+                                              QStringLiteral("COM2"), QStringLiteral("COM3"), QStringLiteral("COM4"), QStringLiteral("COM5"), QStringLiteral("COM6"),
+                                              QStringLiteral("COM7"), QStringLiteral("COM8"), QStringLiteral("COM9"), QStringLiteral("LPT1"), QStringLiteral("LPT2"),
+                                              QStringLiteral("LPT3"), QStringLiteral("LPT4"), QStringLiteral("LPT5"), QStringLiteral("LPT6"), QStringLiteral("LPT7"),
+                                              QStringLiteral("LPT8"), QStringLiteral("LPT9")};
     const QStringList listParts = sResult.split('/');
     for (const QString &sPart : listParts) {
         if (sPart.isEmpty() || (sPart == ".") || (sPart == "..") || (sPart.size() > 255) || sPart.endsWith(' ') || sPart.endsWith('.')) {
@@ -166,13 +157,11 @@ bool decodeInstallForgeName(const QString &sEncodedName, QString *pResult)
             if ((!bSurrogate && !character.isPrint()) || (character == QChar::ReplacementCharacter) || sForbidden.contains(character)) return false;
         }
         QString sDeviceName = sPart.section('.', 0, 0).toUpper();
-        bool bReservedDigit = (sDeviceName.size() == 4) &&
-                              (((sDeviceName.at(3) >= QChar('1')) && (sDeviceName.at(3) <= QChar('9'))) ||
-                               (sDeviceName.at(3) == QChar(0x00B9)) || (sDeviceName.at(3) == QChar(0x00B2)) ||
-                               (sDeviceName.at(3) == QChar(0x00B3)));
+        bool bReservedDigit =
+            (sDeviceName.size() == 4) && (((sDeviceName.at(3) >= QChar('1')) && (sDeviceName.at(3) <= QChar('9'))) || (sDeviceName.at(3) == QChar(0x00B9)) ||
+                                          (sDeviceName.at(3) == QChar(0x00B2)) || (sDeviceName.at(3) == QChar(0x00B3)));
         bool bNumberedDevice = (sDeviceName.startsWith("COM") || sDeviceName.startsWith("LPT")) && bReservedDigit;
-        if (setReserved.contains(sDeviceName) || (sDeviceName == "CLOCK$") || (sDeviceName == "CONIN$") ||
-            (sDeviceName == "CONOUT$") || bNumberedDevice) {
+        if (setReserved.contains(sDeviceName) || (sDeviceName == "CLOCK$") || (sDeviceName == "CONIN$") || (sDeviceName == "CONOUT$") || bNumberedDevice) {
             return false;
         }
     }
@@ -224,8 +213,7 @@ bool XInstallForge::isValid(PDSTRUCT *pPdStruct)
 {
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
     QPointer<XInstallForge> guardedThis(this);
-    const INTERNAL_INFO *pInfo =
-        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
+    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
     return guardedThis && pInfo && pInfo->bIsValid;
 }
 
@@ -248,8 +236,7 @@ bool XInstallForge::handleInternalInfo(PDSTRUCT *pPdStruct)
     if (!guardedThis) return false;
 
     if (!bAlreadyHandled) {
-        const quint64 nTransaction =
-            guardedThis->beginInternalInfoTransaction();
+        const quint64 nTransaction = guardedThis->beginInternalInfoTransaction();
         if (!nTransaction) return false;
 
         // The transaction supplies the recursion sentinel. Keep every
@@ -257,17 +244,14 @@ bool XInstallForge::handleInternalInfo(PDSTRUCT *pPdStruct)
         guardedThis->m_internalInfo = INTERNAL_INFO();
         INTERNAL_INFO info = guardedThis->_getInternalInfo(pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
 
-        const auto memoryMap =
-            guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -278,10 +262,7 @@ bool XInstallForge::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
         guardedThis->m_internalInfo = info;
-        if (!guardedThis->commitInternalInfoTransaction(
-                nTransaction,
-                static_cast<XBinary::INTERNAL_INFO *>(
-                    &guardedThis->m_internalInfo))) {
+        if (!guardedThis->commitInternalInfoTransaction(nTransaction, static_cast<XBinary::INTERNAL_INFO *>(&guardedThis->m_internalInfo))) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -351,8 +332,7 @@ XInstallForge::INTERNAL_INFO XInstallForge::_detect(PDSTRUCT *pPdStruct)
     result.payload = PAYLOAD_UNKNOWN;
     if ((pPayload[0] == 0x37) && (pPayload[1] == 0x7A) && (pPayload[2] == 0xBC) && (pPayload[3] == 0xAF) && (pPayload[4] == 0x27) && (pPayload[5] == 0x1C)) {
         result.payload = PAYLOAD_7Z;
-    } else if ((pPayload[0] == 0x42) && (pPayload[1] == 0x5A) && (pPayload[2] == 0x68) &&
-               (pPayload[3] >= '1') && (pPayload[3] <= '9')) {
+    } else if ((pPayload[0] == 0x42) && (pPayload[1] == 0x5A) && (pPayload[2] == 0x68) && (pPayload[3] >= '1') && (pPayload[3] <= '9')) {
         result.payload = PAYLOAD_BZIP2;  // "BZh"
     } else if ((pPayload[0] == 0x1F) && (pPayload[1] == 0x8B) && (pPayload[2] == 8) && ((pPayload[3] & 0xE0) == 0)) {
         result.payload = PAYLOAD_GZIP;
@@ -579,15 +559,17 @@ XBinary::ARCHIVERECORD XInstallForge::infoCurrent(UNPACK_STATE *pState, PDSTRUCT
     if (!pOperationState || *pOperationState) return result;
     QScopedValueRollback<bool> operationGuard(*pOperationState, true);
     QPointer<XInstallForge> guardedThis(this);
-    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) ||
-        (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) return result;
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+        (pState->nCurrentIndex >= pState->nNumberOfRecords))
+        return result;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
-        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pArchive) return result;
+    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice || (pContext->pOuterSourceDevice != getDevice()) ||
+        (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pArchive)
+        return result;
     if (pState->nCurrentIndex >= pContext->listDecodedNames.size()) return result;
-    if ((pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
-        (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
-        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords)) return result;
+    if ((pContext->innerState.nCurrentIndex != pState->nCurrentIndex) || (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
+        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords))
+        return result;
     result = pContext->pArchive->infoCurrent(&pContext->innerState, pPdStruct);
     if (!guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return ARCHIVERECORD();
     result.mapProperties.insert(FPART_PROP_ORIGINALNAME, pContext->listDecodedNames.at(pState->nCurrentIndex));
@@ -601,19 +583,18 @@ bool XInstallForge::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDST
     QScopedValueRollback<bool> operationGuard(*pOperationState, true);
     QPointer<XInstallForge> guardedThis(this);
     QPointer<QIODevice> guardedOutput(pDevice);
-    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !guardedOutput || !guardedOutput->isOpen() ||
-        !guardedOutput->isWritable() || guardedOutput->isSequential() || !guardedThis || !guardedOutput ||
-        (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) ||
-        !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
-        (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !guardedOutput || !guardedOutput->isOpen() || !guardedOutput->isWritable() ||
+        guardedOutput->isSequential() || !guardedThis || !guardedOutput || (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) ||
+        !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
         return false;
     }
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
-        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pArchive) return false;
-    if ((pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
-        (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
-        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords)) return false;
+    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice || (pContext->pOuterSourceDevice != getDevice()) ||
+        (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pArchive)
+        return false;
+    if ((pContext->innerState.nCurrentIndex != pState->nCurrentIndex) || (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
+        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords))
+        return false;
     pContext->innerState.spOutputBudget = pState->spOutputBudget;
     bool bResult = pContext->pArchive->unpackCurrent(&pContext->innerState, guardedOutput.data(), pPdStruct);
     if (!guardedThis || !guardedOutput || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
@@ -628,14 +609,16 @@ bool XInstallForge::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     if (!pOperationState || *pOperationState) return false;
     QScopedValueRollback<bool> operationGuard(*pOperationState, true);
     QPointer<XInstallForge> guardedThis(this);
-    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) ||
-        (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) return false;
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+        (pState->nCurrentIndex >= pState->nNumberOfRecords))
+        return false;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
-        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pArchive) return false;
-    if ((pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
-        (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
-        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords)) return false;
+    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice || (pContext->pOuterSourceDevice != getDevice()) ||
+        (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pArchive)
+        return false;
+    if ((pContext->innerState.nCurrentIndex != pState->nCurrentIndex) || (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
+        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords))
+        return false;
     bool bResult = pContext->pArchive->moveToNext(&pContext->innerState, pPdStruct);
     if (!guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
     pState->nCurrentIndex = pContext->innerState.nCurrentIndex;

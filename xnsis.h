@@ -54,19 +54,19 @@ public:
 
     // A single extractable file (built from an EW_EXTRACTFILE / EW_WRITEUNINSTALLER instruction)
     struct FILE_ENTRY {
-        QString sFileName;         // reduced (relative) name
-        QString sPath;             // reduced SetOutPath ($OUTDIR) directory this file is extracted to
-        quint32 nPos;              // position of the file inside the data block
-        quint32 nSize;             // uncompressed size (if known)
-        bool bSizeDefined;         // whether nSize is known before extraction
-        bool bIsCompressed;        // non-solid: this block is compressed
-        quint32 nCompressedSize;   // non-solid: size of the compressed block (without the 4-byte header)
+        QString sFileName;            // reduced (relative) name
+        QString sPath;                // reduced SetOutPath ($OUTDIR) directory this file is extracted to
+        quint32 nPos;                 // position of the file inside the data block
+        quint32 nSize;                // uncompressed size (if known)
+        bool bSizeDefined;            // whether nSize is known before extraction
+        bool bIsCompressed;           // non-solid: this block is compressed
+        quint32 nCompressedSize;      // non-solid: size of the compressed block (without the 4-byte header)
         bool bCompressedSizeDefined;  // whether nCompressedSize came from a valid block header
         quint32 nMTimeLow;
         quint32 nMTimeHigh;
         bool bIsEmptyFile;
-        bool bIsUninstaller;       // built from EW_WRITEUNINSTALLER (may be a patched stub)
-        quint32 nPatchSize;        // nonzero when the uninstaller data is a patch for the installer stub
+        bool bIsUninstaller;  // built from EW_WRITEUNINSTALLER (may be a patched stub)
+        quint32 nPatchSize;   // nonzero when the uninstaller data is a patch for the installer stub
     };
 
     // Order file entries by ascending data-block position (std::stable_sort comparator).
@@ -79,27 +79,27 @@ public:
         XArchive *pSourceValidator;
         UNPACK_STATE sourceValidationState;
         // ---- first header ----
-        qint64 nFirstHeaderOffset;   // offset of the 0x1C-byte first header
-        qint64 nDataStreamOffset;    // nFirstHeaderOffset + 0x1C
+        qint64 nFirstHeaderOffset;  // offset of the 0x1C-byte first header
+        qint64 nDataStreamOffset;   // nFirstHeaderOffset + 0x1C
         quint32 nFlags;
-        quint32 nHeaderSize;         // uncompressed header size
+        quint32 nHeaderSize;  // uncompressed header size
         quint32 nArchiveSize;
 
         // ---- compression ----
         NMETHOD method;
         XBinary::HANDLE_METHOD compressMethod;  // mirror of method for reporting/tests
         bool bIsSolid;
-        bool bFilterFlag;            // 7-Zip-modified NSIS with BCJ filter
+        bool bFilterFlag;  // 7-Zip-modified NSIS with BCJ filter
         bool bHeaderIsCompressed;
         quint32 nNonSolidStartOffset;
 
         // ---- parsed header ----
-        QByteArray baHeader;         // decompressed header (blocks + strings)
-        quint32 nStringsPos;         // string table offset inside baHeader
-        quint32 nNumStringChars;     // string table size (in chars)
+        QByteArray baHeader;      // decompressed header (blocks + strings)
+        quint32 nStringsPos;      // string table offset inside baHeader
+        quint32 nNumStringChars;  // string table size (in chars)
         bool bIsUnicode;
         bool bIs64Bit;
-        qint32 nNsisType;            // NSISTYPE
+        qint32 nNsisType;  // NSISTYPE
         bool bIsNsis225;
 
         // ---- items ----
@@ -110,12 +110,14 @@ public:
         bool bSolidDecoded;
 
         // ---- fields kept for reporting / test compatibility ----
-        qint64 nDataOffset;          // = nDataStreamOffset
-        qint64 nDataSize;            // size of the compressed data region
+        qint64 nDataOffset;  // = nDataStreamOffset
+        qint64 nDataSize;    // size of the compressed data region
     };
 
     struct UNPACK_LIFETIME_STATE {
-        UNPACK_LIFETIME_STATE() : bOperationInProgress(false), bOwnerAlive(true) {}
+        UNPACK_LIFETIME_STATE() : bOperationInProgress(false), bOwnerAlive(true)
+        {
+        }
         ~UNPACK_LIFETIME_STATE();
         bool bOperationInProgress;
         bool bOwnerAlive;
@@ -147,8 +149,8 @@ public:
 protected:
     bool isDeviceReplacementAllowed() const override
     {
-        return m_pUnpackLifetimeState && m_pUnpackLifetimeState->bOwnerAlive &&
-               !m_pUnpackLifetimeState->bOperationInProgress && m_pUnpackLifetimeState->setContexts.isEmpty();
+        return m_pUnpackLifetimeState && m_pUnpackLifetimeState->bOwnerAlive && !m_pUnpackLifetimeState->bOperationInProgress &&
+               m_pUnpackLifetimeState->setContexts.isEmpty();
     }
 
 private:
@@ -166,12 +168,9 @@ private:
     // low-level decompressors: decode one raw block
     bool _decodeBlock(NMETHOD method, bool bFilterFlag, const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit,
                       QByteArray *pResult, PDSTRUCT *pPdStruct);
-    bool _lzmaDecode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit, QByteArray *pResult,
-                     PDSTRUCT *pPdStruct);
-    bool _inflateRaw(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit, QByteArray *pResult,
-                     PDSTRUCT *pPdStruct);
-    bool _bzip2Decode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit, QByteArray *pResult,
-                      PDSTRUCT *pPdStruct);
+    bool _lzmaDecode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit, QByteArray *pResult, PDSTRUCT *pPdStruct);
+    bool _inflateRaw(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit, QByteArray *pResult, PDSTRUCT *pPdStruct);
+    bool _bzip2Decode(const quint8 *pSrc, qint64 nSrcSize, qint64 nOutHint, bool bOutHintKnown, qint64 nOutputLimit, QByteArray *pResult, PDSTRUCT *pPdStruct);
 
     // header parse
     bool _parseHeader(UNPACK_CONTEXT *pContext);

@@ -61,15 +61,13 @@ XYODA::LIFETIME_STATE::~LIFETIME_STATE()
 bool XYODA::isDeviceReplacementAllowed() const
 {
     const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
-    return pLifetimeState && pLifetimeState->bOwnerAlive &&
-           !pLifetimeState->bOperationInProgress && pLifetimeState->setContexts.isEmpty();
+    return pLifetimeState && pLifetimeState->bOwnerAlive && !pLifetimeState->bOperationInProgress && pLifetimeState->setContexts.isEmpty();
 }
 
 bool XYODA::isValid(PDSTRUCT *pPdStruct)
 {
     QPointer<XYODA> guardedThis(this);
-    const INTERNAL_INFO *pInfo =
-        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
+    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
     return guardedThis && pInfo && pInfo->bIsValid;
 }
 
@@ -87,10 +85,8 @@ XBinary::FT XYODA::getFileType()
 QString XYODA::getVersion()
 {
     QPointer<XYODA> guardedThis(this);
-    const INTERNAL_INFO *pInfo =
-        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo());
-    return (guardedThis && pInfo && pInfo->bIsValid) ? pInfo->sVersion
-                                                     : QString();
+    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo());
+    return (guardedThis && pInfo && pInfo->bIsValid) ? pInfo->sVersion : QString();
 }
 
 XYODA::INTERNAL_INFO XYODA::_getInternalInfo(PDSTRUCT *pPdStruct)
@@ -106,8 +102,7 @@ bool XYODA::handleInternalInfo(PDSTRUCT *pPdStruct)
     if (!guardedThis) return false;
 
     if (!bAlreadyHandled) {
-        const quint64 nTransaction =
-            guardedThis->beginInternalInfoTransaction();
+        const quint64 nTransaction = guardedThis->beginInternalInfoTransaction();
         if (!nTransaction) return false;
 
         // The transaction supplies the recursion sentinel. Keep every
@@ -115,17 +110,14 @@ bool XYODA::handleInternalInfo(PDSTRUCT *pPdStruct)
         guardedThis->m_internalInfo = INTERNAL_INFO();
         INTERNAL_INFO info = guardedThis->_getInternalInfo(pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
 
-        const auto memoryMap =
-            guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -136,10 +128,7 @@ bool XYODA::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
         guardedThis->m_internalInfo = info;
-        if (!guardedThis->commitInternalInfoTransaction(
-                nTransaction,
-                static_cast<XBinary::INTERNAL_INFO *>(
-                    &guardedThis->m_internalInfo))) {
+        if (!guardedThis->commitInternalInfoTransaction(nTransaction, static_cast<XBinary::INTERNAL_INFO *>(&guardedThis->m_internalInfo))) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -252,10 +241,8 @@ int XYODA::_polyEmulate(quint8 *pBase, qint64 nFileSize, qint64 nDecOff, qint64 
                     break;
                 case 0x90:
                 case 0xf8:
-                case 0xf9:
-                    break;
-                default:
-                    return 1;
+                case 0xf9: break;
+                default: return 1;
             }
         }
 
@@ -350,14 +337,12 @@ XYODA::INTERNAL_INFO XYODA::_detect(PDSTRUCT *pPdStruct)
     const qint64 nLastRaw = listSections.at(n - 1).PointerToRawData;
     const qint64 nYcSect = nLastRaw + nOffset;
     const auto isRangeWithinFile = [nFileSize](qint64 nOffset, qint64 nSize) -> bool {
-        return (nFileSize >= 0) && (nOffset >= 0) && (nSize >= 0) &&
-               (nOffset <= nFileSize) && (nSize <= nFileSize - nOffset);
+        return (nFileSize >= 0) && (nOffset >= 0) && (nSize >= 0) && (nOffset <= nFileSize) && (nSize <= nFileSize - nOffset);
     };
     // yc.c consumes both regions unconditionally: the first-layer encrypted
     // code and the stored original entry point.  Reject a partial candidate
     // here instead of publishing an output with the packed OEP left intact.
-    if (!isRangeWithinFile(nYcSect + 0xc6, nEcx) ||
-        !isRangeWithinFile(nYcSect + 0xa0f, 4)) {
+    if (!isRangeWithinFile(nYcSect + 0xc6, nEcx) || !isRangeWithinFile(nYcSect + 0xa0f, 4)) {
         return result;
     }
 
@@ -386,9 +371,7 @@ bool XYODA::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
     qint64 nOutputLimit = -1;
     if (!getUnpackOutputLimit(mapProperties, &nOutputLimit)) return false;
     const PDSTRUCTLIFETIME progressLifetime = pPdStruct ? retainPdStructLifetime(pPdStruct) : PDSTRUCTLIFETIME();
-    const auto isProgressAlive = [&]() -> bool {
-        return !pPdStruct || isPdStructLifetimeAlive(progressLifetime);
-    };
+    const auto isProgressAlive = [&]() -> bool { return !pPdStruct || isPdStructLifetimeAlive(progressLifetime); };
     if (!isProgressAlive()) return false;
     const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
     if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return false;
@@ -397,9 +380,9 @@ bool XYODA::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
 
     if (pState->pContext || !pState->baUnpackSourceToken.isEmpty()) {
         UNPACK_CONTEXT *pOldContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-        if (!pOldContext || !pLifetimeState->setContexts.contains(pOldContext) ||
-            (pOldContext->pOwnerState != pState) ||
-            (pOldContext->baToken != pState->baUnpackSourceToken)) return false;
+        if (!pOldContext || !pLifetimeState->setContexts.contains(pOldContext) || (pOldContext->pOwnerState != pState) ||
+            (pOldContext->baToken != pState->baUnpackSourceToken))
+            return false;
         pLifetimeState->setContexts.remove(pOldContext);
         *pState = UNPACK_STATE();
         delete pOldContext;
@@ -415,31 +398,29 @@ bool XYODA::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
     const XADDR nModuleAddress = getModuleAddress();
     if (!guardedSource) return false;
     const QString sFileName = getUnpackedFileName(guardedSource.data());
-    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data())) return false;
+    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data())) return false;
     const qint64 nSourceSize = guardedSource->size();
-    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data()) || (nSourceSize < 0)) return false;
+    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) || (nSourceSize < 0))
+        return false;
     QScopedPointer<XMaterializedUnpackGuard> pSourceGuard(XMaterializedUnpackGuard::bind(guardedSource.data(), pPdStruct));
-    if (!isProgressAlive() || !pSourceGuard || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data())) return false;
+    if (!isProgressAlive() || !pSourceGuard || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+        return false;
 
     QScopedPointer<QIODevice> pSnapshot(createFileBuffer(nSourceSize, pPdStruct));
-    if (!isProgressAlive() || !guardedThis || !guardedSource || !pSnapshot ||
-        (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data())) return false;
+    if (!isProgressAlive() || !guardedThis || !guardedSource || !pSnapshot || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+        return false;
     const bool bCopied = copyDeviceMemory(guardedSource.data(), 0, pSnapshot.data(), 0, nSourceSize, pPdStruct);
-    if (!isProgressAlive() || !bCopied || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data())) return false;
+    if (!isProgressAlive() || !bCopied || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data())) return false;
 
     XYODA worker(pSnapshot.data(), bIsImage, nModuleAddress);
     const INTERNAL_INFO info = worker._detect(pPdStruct);
-    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data()) || !info.bIsValid) return false;
+    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) || !info.bIsValid)
+        return false;
     QByteArray baData;
     const bool bUnpacked = worker._unpackToBuffer(baData, nOutputLimit, pPdStruct);
-    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data()) || !bUnpacked || baData.isEmpty() ||
-        !isPdStructNotCanceled(pPdStruct)) return false;
+    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) || !bUnpacked ||
+        baData.isEmpty() || !isPdStructNotCanceled(pPdStruct))
+        return false;
 
     QScopedPointer<UNPACK_CONTEXT> pContext(new UNPACK_CONTEXT);
     pContext->baData = baData;
@@ -454,9 +435,9 @@ bool XYODA::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
     pContext->nCurrentIndex = 0;
     if (pContext->baToken.isEmpty()) return false;
     const bool bSourceFinal = pSourceGuard->validateAndFinalize(pPdStruct);
-    if (!isProgressAlive() || !bSourceFinal || !guardedThis || !guardedSource ||
-        (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
-        !isPdStructNotCanceled(pPdStruct)) return false;
+    if (!isProgressAlive() || !bSourceFinal || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
+        !isPdStructNotCanceled(pPdStruct))
+        return false;
     pContext->pSourceGuard = pSourceGuard.take();
 
     pState->nCurrentOffset = 0;
@@ -478,21 +459,17 @@ XBinary::ARCHIVERECORD XYODA::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStr
     if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return result;
     QScopedValueRollback<bool> operationGuard(pLifetimeState->bOperationInProgress, true);
     QPointer<XYODA> guardedThis(this);
-    if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() ||
-        !isPdStructNotCanceled(pPdStruct)) return result;
+    if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !isPdStructNotCanceled(pPdStruct)) return result;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pContext->nDeviceGeneration != getDeviceGeneration()) ||
-        (pContext->pSourceDevice.data() != getDevice()) ||
-        (pState->nCurrentIndex != pContext->nCurrentIndex) ||
-        (pState->nCurrentOffset != pContext->nCurrentOffset) ||
-        (pState->nCurrentIndex != 0) || (pState->nNumberOfRecords != 1) ||
-        (pState->nTotalSize != pContext->nSourceSize)) return result;
-    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis ||
-        !pLifetimeState->bOwnerAlive || !pLifetimeState->setContexts.contains(pContext) ||
-        (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken)) return result;
+    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
+        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) || (pState->nCurrentIndex != pContext->nCurrentIndex) ||
+        (pState->nCurrentOffset != pContext->nCurrentOffset) || (pState->nCurrentIndex != 0) || (pState->nNumberOfRecords != 1) ||
+        (pState->nTotalSize != pContext->nSourceSize))
+        return result;
+    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis || !pLifetimeState->bOwnerAlive ||
+        !pLifetimeState->setContexts.contains(pContext) || (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
+        (pContext->baToken != pState->baUnpackSourceToken))
+        return result;
 
     result.nStreamOffset = 0;
     result.nStreamSize = pContext->baData.size();
@@ -511,17 +488,13 @@ bool XYODA::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
     if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return false;
     QScopedValueRollback<bool> operationGuard(pLifetimeState->bOperationInProgress, true);
-    if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() ||
-        !isPdStructNotCanceled(pPdStruct)) return false;
+    if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !isPdStructNotCanceled(pPdStruct)) return false;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pContext->nDeviceGeneration != getDeviceGeneration()) ||
-        (pContext->pSourceDevice.data() != getDevice()) ||
-        (pState->nCurrentIndex != pContext->nCurrentIndex) ||
-        (pState->nCurrentOffset != pContext->nCurrentOffset) ||
-        (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= 1) ||
-        (pState->nNumberOfRecords != 1) || (pState->nTotalSize != pContext->nSourceSize)) return false;
+    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
+        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) || (pState->nCurrentIndex != pContext->nCurrentIndex) ||
+        (pState->nCurrentOffset != pContext->nCurrentOffset) || (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= 1) || (pState->nNumberOfRecords != 1) ||
+        (pState->nTotalSize != pContext->nSourceSize))
+        return false;
 
     return false;
 }
@@ -538,9 +511,8 @@ bool XYODA::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         return true;
     }
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!pContext || !pLifetimeState->setContexts.contains(pContext) ||
-        (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken)) return false;
+    if (!pContext || !pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken))
+        return false;
     pLifetimeState->setContexts.remove(pContext);
     *pState = UNPACK_STATE();
     delete pContext;
@@ -554,17 +526,13 @@ bool XYODA::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
     QScopedValueRollback<bool> operationGuard(pLifetimeState->bOperationInProgress, true);
     QPointer<XYODA> guardedThis(this);
     QPointer<QIODevice> guardedOutput(pDevice);
-    if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() ||
-        !guardedOutput || !isPdStructNotCanceled(pPdStruct)) return false;
+    if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !guardedOutput || !isPdStructNotCanceled(pPdStruct)) return false;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pContext->nDeviceGeneration != getDeviceGeneration()) ||
-        (pContext->pSourceDevice.data() != getDevice()) ||
-        (pState->nCurrentIndex != pContext->nCurrentIndex) ||
-        (pState->nCurrentOffset != pContext->nCurrentOffset) ||
-        (pState->nCurrentIndex != 0) || (pState->nNumberOfRecords != 1) ||
-        (pState->nTotalSize != pContext->nSourceSize)) return false;
+    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
+        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) || (pState->nCurrentIndex != pContext->nCurrentIndex) ||
+        (pState->nCurrentOffset != pContext->nCurrentOffset) || (pState->nCurrentIndex != 0) || (pState->nNumberOfRecords != 1) ||
+        (pState->nTotalSize != pContext->nSourceSize))
+        return false;
 
     const bool bOpen = guardedOutput->isOpen();
     if (!guardedThis || !guardedOutput || !bOpen) return false;
@@ -573,16 +541,14 @@ bool XYODA::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
     const bool bSequential = guardedOutput->isSequential();
     if (!guardedThis || !guardedOutput || bSequential) return false;
     const QIODevice::OpenMode openMode = guardedOutput->openMode();
-    if (!guardedThis || !guardedOutput ||
-        (openMode & (QIODevice::Append | QIODevice::Text)) ||
-        !isResizeEnable(guardedOutput.data())) return false;
+    if (!guardedThis || !guardedOutput || (openMode & (QIODevice::Append | QIODevice::Text)) || !isResizeEnable(guardedOutput.data())) return false;
     QPointer<QIODevice> guardedSource(pContext->pSourceDevice);
     if (guardedSource && devicesAlias(guardedSource.data(), guardedOutput.data())) return false;
     if (!guardedThis || !guardedOutput) return false;
-    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis || !guardedOutput ||
-        !pLifetimeState->bOwnerAlive || !pLifetimeState->setContexts.contains(pContext) ||
-        (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken)) return false;
+    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis || !guardedOutput || !pLifetimeState->bOwnerAlive ||
+        !pLifetimeState->setContexts.contains(pContext) || (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
+        (pContext->baToken != pState->baUnpackSourceToken))
+        return false;
 
     // This override bypasses the base decode chain's per-entry gate; account
     // the member here. Produced bytes are charged by writeUnpackData.
@@ -601,14 +567,10 @@ bool XYODA::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
     writeState.baUnpackSourceToken.clear();
     const bool bResult = writeUnpackData(&writeState, guardedOutput.data(), pContext->baData, pPdStruct);
     const bool bSourceCurrent = bResult && pContext->pSourceGuard && pContext->pSourceGuard->isCurrent(pPdStruct);
-    const bool bAuthenticated = bSourceCurrent && guardedThis && guardedOutput && pLifetimeState->bOwnerAlive &&
-                                pLifetimeState->setContexts.contains(pContext) &&
-                                (pState->pContext == pContext) && (pContext->pOwnerState == pState) &&
-                                (pState->baUnpackSourceToken == pContext->baToken) &&
-                                (pState->nCurrentIndex == pContext->nCurrentIndex) &&
-                                (pState->nCurrentOffset == pContext->nCurrentOffset) &&
-                                (pState->nNumberOfRecords == 1) &&
-                                (pState->nTotalSize == pContext->nSourceSize);
+    const bool bAuthenticated = bSourceCurrent && guardedThis && guardedOutput && pLifetimeState->bOwnerAlive && pLifetimeState->setContexts.contains(pContext) &&
+                                (pState->pContext == pContext) && (pContext->pOwnerState == pState) && (pState->baUnpackSourceToken == pContext->baToken) &&
+                                (pState->nCurrentIndex == pContext->nCurrentIndex) && (pState->nCurrentOffset == pContext->nCurrentOffset) &&
+                                (pState->nNumberOfRecords == 1) && (pState->nTotalSize == pContext->nSourceSize);
     if (!bResult || !bAuthenticated) {
         if (bResult && guardedOutput) {
             resize(guardedOutput.data(), 0);
@@ -639,9 +601,7 @@ bool XYODA::_unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pP
     const qint64 nFileSize = getSize();
     const qint64 nLastRaw = listSections.at(nSectCount).PointerToRawData;
     const qint64 nDeclaredYcRawSize = listSections.at(nSectCount).SizeOfRawData;
-    if ((nFileSize <= 0) || (nFileSize > 0x7fffffff) ||
-        (nLastRaw < 0) || (nLastRaw >= nFileSize) ||
-        (nDeclaredYcRawSize <= 0)) return false;
+    if ((nFileSize <= 0) || (nFileSize > 0x7fffffff) || (nLastRaw < 0) || (nLastRaw >= nFileSize) || (nDeclaredYcRawSize <= 0)) return false;
 
     // ClamAV's PE parser stores the unaligned raw size in ursz and truncates
     // it to the bytes available at EOF before yc_decrypt() removes it.  PE
@@ -649,8 +609,7 @@ bool XYODA::_unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pP
     // stripped, so subtracting the declaration directly loses valid output.
     const qint64 nEffectiveYcRawSize = qMin(nDeclaredYcRawSize, nFileSize - nLastRaw);
     const qint64 nCurFileSize = nFileSize - nEffectiveYcRawSize;
-    if ((nCurFileSize <= 0) ||
-        ((nOutputLimit >= 0) && ((quint64)nCurFileSize > (quint64)nOutputLimit))) return false;
+    if ((nCurFileSize <= 0) || ((nOutputLimit >= 0) && ((quint64)nCurFileSize > (quint64)nOutputLimit))) return false;
 
     QByteArray baFile = read_array_process(0, nFileSize, pPdStruct);
     if (baFile.size() != nFileSize) return false;
@@ -670,9 +629,8 @@ bool XYODA::_unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pP
         const XPE_DEF::IMAGE_SECTION_HEADER &sec = listSections.at(i);
         const quint32 nName = _read_uint32((char *)sec.Name);
 
-        if ((sec.PointerToRawData == 0) || (sec.SizeOfRawData == 0) || (nName == 0x63727372) || (nName == 0x7273722E) || (nName == 0x6F6C6572) ||
-            (nName == 0x6C65722E) || (nName == 0x6164652E) || (nName == 0x6164722E) || (nName == 0x6164692E) || (nName == 0x736C742E) ||
-            ((nName & 0xffff) == 0x4379)) {
+        if ((sec.PointerToRawData == 0) || (sec.SizeOfRawData == 0) || (nName == 0x63727372) || (nName == 0x7273722E) || (nName == 0x6F6C6572) || (nName == 0x6C65722E) ||
+            (nName == 0x6164652E) || (nName == 0x6164722E) || (nName == 0x6164692E) || (nName == 0x736C742E) || ((nName & 0xffff) == 0x4379)) {
             continue;
         }
 
@@ -680,8 +638,7 @@ bool XYODA::_unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pP
         // Silently skipping this case would publish a partially decrypted PE.
         if ((qint64)sec.PointerToRawData >= nCurFileSize) return false;
         quint32 nMaxEmu = (quint32)(nCurFileSize - sec.PointerToRawData);
-        const quint32 nEffectiveRawSize = (quint32)qMin<qint64>(
-            sec.SizeOfRawData, nFileSize - sec.PointerToRawData);
+        const quint32 nEffectiveRawSize = (quint32)qMin<qint64>(sec.SizeOfRawData, nFileSize - sec.PointerToRawData);
 
         if (_polyEmulate(pBase, nFileSize, nDecOff, sec.PointerToRawData, nEffectiveRawSize, nMaxEmu) != 0) {
             return false;
@@ -692,13 +649,11 @@ bool XYODA::_unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pP
 
     // header fixups
     const qint64 nPeOff = _read_uint32((char *)pBase + 0x3C);
-    if ((nPeOff <= 0) || (nPeOff > nCurFileSize) ||
-        (0x18 + 0x70 > nCurFileSize - nPeOff) ||
-        (nYcSect < 0) || (nYcSect > nFileSize) ||
-        (0xa0f + 4 > nFileSize - nYcSect)) return false;
+    if ((nPeOff <= 0) || (nPeOff > nCurFileSize) || (0x18 + 0x70 > nCurFileSize - nPeOff) || (nYcSect < 0) || (nYcSect > nFileSize) || (0xa0f + 4 > nFileSize - nYcSect))
+        return false;
 
-    _write_uint16((char *)pBase + nPeOff + 6, (quint16)nSectCount);           // NumberOfSections
-    memset(pBase + nPeOff + 0x18 + 0x68, 0, 8);                               // clear import directory
+    _write_uint16((char *)pBase + nPeOff + 6, (quint16)nSectCount);                                    // NumberOfSections
+    memset(pBase + nPeOff + 0x18 + 0x68, 0, 8);                                                        // clear import directory
     _write_uint32((char *)pBase + nPeOff + 0x18 + 16, _read_uint32((char *)pBase + nYcSect + 0xa0f));  // OEP
     quint32 nSizeOfImage = _read_uint32((char *)pBase + nPeOff + 0x18 + 0x38);
     const quint32 nYcVirtualSize = listSections.at(nSectCount).Misc.VirtualSize;

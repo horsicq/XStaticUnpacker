@@ -84,8 +84,7 @@ public:
     virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
 
 protected:
-    explicit XSFX(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress,
-                  ARCTYPE requiredArcType);
+    explicit XSFX(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress, ARCTYPE requiredArcType);
 
     bool isDeviceReplacementAllowed() const override
     {
@@ -95,19 +94,11 @@ protected:
 private:
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
     INTERNAL_INFO m_internalInfo;
-    INTERNAL_INFO _detect(PDSTRUCT *pPdStruct,
-                          XSFX_ZPAQ_SCAN_CACHE *pZpaqScanCache = nullptr,
-                          XSFX_FREEARC_SCAN_CACHE *pFreeArcScanCache = nullptr,
+    INTERNAL_INFO _detect(PDSTRUCT *pPdStruct, XSFX_ZPAQ_SCAN_CACHE *pZpaqScanCache = nullptr, XSFX_FREEARC_SCAN_CACHE *pFreeArcScanCache = nullptr,
                           qint64 nMinimumArchiveOffset = -1);
-    bool _matchArchiveAt(qint64 nOffset, qint64 nSize, ARCTYPE *pType,
-                          qint64 *pArchiveSize, PDSTRUCT *pPdStruct,
-                          XSFX_ZPAQ_SCAN_CACHE *pZpaqScanCache,
-                          XSFX_FREEARC_SCAN_CACHE *pFreeArcScanCache,
-                          bool *pbProvisional,
-                          bool *pbResourceIndeterminate,
-                          bool *pbUseOuterDevice);
-    XArchive *_createArchive(ARCTYPE arcType, QIODevice *pDevice,
-                             bool bAllowOpaqueZpaq = false);
+    bool _matchArchiveAt(qint64 nOffset, qint64 nSize, ARCTYPE *pType, qint64 *pArchiveSize, PDSTRUCT *pPdStruct, XSFX_ZPAQ_SCAN_CACHE *pZpaqScanCache,
+                         XSFX_FREEARC_SCAN_CACHE *pFreeArcScanCache, bool *pbProvisional, bool *pbResourceIndeterminate, bool *pbUseOuterDevice);
+    XArchive *_createArchive(ARCTYPE arcType, QIODevice *pDevice, bool bAllowOpaqueZpaq = false);
     QSharedPointer<bool> m_pUnpackOperationState;
     QSharedPointer<UNPACK_DEFERRED_CLEANUP> m_pUnpackDeferredCleanup;
     QSet<UNPACK_CONTEXT *> m_setUnpackContexts;

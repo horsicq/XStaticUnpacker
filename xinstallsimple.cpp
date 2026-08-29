@@ -50,7 +50,9 @@ const qint64 IS_MAX_ENCODED_RECORD_SIZE = (qint64)IS_OUTPUT - IS_INPUT;
 
 class ISBoundedBuffer : public QBuffer {
 public:
-    ISBoundedBuffer(QByteArray *pData, qint64 nLimit) : QBuffer(pData), m_nLimit(nLimit) {}
+    ISBoundedBuffer(QByteArray *pData, qint64 nLimit) : QBuffer(pData), m_nLimit(nLimit)
+    {
+    }
 
 protected:
     qint64 writeData(const char *pData, qint64 nSize) override
@@ -73,8 +75,7 @@ static qint64 isInstallerDataEnd(XPE *pPe, qint64 nFileSize)
     if (!pPe || (nFileSize <= 0)) return -1;
     qint64 nResult = nFileSize;
     XBinary::OFFSETSIZE osSignature = pPe->getSignOffsetSize();
-    if ((osSignature.nOffset > 0) && (osSignature.nSize > 0) &&
-        (osSignature.nOffset <= nFileSize) && (osSignature.nSize == nFileSize - osSignature.nOffset)) {
+    if ((osSignature.nOffset > 0) && (osSignature.nSize > 0) && (osSignature.nOffset <= nFileSize) && (osSignature.nSize == nFileSize - osSignature.nOffset)) {
         nResult = osSignature.nOffset;
     }
     return nResult;
@@ -118,8 +119,7 @@ static bool isLoadDecoderImage(const QByteArray &baStub, XEmuMemoryManager *pMem
     static const char kDriverSignature[] = "\x8b\x44\x24\x04\x56\x8b\x70\x20\x85\xf6\x75\x09\xb8\xfe\xff\xff";
     QByteArray baInit = pMemory->read(IS_INIT, sizeof(kInitSignature) - 1);
     QByteArray baDriver = pMemory->read(IS_DRIVER, sizeof(kDriverSignature) - 1);
-    return (baInit == QByteArray(kInitSignature, sizeof(kInitSignature) - 1)) &&
-           (baDriver == QByteArray(kDriverSignature, sizeof(kDriverSignature) - 1));
+    return (baInit == QByteArray(kInitSignature, sizeof(kInitSignature) - 1)) && (baDriver == QByteArray(kDriverSignature, sizeof(kDriverSignature) - 1));
 }
 
 static bool isCallDecoder(XEmuMemoryManager *pMemory, XEmuX86 *pArch, XEmuRegisters *pRegisters, quint32 nFunction, const QList<quint32> &listArguments,
@@ -182,8 +182,8 @@ static bool isCallDecoder(XEmuMemoryManager *pMemory, XEmuX86 *pArch, XEmuRegist
     return false;
 }
 
-static bool isDecodeStream(const QByteArray &baStub, const QByteArray &baStream, QByteArray *pbaOutput, bool *pbUsedExhaustionFallback,
-                           quint64 *pnStepsRemaining, XBinary::PDSTRUCT *pPdStruct)
+static bool isDecodeStream(const QByteArray &baStub, const QByteArray &baStream, QByteArray *pbaOutput, bool *pbUsedExhaustionFallback, quint64 *pnStepsRemaining,
+                           XBinary::PDSTRUCT *pPdStruct)
 {
     if ((!pbaOutput) || (!pbUsedExhaustionFallback) || (!pnStepsRemaining) || (baStream.size() < 12) || (baStream.size() > 0x10000000)) return false;
     pbaOutput->clear();
@@ -204,8 +204,7 @@ static bool isDecodeStream(const QByteArray &baStub, const QByteArray &baStream,
     if (!memory.writeByte(IS_TRAP, 0xF4) || !memory.writeByte(IS_RETURN_TRAP, 0xF4) || !memory.write(IS_INPUT, baStream)) return false;
 
     if (!memory.writeDword(IS_OUTER + 0x00, IS_INPUT) || !memory.writeDword(IS_OUTER + 0x04, (quint32)baStream.size()) ||
-        !memory.writeDword(IS_OUTER + 0x10, IS_OUTPUT) || !memory.writeDword(IS_OUTER + 0x14, IS_OUTPUT_SIZE) ||
-        !memory.writeDword(IS_OUTER + 0x24, IS_TRAP)) {
+        !memory.writeDword(IS_OUTER + 0x10, IS_OUTPUT) || !memory.writeDword(IS_OUTER + 0x14, IS_OUTPUT_SIZE) || !memory.writeDword(IS_OUTER + 0x24, IS_TRAP)) {
         return false;
     }
 
@@ -287,10 +286,10 @@ static bool isParseManifest(const QByteArray &baData, int nPayloadCount, QString
     QSet<QString> setNames;
     static const QString sForbidden = QStringLiteral("<>:\"/\\|?*");
     static const QSet<QString> setReserved = {
-        QStringLiteral("CON"),  QStringLiteral("PRN"),  QStringLiteral("AUX"),  QStringLiteral("NUL"),  QStringLiteral("COM1"),
-        QStringLiteral("COM2"), QStringLiteral("COM3"), QStringLiteral("COM4"), QStringLiteral("COM5"), QStringLiteral("COM6"),
-        QStringLiteral("COM7"), QStringLiteral("COM8"), QStringLiteral("COM9"), QStringLiteral("LPT1"), QStringLiteral("LPT2"),
-        QStringLiteral("LPT3"), QStringLiteral("LPT4"), QStringLiteral("LPT5"), QStringLiteral("LPT6"), QStringLiteral("LPT7"),
+        QStringLiteral("CON"),  QStringLiteral("PRN"),  QStringLiteral("AUX"),    QStringLiteral("NUL"),     QStringLiteral("COM1"),
+        QStringLiteral("COM2"), QStringLiteral("COM3"), QStringLiteral("COM4"),   QStringLiteral("COM5"),    QStringLiteral("COM6"),
+        QStringLiteral("COM7"), QStringLiteral("COM8"), QStringLiteral("COM9"),   QStringLiteral("LPT1"),    QStringLiteral("LPT2"),
+        QStringLiteral("LPT3"), QStringLiteral("LPT4"), QStringLiteral("LPT5"),   QStringLiteral("LPT6"),    QStringLiteral("LPT7"),
         QStringLiteral("LPT8"), QStringLiteral("LPT9"), QStringLiteral("CONIN$"), QStringLiteral("CONOUT$"), QStringLiteral("CLOCK$")};
 
     for (int i = 0; i < nPayloadCount; i++) {
@@ -367,8 +366,7 @@ bool XInstallSimple::isValid(PDSTRUCT *pPdStruct)
 {
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
     QPointer<XInstallSimple> guardedThis(this);
-    const INTERNAL_INFO *pInfo =
-        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
+    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
     return guardedThis && pInfo && pInfo->bIsValid;
 }
 
@@ -391,8 +389,7 @@ bool XInstallSimple::handleInternalInfo(PDSTRUCT *pPdStruct)
     if (!guardedThis) return false;
 
     if (!bAlreadyHandled) {
-        const quint64 nTransaction =
-            guardedThis->beginInternalInfoTransaction();
+        const quint64 nTransaction = guardedThis->beginInternalInfoTransaction();
         if (!nTransaction) return false;
 
         // The transaction supplies the recursion sentinel. Keep every
@@ -400,17 +397,14 @@ bool XInstallSimple::handleInternalInfo(PDSTRUCT *pPdStruct)
         guardedThis->m_internalInfo = INTERNAL_INFO();
         INTERNAL_INFO info = guardedThis->_getInternalInfo(pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
 
-        const auto memoryMap =
-            guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -421,10 +415,7 @@ bool XInstallSimple::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
         guardedThis->m_internalInfo = info;
-        if (!guardedThis->commitInternalInfoTransaction(
-                nTransaction,
-                static_cast<XBinary::INTERNAL_INFO *>(
-                    &guardedThis->m_internalInfo))) {
+        if (!guardedThis->commitInternalInfoTransaction(nTransaction, static_cast<XBinary::INTERNAL_INFO *>(&guardedThis->m_internalInfo))) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -505,8 +496,7 @@ XInstallSimple::INTERNAL_INFO XInstallSimple::_detect(PDSTRUCT *pPdStruct)
     QByteArray baFirst = read_array_process(nOverlayOffset, qMin<qint64>(nDataEnd - nOverlayOffset, 12), pPdStruct);
     if (baFirst.size() != 12) return result;
     quint32 nFirstLength = isRd32((const quint8 *)baFirst.constData());
-    if ((isRd32((const quint8 *)baFirst.constData() + 4) != 0xFFFFFFFF) || (nFirstLength < 12) ||
-        ((qint64)nFirstLength - 6 > IS_MAX_ENCODED_RECORD_SIZE - 6)) {
+    if ((isRd32((const quint8 *)baFirst.constData() + 4) != 0xFFFFFFFF) || (nFirstLength < 12) || ((qint64)nFirstLength - 6 > IS_MAX_ENCODED_RECORD_SIZE - 6)) {
         return result;
     }
 
@@ -515,8 +505,7 @@ XInstallSimple::INTERNAL_INFO XInstallSimple::_detect(PDSTRUCT *pPdStruct)
     QByteArray baSecond = read_array_process(nSecondOffset, 12, pPdStruct);
     if ((baSecond.size() != 12) || (isRd32((const quint8 *)baSecond.constData() + 4) != 0xFFFFFFFF)) return result;
     quint32 nSecondLength = isRd32((const quint8 *)baSecond.constData());
-    if ((nSecondLength < 12) || ((qint64)nSecondLength - 6 > IS_MAX_ENCODED_RECORD_SIZE - 6) ||
-        ((qint64)nSecondLength - 6 > nDataEnd - nSecondOffset)) {
+    if ((nSecondLength < 12) || ((qint64)nSecondLength - 6 > IS_MAX_ENCODED_RECORD_SIZE - 6) || ((qint64)nSecondLength - 6 > nDataEnd - nSecondOffset)) {
         return result;
     }
 
@@ -528,9 +517,7 @@ bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
 {
     if (!pState) return false;
     const PDSTRUCTLIFETIME progressLifetime = pPdStruct ? retainPdStructLifetime(pPdStruct) : PDSTRUCTLIFETIME();
-    const auto isProgressAlive = [&]() -> bool {
-        return !pPdStruct || isPdStructLifetimeAlive(progressLifetime);
-    };
+    const auto isProgressAlive = [&]() -> bool { return !pPdStruct || isPdStructLifetimeAlive(progressLifetime); };
     if (!isProgressAlive()) return false;
     const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
     if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return false;
@@ -539,7 +526,8 @@ bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
     if (pState->pContext || !pState->baUnpackSourceToken.isEmpty()) {
         UNPACK_CONTEXT *pOldContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
         if (!pOldContext || !pLifetimeState->setContexts.contains(pOldContext) || (pOldContext->pOwnerState != pState) ||
-            (pOldContext->baToken != pState->baUnpackSourceToken)) return false;
+            (pOldContext->baToken != pState->baUnpackSourceToken))
+            return false;
         pLifetimeState->setContexts.remove(pOldContext);
         *pState = UNPACK_STATE();
         delete pOldContext;
@@ -553,32 +541,32 @@ bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
     const XADDR nModuleAddress = getModuleAddress();
     if (!guardedSource) return false;
     const qint64 nSourceSize = guardedSource->size();
-    if (!isProgressAlive() || !guardedThis || !guardedSource || (nSourceSize < 0) || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data())) return false;
+    if (!isProgressAlive() || !guardedThis || !guardedSource || (nSourceSize < 0) || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+        return false;
     QScopedPointer<XMaterializedUnpackGuard> pSourceGuard(XMaterializedUnpackGuard::bind(guardedSource.data(), pPdStruct));
-    if (!isProgressAlive() || !pSourceGuard || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data())) return false;
+    if (!isProgressAlive() || !pSourceGuard || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+        return false;
     if (!m_bTrustedSnapshot) {
         QScopedPointer<QIODevice> pSnapshot(createFileBuffer(nSourceSize, pPdStruct));
-        if (!isProgressAlive() || !guardedThis || !guardedSource || !pSnapshot || (getDeviceGeneration() != nGeneration) ||
-            (getDevice() != guardedSource.data())) return false;
+        if (!isProgressAlive() || !guardedThis || !guardedSource || !pSnapshot || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+            return false;
         const bool bCopied = copyDeviceMemory(guardedSource.data(), 0, pSnapshot.data(), 0, nSourceSize, pPdStruct);
-        if (!isProgressAlive() || !bCopied || !guardedThis || !guardedSource ||
-            (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data())) return false;
+        if (!isProgressAlive() || !bCopied || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+            return false;
         XInstallSimple worker(pSnapshot.data(), bIsImage, nModuleAddress);
         worker.m_bTrustedSnapshot = true;
         UNPACK_STATE materializedState = {};
         const bool bMaterialized = worker.initUnpack(&materializedState, mapProperties, pPdStruct);
-        if (!isProgressAlive() || !guardedThis || !guardedSource || !bMaterialized || (getDeviceGeneration() != nGeneration) ||
-            (getDevice() != guardedSource.data())) return false;
+        if (!isProgressAlive() || !guardedThis || !guardedSource || !bMaterialized || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+            return false;
         UNPACK_CONTEXT *pMaterializedContext = static_cast<UNPACK_CONTEXT *>(materializedState.pContext);
         if (!pMaterializedContext) return false;
         QScopedPointer<UNPACK_CONTEXT> pContext(new (std::nothrow) UNPACK_CONTEXT);
         if (!pContext) return false;
         pContext->listEntries = pMaterializedContext->listEntries;
-        if (!worker.finishUnpack(&materializedState, nullptr) || !isProgressAlive() || !guardedThis || !guardedSource ||
-            (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
-            !isPdStructNotCanceled(pPdStruct) || pContext->listEntries.isEmpty()) return false;
+        if (!worker.finishUnpack(&materializedState, nullptr) || !isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
+            (getDevice() != guardedSource.data()) || !isPdStructNotCanceled(pPdStruct) || pContext->listEntries.isEmpty())
+            return false;
         pContext->pSourceDevice = guardedSource;
         pContext->pOwnerState = pState;
         pContext->baToken = QUuid::createUuid().toRfc4122();
@@ -586,9 +574,9 @@ bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
         pContext->nSourceSize = nSourceSize;
         if (pContext->baToken.isEmpty()) return false;
         const bool bSourceFinal = pSourceGuard->validateAndFinalize(pPdStruct);
-        if (!isProgressAlive() || !bSourceFinal || !guardedThis || !guardedSource ||
-            (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
-            !isPdStructNotCanceled(pPdStruct)) return false;
+        if (!isProgressAlive() || !bSourceFinal || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
+            !isPdStructNotCanceled(pPdStruct))
+            return false;
         pContext->pSourceGuard = pSourceGuard.take();
         pState->nTotalSize = nSourceSize;
         pState->nNumberOfRecords = pContext->listEntries.size();
@@ -612,8 +600,7 @@ bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
     qint64 nDataEnd = isInstallerDataEnd(&pe, getSize());
     if (!isProgressAlive() || !guardedThis || !guardedSource) return false;
     qint64 nOverlaySize = nDataEnd - nOverlayOffset;
-    if ((nOverlayOffset <= 0) || (nOverlayOffset > IS_MAX_PACKED_STUB_SIZE) || (nOverlaySize < 12) ||
-        (nOverlaySize > IS_MAX_ENCODED_ARCHIVE_SIZE)) {
+    if ((nOverlayOffset <= 0) || (nOverlayOffset > IS_MAX_PACKED_STUB_SIZE) || (nOverlaySize < 12) || (nOverlaySize > IS_MAX_ENCODED_ARCHIVE_SIZE)) {
         return false;
     }
 
@@ -630,8 +617,7 @@ bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
     }
     XUPX upx(&stubInput);
     const XUPX::INTERNAL_INFO *pUpxInfo = static_cast<const XUPX::INTERNAL_INFO *>(upx.getInternalInfo(pPdStruct));
-    if (!isProgressAlive() || !guardedThis || !guardedSource || !pUpxInfo || !pUpxInfo->bIsValid ||
-        (pUpxInfo->u_len > (quint32)IS_MAX_UNPACKED_STUB_SIZE) ||
+    if (!isProgressAlive() || !guardedThis || !guardedSource || !pUpxInfo || !pUpxInfo->bIsValid || (pUpxInfo->u_len > (quint32)IS_MAX_UNPACKED_STUB_SIZE) ||
         (pUpxInfo->u_file_size > (quint32)IS_MAX_UNPACKED_STUB_SIZE)) {
         stubOutput.close();
         stubInput.close();
@@ -640,12 +626,10 @@ bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
     bool bStubUnpacked = upx.unpack(&stubOutput, pPdStruct);
     stubOutput.close();
     stubInput.close();
-    if (!isProgressAlive() || !guardedThis || !guardedSource || !bStubUnpacked ||
-        (baStub.size() <= 0) || (baStub.size() > IS_MAX_UNPACKED_STUB_SIZE)) return false;
+    if (!isProgressAlive() || !guardedThis || !guardedSource || !bStubUnpacked || (baStub.size() <= 0) || (baStub.size() > IS_MAX_UNPACKED_STUB_SIZE)) return false;
 
     QByteArray baOverlay = read_array_process(nOverlayOffset, nOverlaySize, pPdStruct);
-    if (!isProgressAlive() || !guardedThis || !guardedSource || (baOverlay.size() != nOverlaySize) ||
-        !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+    if (!isProgressAlive() || !guardedThis || !guardedSource || (baOverlay.size() != nOverlaySize) || !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
     QList<QByteArray> listPayloads;
     QStringList listNames;
@@ -664,8 +648,7 @@ bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
         if (nLength < 12) return false;
 
         qint64 nBodySize = (qint64)nLength - 6;
-        if ((nBodySize <= 0) || (nBodySize > IS_MAX_ENCODED_RECORD_SIZE - 6) ||
-            (nBodySize > baOverlay.size() - nPosition)) {
+        if ((nBodySize <= 0) || (nBodySize > IS_MAX_ENCODED_RECORD_SIZE - 6) || (nBodySize > baOverlay.size() - nPosition)) {
             return false;
         }
 
@@ -676,8 +659,7 @@ bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
 
         QByteArray baDecoded;
         bool bUsedExhaustionFallback = false;
-        const bool bDecoded = isDecodeStream(baStub, baStream, &baDecoded, &bUsedExhaustionFallback,
-                                             &nStepsRemaining, pPdStruct);
+        const bool bDecoded = isDecodeStream(baStub, baStream, &baDecoded, &bUsedExhaustionFallback, &nStepsRemaining, pPdStruct);
         if (!isProgressAlive() || !guardedThis || !guardedSource || !bDecoded) return false;
         quint64 nDecodedSize = (quint64)baDecoded.size();
         if (nDecodedSize > IS_MAX_TOTAL_DECODED_SIZE - nTotalDecodedSize) return false;
@@ -717,8 +699,7 @@ bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
         return false;
     }
     const bool bSourceFinal = pSourceGuard->validateAndFinalize(pPdStruct);
-    if (!isProgressAlive() || !bSourceFinal || !guardedThis || !guardedSource ||
-        (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
+    if (!isProgressAlive() || !bSourceFinal || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
         !isPdStructNotCanceled(pPdStruct)) {
         delete pContext;
         return false;
@@ -741,15 +722,15 @@ XBinary::ARCHIVERECORD XInstallSimple::infoCurrent(UNPACK_STATE *pState, PDSTRUC
     if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !isPdStructNotCanceled(pPdStruct)) return result;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     qint32 nIndex = pState->nCurrentIndex;
-    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) || (pContext->nDeviceGeneration != getDeviceGeneration()) ||
-        (pContext->pSourceDevice.data() != getDevice()) || (pState->nCurrentOffset != pContext->nCurrentOffset) ||
-        (nIndex != pContext->nCurrentIndex) || (pState->nNumberOfRecords != pContext->listEntries.size()) ||
-        (pState->nTotalSize != pContext->nSourceSize) || (nIndex < 0) || (nIndex >= pContext->listEntries.size())) return result;
-    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis ||
-        !pLifetimeState->bOwnerAlive || !pLifetimeState->setContexts.contains(pContext) ||
-        (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) || (pState->nCurrentIndex != pContext->nCurrentIndex)) return result;
+    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
+        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) ||
+        (pState->nCurrentOffset != pContext->nCurrentOffset) || (nIndex != pContext->nCurrentIndex) || (pState->nNumberOfRecords != pContext->listEntries.size()) ||
+        (pState->nTotalSize != pContext->nSourceSize) || (nIndex < 0) || (nIndex >= pContext->listEntries.size()))
+        return result;
+    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis || !pLifetimeState->bOwnerAlive ||
+        !pLifetimeState->setContexts.contains(pContext) || (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
+        (pContext->baToken != pState->baUnpackSourceToken) || (pState->nCurrentIndex != pContext->nCurrentIndex))
+        return result;
 
     const FILE_ENTRY &entry = pContext->listEntries.at(nIndex);
     result.nStreamSize = entry.baData.size();
@@ -770,12 +751,12 @@ bool XInstallSimple::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDS
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     const qint32 nIndex = pState->nCurrentIndex;
     const auto isAuthenticated = [&]() -> bool {
-        return guardedThis && pLifetimeState->bOwnerAlive && pLifetimeState->setContexts.contains(pContext) &&
-               (pState->pContext == pContext) && (pContext->pOwnerState == pState) && (pState->baUnpackSourceToken == pContext->baToken) &&
+        return guardedThis && pLifetimeState->bOwnerAlive && pLifetimeState->setContexts.contains(pContext) && (pState->pContext == pContext) &&
+               (pContext->pOwnerState == pState) && (pState->baUnpackSourceToken == pContext->baToken) &&
                (pContext->nDeviceGeneration == guardedThis->getDeviceGeneration()) && (pContext->pSourceDevice.data() == guardedThis->getDevice()) &&
                (pState->nCurrentIndex == pContext->nCurrentIndex) && (pState->nCurrentOffset == pContext->nCurrentOffset) &&
-               (pState->nNumberOfRecords == pContext->listEntries.size()) && (pState->nTotalSize == pContext->nSourceSize) &&
-               (nIndex >= 0) && (nIndex < pContext->listEntries.size());
+               (pState->nNumberOfRecords == pContext->listEntries.size()) && (pState->nTotalSize == pContext->nSourceSize) && (nIndex >= 0) &&
+               (nIndex < pContext->listEntries.size());
     };
     if (!isAuthenticated()) return false;
     const bool bOpen = guardedOutput->isOpen();
@@ -785,8 +766,9 @@ bool XInstallSimple::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDS
     const bool bSequential = guardedOutput->isSequential();
     if (!isAuthenticated() || !guardedOutput || bSequential) return false;
     const QIODevice::OpenMode openMode = guardedOutput->openMode();
-    if (!isAuthenticated() || !guardedOutput || (openMode & (QIODevice::Append | QIODevice::Text)) || !isResizeEnable(guardedOutput.data()) ||
-        !guardedOutput || devicesAlias(pContext->pSourceDevice.data(), guardedOutput.data()) || !isAuthenticated() || !guardedOutput) return false;
+    if (!isAuthenticated() || !guardedOutput || (openMode & (QIODevice::Append | QIODevice::Text)) || !isResizeEnable(guardedOutput.data()) || !guardedOutput ||
+        devicesAlias(pContext->pSourceDevice.data(), guardedOutput.data()) || !isAuthenticated() || !guardedOutput)
+        return false;
     if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedOutput || !isAuthenticated()) return false;
     // This override bypasses the base decode chain's per-entry gate; account the member here.
     // Produced bytes are charged by writeUnpackData at publication below.
@@ -836,15 +818,14 @@ bool XInstallSimple::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !isPdStructNotCanceled(pPdStruct)) return false;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) ||
-        (pState->nCurrentIndex != pContext->nCurrentIndex) || (pState->nCurrentOffset != pContext->nCurrentOffset) ||
-        (pState->nNumberOfRecords != pContext->listEntries.size()) || (pState->nTotalSize != pContext->nSourceSize) ||
-        (pContext->nCurrentIndex < 0) || (pContext->nCurrentIndex >= pContext->listEntries.size())) return false;
-    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis ||
-        !pLifetimeState->bOwnerAlive || !pLifetimeState->setContexts.contains(pContext) ||
-        (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pContext->nCurrentIndex >= pContext->listEntries.size())) return false;
+        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) || (pState->nCurrentIndex != pContext->nCurrentIndex) ||
+        (pState->nCurrentOffset != pContext->nCurrentOffset) || (pState->nNumberOfRecords != pContext->listEntries.size()) ||
+        (pState->nTotalSize != pContext->nSourceSize) || (pContext->nCurrentIndex < 0) || (pContext->nCurrentIndex >= pContext->listEntries.size()))
+        return false;
+    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis || !pLifetimeState->bOwnerAlive ||
+        !pLifetimeState->setContexts.contains(pContext) || (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
+        (pContext->baToken != pState->baUnpackSourceToken) || (pContext->nCurrentIndex >= pContext->listEntries.size()))
+        return false;
     ++pContext->nCurrentIndex;
     pContext->nCurrentOffset = 0;
     pState->nCurrentIndex = pContext->nCurrentIndex;
@@ -864,8 +845,8 @@ bool XInstallSimple::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         return true;
     }
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!pContext || !pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken)) return false;
+    if (!pContext || !pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken))
+        return false;
     pLifetimeState->setContexts.remove(pContext);
     *pState = UNPACK_STATE();
     delete pContext;

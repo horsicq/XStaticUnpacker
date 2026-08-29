@@ -52,7 +52,9 @@ public:
     };
 
     struct UNPACK_LIFETIME_STATE {
-        UNPACK_LIFETIME_STATE() : bOperationInProgress(false), bOwnerAlive(true) {}
+        UNPACK_LIFETIME_STATE() : bOperationInProgress(false), bOwnerAlive(true)
+        {
+        }
         ~UNPACK_LIFETIME_STATE();
         bool bOperationInProgress;
         bool bOwnerAlive;
@@ -202,8 +204,8 @@ public:
 protected:
     bool isDeviceReplacementAllowed() const override
     {
-        return m_pUnpackLifetimeState && m_pUnpackLifetimeState->bOwnerAlive &&
-               !m_pUnpackLifetimeState->bOperationInProgress && m_pUnpackLifetimeState->setContexts.isEmpty();
+        return m_pUnpackLifetimeState && m_pUnpackLifetimeState->bOwnerAlive && !m_pUnpackLifetimeState->bOperationInProgress &&
+               m_pUnpackLifetimeState->setContexts.isEmpty();
     }
 
 private:

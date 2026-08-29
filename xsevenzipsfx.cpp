@@ -13,11 +13,9 @@
 
 namespace {
 
-bool getValidatedSevenZipSize(QIODevice *pDevice, qint64 nOffset, qint64 nAvailableSize, qint64 *pArchiveSize,
-                              XBinary::PDSTRUCT *pPdStruct)
+bool getValidatedSevenZipSize(QIODevice *pDevice, qint64 nOffset, qint64 nAvailableSize, qint64 *pArchiveSize, XBinary::PDSTRUCT *pPdStruct)
 {
-    if (!pDevice || !pArchiveSize || (nOffset < 0) || (nAvailableSize < 32) ||
-        (nOffset > pDevice->size()) || (nAvailableSize > pDevice->size() - nOffset) ||
+    if (!pDevice || !pArchiveSize || (nOffset < 0) || (nAvailableSize < 32) || (nOffset > pDevice->size()) || (nAvailableSize > pDevice->size() - nOffset) ||
         !XBinary::isPdStructNotCanceled(pPdStruct)) {
         return false;
     }
@@ -100,8 +98,7 @@ bool XSevenZipSFX::isValid(PDSTRUCT *pPdStruct)
 {
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
     QPointer<XSevenZipSFX> guardedThis(this);
-    const INTERNAL_INFO *pInfo =
-        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
+    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
     return guardedThis && pInfo && pInfo->bIsValid;
 }
 
@@ -124,8 +121,7 @@ bool XSevenZipSFX::handleInternalInfo(PDSTRUCT *pPdStruct)
     if (!guardedThis) return false;
 
     if (!bAlreadyHandled) {
-        const quint64 nTransaction =
-            guardedThis->beginInternalInfoTransaction();
+        const quint64 nTransaction = guardedThis->beginInternalInfoTransaction();
         if (!nTransaction) return false;
 
         // The transaction supplies the recursion sentinel. Keep every
@@ -133,17 +129,14 @@ bool XSevenZipSFX::handleInternalInfo(PDSTRUCT *pPdStruct)
         guardedThis->m_internalInfo = INTERNAL_INFO();
         INTERNAL_INFO info = guardedThis->_getInternalInfo(pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
 
-        const auto memoryMap =
-            guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -154,10 +147,7 @@ bool XSevenZipSFX::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
         guardedThis->m_internalInfo = info;
-        if (!guardedThis->commitInternalInfoTransaction(
-                nTransaction,
-                static_cast<XBinary::INTERNAL_INFO *>(
-                    &guardedThis->m_internalInfo))) {
+        if (!guardedThis->commitInternalInfoTransaction(nTransaction, static_cast<XBinary::INTERNAL_INFO *>(&guardedThis->m_internalInfo))) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -243,8 +233,7 @@ XSevenZipSFX::INTERNAL_INFO XSevenZipSFX::_detect(PDSTRUCT *pPdStruct)
             }
 
             qint64 nArchiveSize = 0;
-            if ((nArchiveOffset <= nTotalSize - 6) &&
-                (read_array_process(nArchiveOffset, 6, pPdStruct) == k7z) &&
+            if ((nArchiveOffset <= nTotalSize - 6) && (read_array_process(nArchiveOffset, 6, pPdStruct) == k7z) &&
                 getValidatedSevenZipSize(getDevice(), nArchiveOffset, nTotalSize - nArchiveOffset, &nArchiveSize, pPdStruct)) {
                 result.bIsValid = true;
                 result.nArchiveOffset = nArchiveOffset;
@@ -396,14 +385,14 @@ XBinary::ARCHIVERECORD XSevenZipSFX::infoCurrent(UNPACK_STATE *pState, PDSTRUCT 
     if (!pOperationState || *pOperationState) return result;
     QScopedValueRollback<bool> operationGuard(*pOperationState, true);
     QPointer<XSevenZipSFX> guardedThis(this);
-    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) ||
-        (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) return result;
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+        (pState->nCurrentIndex >= pState->nNumberOfRecords))
+        return result;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
-        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pArchive ||
-        (pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
-        (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
-        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords)) return result;
+    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice || (pContext->pOuterSourceDevice != getDevice()) ||
+        (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pArchive || (pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
+        (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) || (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords))
+        return result;
     result = pContext->pArchive->infoCurrent(&pContext->innerState, pPdStruct);
     if (!guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return ARCHIVERECORD();
     return result;
@@ -418,14 +407,13 @@ bool XSevenZipSFX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTR
     QPointer<QIODevice> guardedOutput(pDevice);
     if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !guardedOutput || !guardedOutput->isOpen() || !guardedOutput->isWritable() ||
         guardedOutput->isSequential() || !guardedThis || !guardedOutput || (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) ||
-        !XBinary::isPdStructNotCanceled(pPdStruct) ||
-        (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) return false;
+        !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords))
+        return false;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
-        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pArchive ||
-        (pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
-        (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
-        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords)) return false;
+    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice || (pContext->pOuterSourceDevice != getDevice()) ||
+        (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pArchive || (pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
+        (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) || (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords))
+        return false;
     pContext->innerState.spOutputBudget = pState->spOutputBudget;
     bool bResult = pContext->pArchive->unpackCurrent(&pContext->innerState, guardedOutput.data(), pPdStruct);
     if (!guardedThis || !guardedOutput || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
@@ -440,14 +428,14 @@ bool XSevenZipSFX::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     if (!pOperationState || *pOperationState) return false;
     QScopedValueRollback<bool> operationGuard(*pOperationState, true);
     QPointer<XSevenZipSFX> guardedThis(this);
-    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) ||
-        (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) return false;
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+        (pState->nCurrentIndex >= pState->nNumberOfRecords))
+        return false;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
-        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pArchive ||
-        (pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
-        (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
-        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords)) return false;
+    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice || (pContext->pOuterSourceDevice != getDevice()) ||
+        (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pArchive || (pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
+        (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) || (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords))
+        return false;
     bool bResult = pContext->pArchive->moveToNext(&pContext->innerState, pPdStruct);
     if (!guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
     pState->nCurrentIndex = pContext->innerState.nCurrentIndex;

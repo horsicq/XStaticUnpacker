@@ -21,8 +21,8 @@ QString actualNameKey(const QString &sName)
     return sName.toCaseFolded().normalized(QString::NormalizationForm_C);
 }
 
-QString actualUniqueOutputName(const QString &sPreferred, qint32 nRecordIndex, const QSet<QString> &setDeclaredNames,
-                               QSet<QString> *pSetAssignedNames, qint32 nMaximumRecords)
+QString actualUniqueOutputName(const QString &sPreferred, qint32 nRecordIndex, const QSet<QString> &setDeclaredNames, QSet<QString> *pSetAssignedNames,
+                               qint32 nMaximumRecords)
 {
     if (!pSetAssignedNames || sPreferred.isEmpty() || (nRecordIndex < 0)) return QString();
 
@@ -91,8 +91,7 @@ bool XActualInstaller::isValid(PDSTRUCT *pPdStruct)
 {
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
     QPointer<XActualInstaller> guardedThis(this);
-    const INTERNAL_INFO *pInfo =
-        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
+    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
     return guardedThis && pInfo && pInfo->bIsValid;
 }
 
@@ -115,8 +114,7 @@ bool XActualInstaller::handleInternalInfo(PDSTRUCT *pPdStruct)
     if (!guardedThis) return false;
 
     if (!bAlreadyHandled) {
-        const quint64 nTransaction =
-            guardedThis->beginInternalInfoTransaction();
+        const quint64 nTransaction = guardedThis->beginInternalInfoTransaction();
         if (!nTransaction) return false;
 
         // The transaction supplies the recursion sentinel. Keep every
@@ -124,17 +122,14 @@ bool XActualInstaller::handleInternalInfo(PDSTRUCT *pPdStruct)
         guardedThis->m_internalInfo = INTERNAL_INFO();
         INTERNAL_INFO info = guardedThis->_getInternalInfo(pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
 
-        const auto memoryMap =
-            guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -145,10 +140,7 @@ bool XActualInstaller::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
         guardedThis->m_internalInfo = info;
-        if (!guardedThis->commitInternalInfoTransaction(
-                nTransaction,
-                static_cast<XBinary::INTERNAL_INFO *>(
-                    &guardedThis->m_internalInfo))) {
+        if (!guardedThis->commitInternalInfoTransaction(nTransaction, static_cast<XBinary::INTERNAL_INFO *>(&guardedThis->m_internalInfo))) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -207,15 +199,13 @@ qint64 XActualInstaller::_getZipSize(qint64 nArchiveOffset, qint64 nPayloadEnd, 
 
     if (pbHasSetupIni) *pbHasSetupIni = false;
 
-    if ((nArchiveOffset < 0) || (nPayloadEnd <= nArchiveOffset) || ((nPayloadEnd - nArchiveOffset) < nLFDSize) ||
-        (read_uint32(nArchiveOffset) != nSignatureLFD)) {
+    if ((nArchiveOffset < 0) || (nPayloadEnd <= nArchiveOffset) || ((nPayloadEnd - nArchiveOffset) < nLFDSize) || (read_uint32(nArchiveOffset) != nSignatureLFD)) {
         return 0;
     }
 
     qint64 nSearchOffset = nArchiveOffset;
 
-    while ((nSearchOffset >= nArchiveOffset) && ((nPayloadEnd - nSearchOffset) >= nECDSize) &&
-           XBinary::isPdStructNotCanceled(pPdStruct)) {
+    while ((nSearchOffset >= nArchiveOffset) && ((nPayloadEnd - nSearchOffset) >= nECDSize) && XBinary::isPdStructNotCanceled(pPdStruct)) {
         qint64 nECDOffset = find_uint32(nSearchOffset, nPayloadEnd - nSearchOffset, nSignatureECD, false, pPdStruct);
 
         if ((nECDOffset < 0) || ((nPayloadEnd - nECDOffset) < nECDSize)) break;
@@ -292,8 +282,7 @@ qint64 XActualInstaller::_getZipSize(qint64 nArchiveOffset, qint64 nPayloadEnd, 
             if ((nLocalFlags != nFlags) || (nLocalMethod != nMethod) || (nLocalDataOffset > nCentralDirectoryOffset) ||
                 ((qint64)nCompressedSize > (nCentralDirectoryOffset - nLocalDataOffset)) || (nLocalFileNameSize != nFileNameSize) ||
                 (read_array(nLocalHeaderOffset + nLFDSize, nLocalFileNameSize) != read_array(nCurrentOffset + nCFDSize, nFileNameSize)) ||
-                (!(nLocalFlags & 0x0008) &&
-                 ((nLocalCRC32 != nCRC32) || (nLocalCompressedSize != nCompressedSize) || (nLocalUncompressedSize != nUncompressedSize)))) {
+                (!(nLocalFlags & 0x0008) && ((nLocalCRC32 != nCRC32) || (nLocalCompressedSize != nCompressedSize) || (nLocalUncompressedSize != nUncompressedSize)))) {
                 bValid = false;
                 break;
             }
@@ -306,15 +295,11 @@ qint64 XActualInstaller::_getZipSize(qint64 nArchiveOffset, qint64 nPayloadEnd, 
                 // legitimately have a CRC equal to the signature value. Test
                 // both layouts against the authenticated central-directory
                 // values instead of consuming the first DWORD as a signature.
-                const bool bUnsignedDescriptor =
-                    (nDescriptorAvailable >= 12) && (read_uint32(nDescriptorOffset) == nCRC32) &&
-                    (read_uint32(nDescriptorOffset + 4) == nCompressedSize) &&
-                    (read_uint32(nDescriptorOffset + 8) == nUncompressedSize);
-                const bool bSignedDescriptor =
-                    (nDescriptorAvailable >= 16) && (read_uint32(nDescriptorOffset) == nSignatureDataDescriptor) &&
-                    (read_uint32(nDescriptorOffset + 4) == nCRC32) &&
-                    (read_uint32(nDescriptorOffset + 8) == nCompressedSize) &&
-                    (read_uint32(nDescriptorOffset + 12) == nUncompressedSize);
+                const bool bUnsignedDescriptor = (nDescriptorAvailable >= 12) && (read_uint32(nDescriptorOffset) == nCRC32) &&
+                                                 (read_uint32(nDescriptorOffset + 4) == nCompressedSize) && (read_uint32(nDescriptorOffset + 8) == nUncompressedSize);
+                const bool bSignedDescriptor = (nDescriptorAvailable >= 16) && (read_uint32(nDescriptorOffset) == nSignatureDataDescriptor) &&
+                                               (read_uint32(nDescriptorOffset + 4) == nCRC32) && (read_uint32(nDescriptorOffset + 8) == nCompressedSize) &&
+                                               (read_uint32(nDescriptorOffset + 12) == nUncompressedSize);
                 if (bUnsignedDescriptor == bSignedDescriptor) {
                     bValid = false;
                     break;
@@ -496,8 +481,9 @@ bool XActualInstaller::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, 
     const qint64 nPayloadEnd = info.nArchiveOffset + info.nArchiveSize;
 
     qint64 nFilesArchiveSize = detector._getZipSize(info.nArchiveOffset, nPayloadEnd, nullptr, pPdStruct);
-    if (!guardedThis || !guardedSource || (nFilesArchiveSize <= 0) ||
-        !initialSourceValidator.isUnpackSourceCurrent(&initialSourceState, pPdStruct) || !guardedThis || !guardedSource) return false;
+    if (!guardedThis || !guardedSource || (nFilesArchiveSize <= 0) || !initialSourceValidator.isUnpackSourceCurrent(&initialSourceState, pPdStruct) || !guardedThis ||
+        !guardedSource)
+        return false;
 
     UNPACK_CONTEXT *pContext = new UNPACK_CONTEXT;
     pContext->pOuterSourceDevice = guardedSource;
@@ -567,8 +553,7 @@ bool XActualInstaller::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, 
 
                         QByteArray baIni;
                         QBuffer output(&baIni);
-                        if (output.open(QIODevice::ReadWrite) && metadataArchive.unpackCurrent(&metadataState, &output, pPdStruct) &&
-                            (baIni.size() == nIniSize)) {
+                        if (output.open(QIODevice::ReadWrite) && metadataArchive.unpackCurrent(&metadataState, &output, pPdStruct) && (baIni.size() == nIniSize)) {
                             QString sIni = QString::fromUtf8(baIni);
                             if (sIni.contains(QChar::ReplacementCharacter)) break;
                             QStringList listLines = sIni.split(QChar('\n'));
@@ -599,8 +584,8 @@ bool XActualInstaller::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, 
                                 if (nFlags >= 0) sPath.truncate(nFlags);
                                 sPath.replace('\\', '/');
                                 QString sFileName = sPath.mid(sPath.lastIndexOf('/') + 1).trimmed();
-                                if (sFileName.isEmpty() || (sFileName == ".") || (sFileName == "..") || sFileName.contains('/') ||
-                                    sFileName.contains('\\') || sFileName.contains(':')) {
+                                if (sFileName.isEmpty() || (sFileName == ".") || (sFileName == "..") || sFileName.contains('/') || sFileName.contains('\\') ||
+                                    sFileName.contains(':')) {
                                     continue;
                                 }
                                 static const QString sInvalidNameChars = QStringLiteral("<>:\"/\\|?*");
@@ -612,19 +597,16 @@ bool XActualInstaller::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, 
                                     }
                                 }
                                 static const QSet<QString> setReservedNames = {
-                                    QStringLiteral("CON"),  QStringLiteral("PRN"),  QStringLiteral("AUX"),  QStringLiteral("NUL"),
-                                    QStringLiteral("COM1"), QStringLiteral("COM2"), QStringLiteral("COM3"), QStringLiteral("COM4"),
-                                    QStringLiteral("COM5"), QStringLiteral("COM6"), QStringLiteral("COM7"), QStringLiteral("COM8"),
-                                    QStringLiteral("COM9"), QStringLiteral("LPT1"), QStringLiteral("LPT2"), QStringLiteral("LPT3"),
-                                    QStringLiteral("LPT4"), QStringLiteral("LPT5"), QStringLiteral("LPT6"), QStringLiteral("LPT7"),
-                                    QStringLiteral("LPT8"), QStringLiteral("LPT9"), QStringLiteral("CONIN$"),
-                                    QStringLiteral("CONOUT$"), QStringLiteral("CLOCK$")};
+                                    QStringLiteral("CON"),  QStringLiteral("PRN"),  QStringLiteral("AUX"),    QStringLiteral("NUL"),     QStringLiteral("COM1"),
+                                    QStringLiteral("COM2"), QStringLiteral("COM3"), QStringLiteral("COM4"),   QStringLiteral("COM5"),    QStringLiteral("COM6"),
+                                    QStringLiteral("COM7"), QStringLiteral("COM8"), QStringLiteral("COM9"),   QStringLiteral("LPT1"),    QStringLiteral("LPT2"),
+                                    QStringLiteral("LPT3"), QStringLiteral("LPT4"), QStringLiteral("LPT5"),   QStringLiteral("LPT6"),    QStringLiteral("LPT7"),
+                                    QStringLiteral("LPT8"), QStringLiteral("LPT9"), QStringLiteral("CONIN$"), QStringLiteral("CONOUT$"), QStringLiteral("CLOCK$")};
                                 QString sStem = sFileName.section('.', 0, 0).toUpper();
                                 sStem.replace(QChar(0x00B9), QLatin1Char('1'));
                                 sStem.replace(QChar(0x00B2), QLatin1Char('2'));
                                 sStem.replace(QChar(0x00B3), QLatin1Char('3'));
-                                if (!bSafeName || (sFileName.size() > 255) || sFileName.endsWith('.') || sFileName.endsWith(' ') ||
-                                    setReservedNames.contains(sStem)) {
+                                if (!bSafeName || (sFileName.size() > 255) || sFileName.endsWith('.') || sFileName.endsWith(' ') || setReservedNames.contains(sStem)) {
                                     continue;
                                 }
                                 pContext->mapRecordNames.insert(nIndex, sFileName);
@@ -635,7 +617,7 @@ bool XActualInstaller::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, 
                 }
                 bool bFinishOK = metadataArchive.finishUnpack(&metadataState, pPdStruct);
                 bool bCompleteMap = guardedThis && guardedSource && bIniFound && bIniMappingValid && bFinishOK &&
-                                      (pContext->mapRecordNames.size() == pContext->innerState.nNumberOfRecords);
+                                    (pContext->mapRecordNames.size() == pContext->innerState.nNumberOfRecords);
                 QSet<QString> setDeclaredNames;
                 for (qint32 i = 0; bCompleteMap && (i < pContext->innerState.nNumberOfRecords); i++) {
                     QString sMappedName = pContext->mapRecordNames.value(i);
@@ -644,8 +626,8 @@ bool XActualInstaller::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, 
                 }
                 QSet<QString> setAssignedNames;
                 for (qint32 i = 0; bCompleteMap && (i < pContext->innerState.nNumberOfRecords); i++) {
-                    QString sUniqueName = actualUniqueOutputName(pContext->mapRecordNames.value(i), i, setDeclaredNames, &setAssignedNames,
-                                                                 pContext->innerState.nNumberOfRecords);
+                    QString sUniqueName =
+                        actualUniqueOutputName(pContext->mapRecordNames.value(i), i, setDeclaredNames, &setAssignedNames, pContext->innerState.nNumberOfRecords);
                     if (sUniqueName.isEmpty()) bCompleteMap = false;
                     else pContext->mapRecordNames.insert(i, sUniqueName);
                 }
@@ -671,8 +653,7 @@ bool XActualInstaller::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, 
             QString sInnerName = record.mapProperties.value(FPART_PROP_ORIGINALNAME).toString();
             bool bIndexValid = false;
             qint32 nIndex = sInnerName.toInt(&bIndexValid);
-            if (!bIndexValid || (QString::number(nIndex) != sInnerName) || !pContext->mapRecordNames.contains(nIndex) ||
-                setPayloadIndexes.contains(nIndex)) {
+            if (!bIndexValid || (QString::number(nIndex) != sInnerName) || !pContext->mapRecordNames.contains(nIndex) || setPayloadIndexes.contains(nIndex)) {
                 bMetadataValid = false;
                 break;
             }
@@ -698,8 +679,7 @@ bool XActualInstaller::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, 
     }
 
     if (!guardedThis || !guardedSource || !bMetadataValid || !XBinary::isPdStructNotCanceled(pPdStruct) ||
-        !pContext->pSourceValidator->validateAndFinalizeUnpackSource(&pContext->sourceValidationState, pPdStruct) ||
-        !guardedThis || !guardedSource) {
+        !pContext->pSourceValidator->validateAndFinalizeUnpackSource(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !guardedSource) {
         pContext->pArchive->finishUnpack(&pContext->innerState, nullptr);
         delete pContext->pArchive;
         pContext->pSourceValidator->releaseUnpackSource(&pContext->sourceValidationState);
@@ -727,21 +707,24 @@ XBinary::ARCHIVERECORD XActualInstaller::infoCurrent(UNPACK_STATE *pState, PDSTR
     if (!pOperationState || *pOperationState) return result;
     QScopedValueRollback<bool> operationGuard(*pOperationState, true);
     QPointer<XActualInstaller> guardedThis(this);
-    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) ||
-        (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) return result;
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+        (pState->nCurrentIndex >= pState->nNumberOfRecords))
+        return result;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
-        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pArchive) return result;
-    if (!pContext->pSourceValidator ||
-        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
-        !guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return result;
-    if ((pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
-        (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
-        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords)) return result;
+    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice || (pContext->pOuterSourceDevice != getDevice()) ||
+        (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pArchive)
+        return result;
+    if (!pContext->pSourceValidator || !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis ||
+        !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext))
+        return result;
+    if ((pContext->innerState.nCurrentIndex != pState->nCurrentIndex) || (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
+        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords))
+        return result;
     result = pContext->pArchive->infoCurrent(&pContext->innerState, pPdStruct);
     if (!guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return ARCHIVERECORD();
-    if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
-        !guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return ARCHIVERECORD();
+    if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !m_setUnpackContexts.contains(pContext) ||
+        (pState->pContext != pContext))
+        return ARCHIVERECORD();
 
     QString sInnerName = result.mapProperties.value(FPART_PROP_ORIGINALNAME).toString();
     bool bIndexValid = false;
@@ -760,24 +743,25 @@ bool XActualInstaller::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, P
     QScopedValueRollback<bool> operationGuard(*pOperationState, true);
     QPointer<XActualInstaller> guardedThis(this);
     QPointer<QIODevice> guardedOutput(pDevice);
-    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !guardedOutput || !guardedOutput->isOpen() ||
-        !guardedOutput->isWritable() || guardedOutput->isSequential() || !guardedThis || !guardedOutput ||
-        (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) || !XBinary::isPdStructNotCanceled(pPdStruct) ||
-        (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) return false;
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !guardedOutput || !guardedOutput->isOpen() || !guardedOutput->isWritable() ||
+        guardedOutput->isSequential() || !guardedThis || !guardedOutput || (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) ||
+        !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords))
+        return false;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
-        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pArchive) return false;
-    if (!pContext->pSourceValidator ||
-        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
-        !guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
-    if ((pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
-        (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
-        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords)) return false;
+    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice || (pContext->pOuterSourceDevice != getDevice()) ||
+        (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pArchive)
+        return false;
+    if (!pContext->pSourceValidator || !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis ||
+        !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext))
+        return false;
+    if ((pContext->innerState.nCurrentIndex != pState->nCurrentIndex) || (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
+        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords))
+        return false;
     pContext->innerState.spOutputBudget = pState->spOutputBudget;
     bool bResult = pContext->pArchive->unpackCurrent(&pContext->innerState, guardedOutput.data(), pPdStruct);
     if (!guardedThis || !guardedOutput || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
-    if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
-        !guardedThis || !guardedOutput || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) {
+    if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !guardedOutput ||
+        !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) {
         if (guardedOutput) {
             XBinary::resize(guardedOutput.data(), 0);
             if (guardedOutput) guardedOutput->seek(0);
@@ -795,21 +779,24 @@ bool XActualInstaller::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     if (!pOperationState || *pOperationState) return false;
     QScopedValueRollback<bool> operationGuard(*pOperationState, true);
     QPointer<XActualInstaller> guardedThis(this);
-    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) ||
-        (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pState->nNumberOfRecords)) return false;
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+        (pState->nCurrentIndex >= pState->nNumberOfRecords))
+        return false;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
-        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pArchive) return false;
-    if (!pContext->pSourceValidator ||
-        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
-        !guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
-    if ((pContext->innerState.nCurrentIndex != pState->nCurrentIndex) ||
-        (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
-        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords)) return false;
+    if (!m_setUnpackContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice || (pContext->pOuterSourceDevice != getDevice()) ||
+        (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pArchive)
+        return false;
+    if (!pContext->pSourceValidator || !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis ||
+        !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext))
+        return false;
+    if ((pContext->innerState.nCurrentIndex != pState->nCurrentIndex) || (pContext->innerState.nCurrentOffset != pState->nCurrentOffset) ||
+        (pContext->innerState.nNumberOfRecords != pState->nNumberOfRecords))
+        return false;
     bool bResult = pContext->pArchive->moveToNext(&pContext->innerState, pPdStruct);
     if (!guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
-    if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
-        !guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return false;
+    if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !m_setUnpackContexts.contains(pContext) ||
+        (pState->pContext != pContext))
+        return false;
     pState->nCurrentIndex = pContext->innerState.nCurrentIndex;
     pState->nCurrentOffset = pContext->innerState.nCurrentOffset;
     pState->mapArchiveProperties = pContext->innerState.mapArchiveProperties;

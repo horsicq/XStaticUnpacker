@@ -56,30 +56,20 @@ public:
     qint64 getFileFormatSize(PDSTRUCT *pPdStruct = nullptr) override;
     OSNAME getOsName() override;
     QList<QString> getSearchSignatures() override;
-    XBinary *createInstance(QIODevice *pDevice, bool bIsImage = false,
-                            XADDR nModuleAddress = -1) override;
+    XBinary *createInstance(QIODevice *pDevice, bool bIsImage = false, XADDR nModuleAddress = -1) override;
 
     QMap<UNPACK_PROP, QVariant> getDefaultUnpackProperties() override;
-    bool initUnpack(UNPACK_STATE *pState,
-                    const QMap<UNPACK_PROP, QVariant> &mapProperties,
-                    PDSTRUCT *pPdStruct = nullptr) override;
-    ARCHIVERECORD infoCurrent(UNPACK_STATE *pState,
-                              PDSTRUCT *pPdStruct = nullptr) override;
-    bool unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice,
-                       PDSTRUCT *pPdStruct = nullptr) override;
-    bool moveToNext(UNPACK_STATE *pState,
-                    PDSTRUCT *pPdStruct = nullptr) override;
-    bool finishUnpack(UNPACK_STATE *pState,
-                      PDSTRUCT *pPdStruct = nullptr) override;
+    bool initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct = nullptr) override;
+    ARCHIVERECORD infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
+    bool unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
+    bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
+    bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     QList<FPART_PROP> getAvailableFPARTProperties() override;
 
     // Decode the bytes following the eight-byte RIB header.  This helper is
     // public so the codec can be covered independently of archive discovery
     // and reused by containers whose members are bounded SubDevices.
-    static bool decompress(const QByteArray &baPackedData,
-                           qint64 nUncompressedSize,
-                           QByteArray *pUncompressedData,
-                           PDSTRUCT *pPdStruct = nullptr);
+    static bool decompress(const QByteArray &baPackedData, qint64 nUncompressedSize, QByteArray *pUncompressedData, PDSTRUCT *pPdStruct = nullptr);
 
 private:
     struct RIB_HEADER_INFO {
@@ -96,8 +86,7 @@ private:
         QString sFileName;
     };
 
-    bool readHeaderInfo(RIB_HEADER_INFO *pInfo,
-                        PDSTRUCT *pPdStruct = nullptr);
+    bool readHeaderInfo(RIB_HEADER_INFO *pInfo, PDSTRUCT *pPdStruct = nullptr);
     static QString payloadExtension(const QByteArray &baPrefix);
 
 private:

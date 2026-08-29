@@ -74,8 +74,7 @@ bool XCreateInstall::isValid(PDSTRUCT *pPdStruct)
 {
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
     QPointer<XCreateInstall> guardedThis(this);
-    const INTERNAL_INFO *pInfo =
-        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
+    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
     return guardedThis && pInfo && pInfo->bIsValid;
 }
 
@@ -98,8 +97,7 @@ bool XCreateInstall::handleInternalInfo(PDSTRUCT *pPdStruct)
     if (!guardedThis) return false;
 
     if (!bAlreadyHandled) {
-        const quint64 nTransaction =
-            guardedThis->beginInternalInfoTransaction();
+        const quint64 nTransaction = guardedThis->beginInternalInfoTransaction();
         if (!nTransaction) return false;
 
         // The transaction supplies the recursion sentinel. Keep every
@@ -107,17 +105,14 @@ bool XCreateInstall::handleInternalInfo(PDSTRUCT *pPdStruct)
         guardedThis->m_internalInfo = INTERNAL_INFO();
         INTERNAL_INFO info = guardedThis->_getInternalInfo(pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
 
-        const auto memoryMap =
-            guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -128,10 +123,7 @@ bool XCreateInstall::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
         guardedThis->m_internalInfo = info;
-        if (!guardedThis->commitInternalInfoTransaction(
-                nTransaction,
-                static_cast<XBinary::INTERNAL_INFO *>(
-                    &guardedThis->m_internalInfo))) {
+        if (!guardedThis->commitInternalInfoTransaction(nTransaction, static_cast<XBinary::INTERNAL_INFO *>(&guardedThis->m_internalInfo))) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -192,12 +184,9 @@ static QString ciDeviceFileName(QIODevice *pDevice)
 {
     QPointer<QIODevice> guardedDevice(pDevice);
     if (!guardedDevice) return QString();
-    const bool bSourceIdentityBound =
-        guardedDevice->property("XStaticUnpacker.SourceIdentityBound")
-            .toBool();
+    const bool bSourceIdentityBound = guardedDevice->property("XStaticUnpacker.SourceIdentityBound").toBool();
     if (!guardedDevice) return QString();
-    const QString sSourceFileName =
-        guardedDevice->property("XStaticUnpacker.SourceFileName").toString();
+    const QString sSourceFileName = guardedDevice->property("XStaticUnpacker.SourceFileName").toString();
     if (!guardedDevice) return QString();
     if (bSourceIdentityBound || !sSourceFileName.isEmpty()) return sSourceFileName;
 
@@ -219,10 +208,9 @@ static Qt::CaseSensitivity ciFileSystemCaseSensitivity()
 
 static bool ciIsSafeBaseName(const QString &sName)
 {
-    if (sName.isEmpty() || (sName.size() > CI_MAX_VOLUME_PATTERN_LENGTH) || (sName == ".") || (sName == "..") ||
-        sName.endsWith('.') || sName.endsWith(' ') || sName.contains('/') || sName.contains('\\') || sName.contains(':') ||
-        sName.contains('<') || sName.contains('>') || sName.contains('"') || sName.contains('|') || sName.contains('?') ||
-        sName.contains('*') || sName.contains(QChar('\0'))) {
+    if (sName.isEmpty() || (sName.size() > CI_MAX_VOLUME_PATTERN_LENGTH) || (sName == ".") || (sName == "..") || sName.endsWith('.') || sName.endsWith(' ') ||
+        sName.contains('/') || sName.contains('\\') || sName.contains(':') || sName.contains('<') || sName.contains('>') || sName.contains('"') || sName.contains('|') ||
+        sName.contains('?') || sName.contains('*') || sName.contains(QChar('\0'))) {
         return false;
     }
     for (QChar character : sName) {
@@ -233,10 +221,10 @@ static bool ciIsSafeBaseName(const QString &sName)
     sStem.replace(QChar(0x00B2), QLatin1Char('2'));
     sStem.replace(QChar(0x00B3), QLatin1Char('3'));
     static const QSet<QString> setReserved = {
-        QStringLiteral("CON"), QStringLiteral("PRN"), QStringLiteral("AUX"), QStringLiteral("NUL"), QStringLiteral("COM1"),
-        QStringLiteral("COM2"), QStringLiteral("COM3"), QStringLiteral("COM4"), QStringLiteral("COM5"), QStringLiteral("COM6"),
-        QStringLiteral("COM7"), QStringLiteral("COM8"), QStringLiteral("COM9"), QStringLiteral("LPT1"), QStringLiteral("LPT2"),
-        QStringLiteral("LPT3"), QStringLiteral("LPT4"), QStringLiteral("LPT5"), QStringLiteral("LPT6"), QStringLiteral("LPT7"),
+        QStringLiteral("CON"),  QStringLiteral("PRN"),  QStringLiteral("AUX"),    QStringLiteral("NUL"),     QStringLiteral("COM1"),
+        QStringLiteral("COM2"), QStringLiteral("COM3"), QStringLiteral("COM4"),   QStringLiteral("COM5"),    QStringLiteral("COM6"),
+        QStringLiteral("COM7"), QStringLiteral("COM8"), QStringLiteral("COM9"),   QStringLiteral("LPT1"),    QStringLiteral("LPT2"),
+        QStringLiteral("LPT3"), QStringLiteral("LPT4"), QStringLiteral("LPT5"),   QStringLiteral("LPT6"),    QStringLiteral("LPT7"),
         QStringLiteral("LPT8"), QStringLiteral("LPT9"), QStringLiteral("CONIN$"), QStringLiteral("CONOUT$"), QStringLiteral("CLOCK$")};
     return (QFileInfo(sName).fileName() == sName) && !setReserved.contains(sStem);
 }
@@ -264,21 +252,19 @@ static bool ciNormalizeOutputName(const QString &sInput, QString *pResult)
                 continue;
             }
             if ((nCharacter >= 0xDC00) && (nCharacter <= 0xDFFF)) return false;
-            if ((nCharacter < 0x20) || (sPart.at(i) == '<') || (sPart.at(i) == '>') || (sPart.at(i) == ':') ||
-                (sPart.at(i) == '"') || (sPart.at(i) == '|') || (sPart.at(i) == '?') || (sPart.at(i) == '*') ||
-                (sPart.at(i) == QChar('\0')) || (sPart.at(i) == QChar::ReplacementCharacter) || !sPart.at(i).isPrint()) {
+            if ((nCharacter < 0x20) || (sPart.at(i) == '<') || (sPart.at(i) == '>') || (sPart.at(i) == ':') || (sPart.at(i) == '"') || (sPart.at(i) == '|') ||
+                (sPart.at(i) == '?') || (sPart.at(i) == '*') || (sPart.at(i) == QChar('\0')) || (sPart.at(i) == QChar::ReplacementCharacter) || !sPart.at(i).isPrint()) {
                 return false;
             }
         }
 
         QString sDeviceName = sPart.section('.', 0, 0).toUpper();
-        bool bReservedDigit = (sDeviceName.size() == 4) &&
-                              (((sDeviceName.at(3) >= QChar('1')) && (sDeviceName.at(3) <= QChar('9'))) ||
-                               (sDeviceName.at(3) == QChar(0x00b9)) || (sDeviceName.at(3) == QChar(0x00b2)) ||
-                               (sDeviceName.at(3) == QChar(0x00b3)));
+        bool bReservedDigit =
+            (sDeviceName.size() == 4) && (((sDeviceName.at(3) >= QChar('1')) && (sDeviceName.at(3) <= QChar('9'))) || (sDeviceName.at(3) == QChar(0x00b9)) ||
+                                          (sDeviceName.at(3) == QChar(0x00b2)) || (sDeviceName.at(3) == QChar(0x00b3)));
         bool bNumberedDevice = (sDeviceName.startsWith("COM") || sDeviceName.startsWith("LPT")) && bReservedDigit;
-        if ((sDeviceName == "CON") || (sDeviceName == "PRN") || (sDeviceName == "AUX") || (sDeviceName == "NUL") ||
-            (sDeviceName == "CLOCK$") || (sDeviceName == "CONIN$") || (sDeviceName == "CONOUT$") || bNumberedDevice) {
+        if ((sDeviceName == "CON") || (sDeviceName == "PRN") || (sDeviceName == "AUX") || (sDeviceName == "NUL") || (sDeviceName == "CLOCK$") ||
+            (sDeviceName == "CONIN$") || (sDeviceName == "CONOUT$") || bNumberedDevice) {
             return false;
         }
     }
@@ -307,9 +293,7 @@ static bool ciIsDirectRegularFile(const QFileInfo &fileInfo, const QString &sCan
 static bool ciReadOpenFileExact(QFile *pFile, qint64 nSize, QByteArray *pResult, XBinary::PDSTRUCT *pPdStruct)
 {
     QPointer<QFile> guardedFile(pFile);
-    if (!guardedFile || !guardedFile->isOpen() || !guardedFile || !pResult ||
-        (nSize < 0) || (nSize > CI_MAX_VOLUME_SIZE) ||
-        !XBinary::isPdStructNotCanceled(pPdStruct)) {
+    if (!guardedFile || !guardedFile->isOpen() || !guardedFile || !pResult || (nSize < 0) || (nSize > CI_MAX_VOLUME_SIZE) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
         return false;
     }
 
@@ -320,8 +304,7 @@ static bool ciReadOpenFileExact(QFile *pFile, qint64 nSize, QByteArray *pResult,
         qint64 nToRead = qMin(CI_IO_CHUNK_SIZE, nSize - (qint64)baResult.size());
         if (!guardedFile) return false;
         QByteArray baChunk = guardedFile->read(nToRead);
-        if (!guardedFile || baChunk.isEmpty() ||
-            (baChunk.size() > nToRead)) return false;
+        if (!guardedFile || baChunk.isEmpty() || (baChunk.size() > nToRead)) return false;
         baResult.append(baChunk);
     }
     if (!guardedFile) return false;
@@ -329,8 +312,7 @@ static bool ciReadOpenFileExact(QFile *pFile, qint64 nSize, QByteArray *pResult,
     return true;
 }
 
-static bool ciRetainCompanionGuard(QList<XMaterializedUnpackGuard *> *pGuards,
-                                   QScopedPointer<XMaterializedUnpackGuard> *pGuard)
+static bool ciRetainCompanionGuard(QList<XMaterializedUnpackGuard *> *pGuards, QScopedPointer<XMaterializedUnpackGuard> *pGuard)
 {
     if (!pGuards || !pGuard || !pGuard->data()) return false;
     try {
@@ -345,8 +327,7 @@ static bool ciRetainCompanionGuard(QList<XMaterializedUnpackGuard *> *pGuards,
     return true;
 }
 
-static bool ciFinalizeCompanionGuards(const QList<XMaterializedUnpackGuard *> &listGuards,
-                                      XBinary::PDSTRUCT *pPdStruct)
+static bool ciFinalizeCompanionGuards(const QList<XMaterializedUnpackGuard *> &listGuards, XBinary::PDSTRUCT *pPdStruct)
 {
     for (XMaterializedUnpackGuard *pGuard : listGuards) {
         if (!pGuard || !pGuard->validateAndFinalize(pPdStruct)) return false;
@@ -359,8 +340,7 @@ static bool ciIsMainGeaFile(const QString &sFileName, QByteArray *pHeader = null
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
     QFileInfo fileInfo(sFileName);
-    if (!fileInfo.exists() || !fileInfo.isFile() || !fileInfo.isReadable() || fileInfo.isSymLink() || (fileInfo.size() < 73) ||
-        (fileInfo.size() > CI_MAX_VOLUME_SIZE)) {
+    if (!fileInfo.exists() || !fileInfo.isFile() || !fileInfo.isReadable() || fileInfo.isSymLink() || (fileInfo.size() < 73) || (fileInfo.size() > CI_MAX_VOLUME_SIZE)) {
         return false;
     }
 
@@ -375,8 +355,8 @@ static bool ciIsMainGeaFile(const QString &sFileName, QByteArray *pHeader = null
     quint32 nHeaderSize = ciRd32(p + 26);
     quint64 nGeaSize = ciRd64(p + 42);
     quint16 nVolumeCount = ciRd16(p + 24);
-    if ((p[10] == 0) || (nVolumeCount == 0) || (nVolumeCount > CI_MAX_VOLUME_COUNT) || (nHeaderSize < 73) ||
-        (nHeaderSize > (quint32)file.size()) || (nGeaSize != (quint64)file.size())) {
+    if ((p[10] == 0) || (nVolumeCount == 0) || (nVolumeCount > CI_MAX_VOLUME_COUNT) || (nHeaderSize < 73) || (nHeaderSize > (quint32)file.size()) ||
+        (nGeaSize != (quint64)file.size())) {
         return false;
     }
 
@@ -389,8 +369,7 @@ static bool ciIsMainGeaFile(const QString &sFileName, QByteArray *pHeader = null
     if ((nPatternEnd < 73) || (nPatternEnd >= nHeaderSize) || (nPatternEnd - 73 > CI_MAX_VOLUME_PATTERN_LENGTH)) return false;
     QString sPattern = QString::fromLatin1(baPrefix.constData() + 73, (int)(nPatternEnd - 73));
     QString sExpectedName;
-    if (sPattern.isEmpty() || !ciFormatVolumeName(sPattern, 1, &sExpectedName) ||
-        (fileInfo.fileName().compare(sExpectedName, ciFileSystemCaseSensitivity()) != 0)) {
+    if (sPattern.isEmpty() || !ciFormatVolumeName(sPattern, 1, &sExpectedName) || (fileInfo.fileName().compare(sExpectedName, ciFileSystemCaseSensitivity()) != 0)) {
         return false;
     }
 
@@ -468,8 +447,8 @@ XCreateInstall::INTERNAL_INFO XCreateInstall::_detect(PDSTRUCT *pPdStruct)
     // installer size (an earlier GEA lives in the SETUP_TEMP resource).  Scan in
     // bounded overlapping windows instead of copying an attacker-sized PE.
     XBinary::OFFSETSIZE osSignature = pe.getSignOffsetSize();
-    const bool bSignatureAtEnd = (osSignature.nOffset > 0) && (osSignature.nSize > 0) &&
-                                 (osSignature.nOffset <= nSize) && (osSignature.nSize == nSize - osSignature.nOffset);
+    const bool bSignatureAtEnd =
+        (osSignature.nOffset > 0) && (osSignature.nSize > 0) && (osSignature.nOffset <= nSize) && (osSignature.nSize == nSize - osSignature.nOffset);
 
     qint64 nSearchEnd = bSignatureAtEnd ? osSignature.nOffset : nSize;
     while ((nSearchEnd > 0) && XBinary::isPdStructNotCanceled(pPdStruct)) {
@@ -482,8 +461,8 @@ XCreateInstall::INTERNAL_INFO XCreateInstall::_detect(PDSTRUCT *pPdStruct)
         const quint8 *pWindow = (const quint8 *)baWindow.constData();
         for (qint64 nLocal = nOwnedSize - 1; nLocal >= 0; nLocal--) {
             if (nLocal + 73 > baWindow.size()) continue;
-            if ((pWindow[nLocal] != 'G') || (pWindow[nLocal + 1] != 'E') || (pWindow[nLocal + 2] != 'A') ||
-                (pWindow[nLocal + 3] != 0) || (ciRd16(pWindow + nLocal + 4) != 0)) {
+            if ((pWindow[nLocal] != 'G') || (pWindow[nLocal + 1] != 'E') || (pWindow[nLocal + 2] != 'A') || (pWindow[nLocal + 3] != 0) ||
+                (ciRd16(pWindow + nLocal + 4) != 0)) {
                 continue;
             }
 
@@ -491,11 +470,9 @@ XCreateInstall::INTERNAL_INFO XCreateInstall::_detect(PDSTRUCT *pPdStruct)
             quint16 nVolumeCount = ciRd16(pWindow + nLocal + 24);
             quint64 nGeaEnd = ciRd64(pWindow + nLocal + 42);
             qint64 nCandidateOffset = nSearchStart + nLocal;
-            bool bEndValid = (nGeaEnd == (quint64)nSize) ||
-                             (bSignatureAtEnd && (nGeaEnd == (quint64)osSignature.nOffset));
-            if ((pWindow[nLocal + 10] != 0) && (nVolumeCount > 0) && (nVolumeCount <= CI_MAX_VOLUME_COUNT) &&
-                (nHeaderSize >= 73) && bEndValid && (nGeaEnd >= (quint64)nCandidateOffset) &&
-                ((quint64)nHeaderSize <= nGeaEnd - (quint64)nCandidateOffset)) {
+            bool bEndValid = (nGeaEnd == (quint64)nSize) || (bSignatureAtEnd && (nGeaEnd == (quint64)osSignature.nOffset));
+            if ((pWindow[nLocal + 10] != 0) && (nVolumeCount > 0) && (nVolumeCount <= CI_MAX_VOLUME_COUNT) && (nHeaderSize >= 73) && bEndValid &&
+                (nGeaEnd >= (quint64)nCandidateOffset) && ((quint64)nHeaderSize <= nGeaEnd - (quint64)nCandidateOffset)) {
                 result.nGeaOffset = nCandidateOffset;
                 break;
             }
@@ -554,7 +531,9 @@ struct LzgeBits {
     qint64 p;
     int k;
     bool failed;
-    LzgeBits(const quint8 *buf, qint64 l) : b(buf), len(l), p(0), k(7), failed(false) {}
+    LzgeBits(const quint8 *buf, qint64 l) : b(buf), len(l), p(0), k(7), failed(false)
+    {
+    }
     int bit()
     {
         if (failed || !b || (p >= len)) {
@@ -584,8 +563,14 @@ struct LzgeBits {
         }
         return r;
     }
-    bool good() const { return !failed; }
-    bool eof() const { return p >= len; }
+    bool good() const
+    {
+        return !failed;
+    }
+    bool eof() const
+    {
+        return p >= len;
+    }
     bool hasCanonicalPadding() const
     {
         if (failed || !b || (p < 0) || (p > len)) return false;
@@ -740,8 +725,7 @@ static bool lzgeLoadModel(LzgeBits &bits, LzgeModel &m)
 
 static QByteArray lzgeDecode(const quint8 *pSrc, qint64 nSrcLen, qint64 nDstLen, XBinary::PDSTRUCT *pPdStruct)
 {
-    if (!pSrc || (nDstLen <= 0) || (nDstLen > INT_MAX) || (nSrcLen <= 0) || (nSrcLen > INT_MAX) ||
-        !XBinary::isPdStructNotCanceled(pPdStruct)) {
+    if (!pSrc || (nDstLen <= 0) || (nDstLen > INT_MAX) || (nSrcLen <= 0) || (nSrcLen > INT_MAX) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
         return QByteArray();
     }
 
@@ -829,8 +813,7 @@ static QByteArray lzgeDecode(const quint8 *pSrc, qint64 nSrcLen, qint64 nDstLen,
         }
     }
 
-    if (((qint64)out.size() != nDstLen) || !bits.good() || !bits.hasCanonicalPadding() ||
-        !XBinary::isPdStructNotCanceled(pPdStruct)) {
+    if (((qint64)out.size() != nDstLen) || !bits.good() || !bits.hasCanonicalPadding() || !XBinary::isPdStructNotCanceled(pPdStruct)) {
         return QByteArray();
     }
     return out;
@@ -883,9 +866,8 @@ static bool ciParseGeaHeader(const QByteArray &baArchive, CiGeaHeader *pHeader)
     h.nBlockSize = (quint32)p[71] * 0x40000u;
     h.nSolidSize = (quint32)p[72] * 0x40000u;
 
-    if ((p[10] == 0) || (h.nVolumeCount == 0) || (h.nVolumeCount > CI_MAX_VOLUME_COUNT) || (h.nHeaderSize < 73) ||
-        (h.nHeaderSize > (quint32)baArchive.size()) || (h.nHeaderSize > (quint32)CI_MAX_ARCHIVE_SIZE) ||
-        (h.nGeaSize < h.nHeaderSize) || (h.nSummarySize > (quint64)CI_MAX_ARCHIVE_SIZE) ||
+    if ((p[10] == 0) || (h.nVolumeCount == 0) || (h.nVolumeCount > CI_MAX_VOLUME_COUNT) || (h.nHeaderSize < 73) || (h.nHeaderSize > (quint32)baArchive.size()) ||
+        (h.nHeaderSize > (quint32)CI_MAX_ARCHIVE_SIZE) || (h.nGeaSize < h.nHeaderSize) || (h.nSummarySize > (quint64)CI_MAX_ARCHIVE_SIZE) ||
         (h.nInfoSize > (quint32)CI_MAX_ARCHIVE_SIZE) || (h.nMovedSize > (quint32)CI_MAX_ARCHIVE_SIZE) || (h.nBlockSize == 0)) {
         return false;
     }
@@ -897,8 +879,8 @@ static bool ciParseGeaHeader(const QByteArray &baArchive, CiGeaHeader *pHeader)
     h.nInfoOffset = nPatternEnd + 1;
 
     if (h.nVolumeCount > 1) {
-        if (h.sVolumePattern.isEmpty() || (h.nVolumeSize < 10) || (h.nVolumeSize > (quint64)CI_MAX_VOLUME_SIZE) ||
-            (h.nLastVolumeSize < 10) || (h.nLastVolumeSize > (quint64)CI_MAX_VOLUME_SIZE)) {
+        if (h.sVolumePattern.isEmpty() || (h.nVolumeSize < 10) || (h.nVolumeSize > (quint64)CI_MAX_VOLUME_SIZE) || (h.nLastVolumeSize < 10) ||
+            (h.nLastVolumeSize > (quint64)CI_MAX_VOLUME_SIZE)) {
             return false;
         }
     }
@@ -950,19 +932,17 @@ static bool ciFormatVolumeName(const QString &sPattern, int nVolume, QString *pR
     return true;
 }
 
-static bool ciBuildLogicalData(const QByteArray &baPrimary, const QString &sPrimaryFileName, qint64 nGeaFileOffset, const CiGeaHeader &h,
-                               QByteArray *pData, QList<XMaterializedUnpackGuard *> *pCompanionGuards,
-                               XBinary::PDSTRUCT *pPdStruct)
+static bool ciBuildLogicalData(const QByteArray &baPrimary, const QString &sPrimaryFileName, qint64 nGeaFileOffset, const CiGeaHeader &h, QByteArray *pData,
+                               QList<XMaterializedUnpackGuard *> *pCompanionGuards, XBinary::PDSTRUCT *pPdStruct)
 {
-    if (!pData || !pCompanionGuards || (nGeaFileOffset < 0) || (h.nGeaSize < (quint64)nGeaFileOffset) ||
-        (baPrimary.size() > CI_MAX_ARCHIVE_SIZE) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
+    if (!pData || !pCompanionGuards || (nGeaFileOffset < 0) || (h.nGeaSize < (quint64)nGeaFileOffset) || (baPrimary.size() > CI_MAX_ARCHIVE_SIZE) ||
+        !XBinary::isPdStructNotCanceled(pPdStruct)) {
         return false;
     }
 
     quint64 nPrimaryArchiveSize = h.nGeaSize - (quint64)nGeaFileOffset;
     quint64 nFirstDataOffset = (quint64)h.nHeaderSize + h.nMovedSize;
-    if ((nFirstDataOffset > nPrimaryArchiveSize) || (nPrimaryArchiveSize != (quint64)baPrimary.size()) ||
-        (h.nSummarySize > (quint64)CI_MAX_ARCHIVE_SIZE)) {
+    if ((nFirstDataOffset > nPrimaryArchiveSize) || (nPrimaryArchiveSize != (quint64)baPrimary.size()) || (h.nSummarySize > (quint64)CI_MAX_ARCHIVE_SIZE)) {
         return false;
     }
 
@@ -986,8 +966,8 @@ static bool ciBuildLogicalData(const QByteArray &baPrimary, const QString &sPrim
 
     if (nGeaFileOffset == 0) {
         QString sExternalDirectory = QFileInfo(primaryDir.absolutePath()).canonicalFilePath();
-        if (sFormattedName.isEmpty() || sExternalDirectory.isEmpty() ||
-            (primaryInfo.fileName().compare(sFormattedName, cs) != 0) || !ciIsDirectRegularFile(primaryInfo, sExternalDirectory)) {
+        if (sFormattedName.isEmpty() || sExternalDirectory.isEmpty() || (primaryInfo.fileName().compare(sFormattedName, cs) != 0) ||
+            !ciIsDirectRegularFile(primaryInfo, sExternalDirectory)) {
             return false;
         }
     }
@@ -999,8 +979,7 @@ static bool ciBuildLogicalData(const QByteArray &baPrimary, const QString &sPrim
         sPrimaryCanonical = primaryInfo.canonicalFilePath();
         if (sCanonicalDirectory.isEmpty() || sPrimaryCanonical.isEmpty()) return false;
 
-        QFileInfoList listDirectoryEntries =
-            primaryDir.entryInfoList(QDir::AllEntries | QDir::System | QDir::Hidden | QDir::NoDotAndDotDot, QDir::Name);
+        QFileInfoList listDirectoryEntries = primaryDir.entryInfoList(QDir::AllEntries | QDir::System | QDir::Hidden | QDir::NoDotAndDotDot, QDir::Name);
         if (listDirectoryEntries.size() > CI_MAX_DIRECTORY_ENTRIES) return false;
 
         for (const QFileInfo &fileInfo : listDirectoryEntries) {
@@ -1030,40 +1009,29 @@ static bool ciBuildLogicalData(const QByteArray &baPrimary, const QString &sPrim
         }
 
         quint64 nExpectedSize = (i == h.nVolumeCount - 1) ? h.nLastVolumeSize : h.nVolumeSize;
-        if ((nExpectedSize < 10) || (nExpectedSize > (quint64)CI_MAX_VOLUME_SIZE) ||
-            (nExpectedSize > (quint64)volumeInfo.size()) || (nExpectedSize != (quint64)volumeInfo.size()) ||
-            (nAggregatePhysicalSize > (quint64)CI_MAX_ARCHIVE_SIZE - nExpectedSize)) {
+        if ((nExpectedSize < 10) || (nExpectedSize > (quint64)CI_MAX_VOLUME_SIZE) || (nExpectedSize > (quint64)volumeInfo.size()) ||
+            (nExpectedSize != (quint64)volumeInfo.size()) || (nAggregatePhysicalSize > (quint64)CI_MAX_ARCHIVE_SIZE - nExpectedSize)) {
             return false;
         }
         nAggregatePhysicalSize += nExpectedSize;
 
         quint64 nVolumeDataSize = nExpectedSize - 10;
-        if ((nVolumeDataSize > (quint64)CI_MAX_ARCHIVE_SIZE - (quint64)baData.size()) ||
-            ((quint64)baData.size() + nVolumeDataSize > h.nSummarySize)) {
+        if ((nVolumeDataSize > (quint64)CI_MAX_ARCHIVE_SIZE - (quint64)baData.size()) || ((quint64)baData.size() + nVolumeDataSize > h.nSummarySize)) {
             return false;
         }
 
-        QScopedPointer<XMaterializedUnpackGuard> pVolumeGuard(
-            XMaterializedUnpackGuard::openFile(volumeInfo.canonicalFilePath(), pPdStruct));
-        QPointer<QIODevice> guardedVolumeDevice(
-            pVolumeGuard ? pVolumeGuard->device() : nullptr);
-        QFile *pVolumeFile = guardedVolumeDevice
-                                 ? dynamic_cast<QFile *>(
-                                       guardedVolumeDevice.data())
-                                 : nullptr;
+        QScopedPointer<XMaterializedUnpackGuard> pVolumeGuard(XMaterializedUnpackGuard::openFile(volumeInfo.canonicalFilePath(), pPdStruct));
+        QPointer<QIODevice> guardedVolumeDevice(pVolumeGuard ? pVolumeGuard->device() : nullptr);
+        QFile *pVolumeFile = guardedVolumeDevice ? dynamic_cast<QFile *>(guardedVolumeDevice.data()) : nullptr;
         QPointer<QFile> guardedVolumeFile(pVolumeFile);
         if (!guardedVolumeDevice || !guardedVolumeFile) return false;
         const qint64 nObservedVolumeSize = guardedVolumeFile->size();
-        if (!guardedVolumeDevice || !guardedVolumeFile ||
-            ((quint64)nObservedVolumeSize != nExpectedSize)) return false;
+        if (!guardedVolumeDevice || !guardedVolumeFile || ((quint64)nObservedVolumeSize != nExpectedSize)) return false;
 
         QByteArray baVolumeHeader;
-        if (!ciReadOpenFileExact(guardedVolumeFile.data(), 10,
-                                 &baVolumeHeader, pPdStruct) ||
-            !guardedVolumeDevice || !guardedVolumeFile) return false;
+        if (!ciReadOpenFileExact(guardedVolumeFile.data(), 10, &baVolumeHeader, pPdStruct) || !guardedVolumeDevice || !guardedVolumeFile) return false;
         const quint8 *p = (const quint8 *)baVolumeHeader.constData();
-        if ((p[0] != 'G') || (p[1] != 'E') || (p[2] != 'A') || (p[3] != 0) || (ciRd16(p + 4) != i) ||
-            (ciRd32(p + 6) != h.nUnique)) {
+        if ((p[0] != 'G') || (p[1] != 'E') || (p[2] != 'A') || (p[3] != 0) || (ciRd16(p + 4) != i) || (ciRd32(p + 6) != h.nUnique)) {
             return false;
         }
 
@@ -1073,8 +1041,7 @@ static bool ciBuildLogicalData(const QByteArray &baPrimary, const QString &sPrim
             qint64 nToRead = (qint64)qMin((quint64)CI_IO_CHUNK_SIZE, nVolumeDataSize - nReadVolumeData);
             if (!guardedVolumeDevice || !guardedVolumeFile) return false;
             QByteArray baChunk = guardedVolumeFile->read(nToRead);
-            if (!guardedVolumeDevice || !guardedVolumeFile ||
-                baChunk.isEmpty() || (baChunk.size() > nToRead)) return false;
+            if (!guardedVolumeDevice || !guardedVolumeFile || baChunk.isEmpty() || (baChunk.size() > nToRead)) return false;
             baData.append(baChunk);
             nReadVolumeData += (quint64)baChunk.size();
         }
@@ -1082,8 +1049,7 @@ static bool ciBuildLogicalData(const QByteArray &baPrimary, const QString &sPrim
         const qint64 nFinalVolumeSize = guardedVolumeFile->size();
         if (!guardedVolumeDevice || !guardedVolumeFile) return false;
         const bool bVolumeAtEnd = guardedVolumeFile->atEnd();
-        if (!guardedVolumeDevice || !guardedVolumeFile ||
-            ((quint64)nFinalVolumeSize != nExpectedSize) || !bVolumeAtEnd ||
+        if (!guardedVolumeDevice || !guardedVolumeFile || ((quint64)nFinalVolumeSize != nExpectedSize) || !bVolumeAtEnd ||
             !ciRetainCompanionGuard(pCompanionGuards, &pVolumeGuard)) {
             return false;
         }
@@ -1092,8 +1058,7 @@ static bool ciBuildLogicalData(const QByteArray &baPrimary, const QString &sPrim
     // When a volume boundary would split a block, GEA moves the tail next to
     // the main header and appends it to the logical data stream.
     if (h.nMovedSize) {
-        if (((quint64)h.nHeaderSize + h.nMovedSize > (quint64)baPrimary.size()) ||
-            ((quint64)h.nMovedSize > (quint64)CI_MAX_ARCHIVE_SIZE - (quint64)baData.size()) ||
+        if (((quint64)h.nHeaderSize + h.nMovedSize > (quint64)baPrimary.size()) || ((quint64)h.nMovedSize > (quint64)CI_MAX_ARCHIVE_SIZE - (quint64)baData.size()) ||
             ((quint64)baData.size() + h.nMovedSize > h.nSummarySize)) {
             return false;
         }
@@ -1107,7 +1072,9 @@ static bool ciBuildLogicalData(const QByteArray &baPrimary, const QString &sPrim
 
 class CiPpmdDecoder {
 public:
-    CiPpmdDecoder() : m_bAllocated(false), m_bInitialized(false) {}
+    CiPpmdDecoder() : m_bAllocated(false), m_bInitialized(false)
+    {
+    }
 
     bool allocate(quint8 nMemoryMb)
     {
@@ -1119,8 +1086,7 @@ public:
 
     QByteArray decode(const quint8 *pSrc, qint64 nSrcSize, qint64 nDstSize, int nOrder, XBinary::PDSTRUCT *pPdStruct)
     {
-        if (!m_bAllocated || !pSrc || (nSrcSize <= 0) || (nSrcSize > INT_MAX) || (nDstSize < 0) || (nDstSize > INT_MAX) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!m_bAllocated || !pSrc || (nSrcSize <= 0) || (nSrcSize > INT_MAX) || (nDstSize < 0) || (nDstSize > INT_MAX) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             return QByteArray();
         }
 
@@ -1151,8 +1117,7 @@ public:
         // PPMd-I's carryless range encoder flushes four bytes.  A fixed-size
         // decode can legitimately leave any part of that flush unread, but no
         // additional framed data may remain.
-        if (m_model.hasInputError() || (nBytesRead < 0) || (nBytesRead > nSrcSize) || (nSrcSize - nBytesRead > 4) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (m_model.hasInputError() || (nBytesRead < 0) || (nBytesRead > nSrcSize) || (nSrcSize - nBytesRead > 4) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             return QByteArray();
         }
         return baResult;
@@ -1170,9 +1135,7 @@ bool XCreateInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
 {
     if (!pState) return false;
     const PDSTRUCTLIFETIME progressLifetime = pPdStruct ? retainPdStructLifetime(pPdStruct) : PDSTRUCTLIFETIME();
-    const auto isProgressAlive = [&]() -> bool {
-        return !pPdStruct || isPdStructLifetimeAlive(progressLifetime);
-    };
+    const auto isProgressAlive = [&]() -> bool { return !pPdStruct || isPdStructLifetimeAlive(progressLifetime); };
     if (!isProgressAlive()) return false;
     const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
     if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return false;
@@ -1181,7 +1144,8 @@ bool XCreateInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
     if (pState->pContext || !pState->baUnpackSourceToken.isEmpty()) {
         UNPACK_CONTEXT *pOldContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
         if (!pOldContext || !pLifetimeState->setContexts.contains(pOldContext) || (pOldContext->pOwnerState != pState) ||
-            (pOldContext->baToken != pState->baUnpackSourceToken)) return false;
+            (pOldContext->baToken != pState->baUnpackSourceToken))
+            return false;
         pLifetimeState->setContexts.remove(pOldContext);
         *pState = UNPACK_STATE();
         delete pOldContext;
@@ -1195,40 +1159,37 @@ bool XCreateInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
     const XADDR nModuleAddress = getModuleAddress();
     if (!guardedSource) return false;
     const qint64 nSourceSize = guardedSource->size();
-    if (!isProgressAlive() || !guardedThis || !guardedSource || (nSourceSize < 0) || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data())) return false;
+    if (!isProgressAlive() || !guardedThis || !guardedSource || (nSourceSize < 0) || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+        return false;
     QScopedPointer<XMaterializedUnpackGuard> pSourceGuard(XMaterializedUnpackGuard::bind(guardedSource.data(), pPdStruct));
-    if (!isProgressAlive() || !pSourceGuard || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data())) return false;
+    if (!isProgressAlive() || !pSourceGuard || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+        return false;
     if (!m_bTrustedSnapshot) {
         QScopedPointer<QIODevice> pSnapshot(createFileBuffer(nSourceSize, pPdStruct));
-        if (!isProgressAlive() || !guardedThis || !guardedSource || !pSnapshot || (getDeviceGeneration() != nGeneration) ||
-            (getDevice() != guardedSource.data())) return false;
-        const QString sSourceFileName =
-            ciDeviceFileName(guardedSource.data());
-        if (!isProgressAlive() || !guardedThis || !guardedSource ||
-            (getDeviceGeneration() != nGeneration) ||
-            (getDevice() != guardedSource.data())) return false;
+        if (!isProgressAlive() || !guardedThis || !guardedSource || !pSnapshot || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+            return false;
+        const QString sSourceFileName = ciDeviceFileName(guardedSource.data());
+        if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data())) return false;
         pSnapshot->setProperty("XStaticUnpacker.SourceIdentityBound", true);
         if (!sSourceFileName.isEmpty()) pSnapshot->setProperty("XStaticUnpacker.SourceFileName", sSourceFileName);
         const bool bCopied = copyDeviceMemory(guardedSource.data(), 0, pSnapshot.data(), 0, nSourceSize, pPdStruct);
-        if (!isProgressAlive() || !bCopied || !guardedThis || !guardedSource ||
-            (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data())) return false;
+        if (!isProgressAlive() || !bCopied || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+            return false;
         XCreateInstall worker(pSnapshot.data(), bIsImage, nModuleAddress);
         worker.m_bTrustedSnapshot = true;
         UNPACK_STATE materializedState = {};
         const bool bMaterialized = worker.initUnpack(&materializedState, mapProperties, pPdStruct);
-        if (!isProgressAlive() || !guardedThis || !guardedSource || !bMaterialized || (getDeviceGeneration() != nGeneration) ||
-            (getDevice() != guardedSource.data())) return false;
+        if (!isProgressAlive() || !guardedThis || !guardedSource || !bMaterialized || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+            return false;
         UNPACK_CONTEXT *pMaterializedContext = static_cast<UNPACK_CONTEXT *>(materializedState.pContext);
         if (!pMaterializedContext) return false;
         QScopedPointer<UNPACK_CONTEXT> pContext(new (std::nothrow) UNPACK_CONTEXT);
         if (!pContext) return false;
         pContext->listEntries = pMaterializedContext->listEntries;
         pContext->listCompanionGuards.swap(pMaterializedContext->listCompanionGuards);
-        if (!worker.finishUnpack(&materializedState, nullptr) || !isProgressAlive() || !guardedThis || !guardedSource ||
-            (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
-            !isPdStructNotCanceled(pPdStruct) || pContext->listEntries.isEmpty()) return false;
+        if (!worker.finishUnpack(&materializedState, nullptr) || !isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
+            (getDevice() != guardedSource.data()) || !isPdStructNotCanceled(pPdStruct) || pContext->listEntries.isEmpty())
+            return false;
         pContext->pSourceDevice = guardedSource;
         pContext->pOwnerState = pState;
         pContext->baToken = QUuid::createUuid().toRfc4122();
@@ -1236,12 +1197,10 @@ bool XCreateInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
         pContext->nSourceSize = nSourceSize;
         if (pContext->baToken.isEmpty()) return false;
         const bool bSourceFinal = pSourceGuard->validateAndFinalize(pPdStruct);
-        const bool bCompanionsCurrent = isProgressAlive() &&
-            XMaterializedUnpackGuard::areCurrent(pSourceGuard.data(), pContext->listCompanionGuards, pPdStruct);
-        if (!isProgressAlive() || !bSourceFinal || !bCompanionsCurrent ||
-            !guardedThis || !guardedSource ||
-            (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
-            !isPdStructNotCanceled(pPdStruct)) return false;
+        const bool bCompanionsCurrent = isProgressAlive() && XMaterializedUnpackGuard::areCurrent(pSourceGuard.data(), pContext->listCompanionGuards, pPdStruct);
+        if (!isProgressAlive() || !bSourceFinal || !bCompanionsCurrent || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
+            (getDevice() != guardedSource.data()) || !isPdStructNotCanceled(pPdStruct))
+            return false;
         pContext->pSourceGuard = pSourceGuard.take();
         pState->nTotalSize = nSourceSize;
         pState->nNumberOfRecords = pContext->listEntries.size();
@@ -1266,15 +1225,14 @@ bool XCreateInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
 
     if (info.nGeaOffset >= 0) {
         QByteArray baHeader = read_array_process(info.nGeaOffset, 73, pPdStruct);
-        if (!isProgressAlive() || !guardedThis || !guardedSource || (baHeader.size() != 73) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!isProgressAlive() || !guardedThis || !guardedSource || (baHeader.size() != 73) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             delete pContext;
             return false;
         }
         quint64 nDeclaredEnd = ciRd64(reinterpret_cast<const quint8 *>(baHeader.constData()) + 42);
         const qint64 nCurrentSize = getSize();
-        if (!isProgressAlive() || !guardedThis || !guardedSource || (nCurrentSize < 0) ||
-            (nDeclaredEnd < (quint64)info.nGeaOffset) || (nDeclaredEnd > (quint64)nCurrentSize)) {
+        if (!isProgressAlive() || !guardedThis || !guardedSource || (nCurrentSize < 0) || (nDeclaredEnd < (quint64)info.nGeaOffset) ||
+            (nDeclaredEnd > (quint64)nCurrentSize)) {
             delete pContext;
             return false;
         }
@@ -1284,8 +1242,7 @@ bool XCreateInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
             return false;
         }
         baArchive = read_array_process(info.nGeaOffset, nArchiveSize, pPdStruct);
-        if (!isProgressAlive() || !guardedThis || !guardedSource || (baArchive.size() != nArchiveSize) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!isProgressAlive() || !guardedThis || !guardedSource || (baArchive.size() != nArchiveSize) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             delete pContext;
             return false;
         }
@@ -1302,46 +1259,38 @@ bool XCreateInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
             return false;
         }
 
-        if (!info.sGeaFileName.isEmpty() &&
-            (QFileInfo(info.sGeaFileName).canonicalFilePath().compare(sResolvedFileName, ciFileSystemCaseSensitivity()) != 0)) {
+        if (!info.sGeaFileName.isEmpty() && (QFileInfo(info.sGeaFileName).canonicalFilePath().compare(sResolvedFileName, ciFileSystemCaseSensitivity()) != 0)) {
             delete pContext;
             return false;
         }
 
         sPrimaryFileName = sResolvedFileName;
-        QScopedPointer<XMaterializedUnpackGuard> pExternalPrimaryGuard(
-            XMaterializedUnpackGuard::openFile(sPrimaryFileName, pPdStruct));
+        QScopedPointer<XMaterializedUnpackGuard> pExternalPrimaryGuard(XMaterializedUnpackGuard::openFile(sPrimaryFileName, pPdStruct));
         if (!isProgressAlive() || !guardedThis || !guardedSource || !pExternalPrimaryGuard) {
             delete pContext;
             return false;
         }
-        QPointer<QIODevice> guardedExternalDevice(
-            pExternalPrimaryGuard ? pExternalPrimaryGuard->device() : nullptr);
-        QFile *pExternalPrimaryFile = guardedExternalDevice
-            ? dynamic_cast<QFile *>(guardedExternalDevice.data()) : nullptr;
+        QPointer<QIODevice> guardedExternalDevice(pExternalPrimaryGuard ? pExternalPrimaryGuard->device() : nullptr);
+        QFile *pExternalPrimaryFile = guardedExternalDevice ? dynamic_cast<QFile *>(guardedExternalDevice.data()) : nullptr;
         QPointer<QFile> guardedExternalFile(pExternalPrimaryFile);
-        qint64 nArchiveSize = guardedExternalFile
-                                 ? guardedExternalFile->size() : -1;
-        if (!isProgressAlive() || !guardedThis || !guardedSource || !guardedExternalDevice || !guardedExternalFile ||
-            (nArchiveSize < 73) || (nArchiveSize > CI_MAX_ARCHIVE_SIZE) || (nArchiveSize > INT_MAX)) {
+        qint64 nArchiveSize = guardedExternalFile ? guardedExternalFile->size() : -1;
+        if (!isProgressAlive() || !guardedThis || !guardedSource || !guardedExternalDevice || !guardedExternalFile || (nArchiveSize < 73) ||
+            (nArchiveSize > CI_MAX_ARCHIVE_SIZE) || (nArchiveSize > INT_MAX)) {
             delete pContext;
             return false;
         }
         const bool bArchiveRead = ciReadOpenFileExact(guardedExternalFile.data(), nArchiveSize, &baArchive, pPdStruct);
-        if (!isProgressAlive() || !guardedThis || !guardedSource || !bArchiveRead ||
-            !guardedExternalDevice || !guardedExternalFile) {
+        if (!isProgressAlive() || !guardedThis || !guardedSource || !bArchiveRead || !guardedExternalDevice || !guardedExternalFile) {
             delete pContext;
             return false;
         }
         const qint64 nArchiveSizeAfter = guardedExternalFile->size();
-        if (!isProgressAlive() || !guardedThis || !guardedSource || !guardedExternalDevice ||
-            !guardedExternalFile || (nArchiveSizeAfter != nArchiveSize)) {
+        if (!isProgressAlive() || !guardedThis || !guardedSource || !guardedExternalDevice || !guardedExternalFile || (nArchiveSizeAfter != nArchiveSize)) {
             delete pContext;
             return false;
         }
         const bool bAtEnd = guardedExternalFile->atEnd();
-        if (!isProgressAlive() || !guardedThis || !guardedSource || !guardedExternalDevice ||
-            !guardedExternalFile || !bAtEnd ||
+        if (!isProgressAlive() || !guardedThis || !guardedSource || !guardedExternalDevice || !guardedExternalFile || !bAtEnd ||
             !ciRetainCompanionGuard(&pContext->listCompanionGuards, &pExternalPrimaryGuard)) {
             delete pContext;
             return false;
@@ -1359,8 +1308,7 @@ bool XCreateInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
     // than one member.
     QByteArray baInfo;
     qint64 nPackedInfoSize = (qint64)header.nHeaderSize - header.nInfoOffset;
-    if ((header.nInfoOffset < 0) || (nPackedInfoSize < 0) || (nPackedInfoSize > CI_MAX_ARCHIVE_SIZE) ||
-        (header.nInfoSize > (quint32)CI_MAX_ARCHIVE_SIZE)) {
+    if ((header.nInfoOffset < 0) || (nPackedInfoSize < 0) || (nPackedInfoSize > CI_MAX_ARCHIVE_SIZE) || (header.nInfoSize > (quint32)CI_MAX_ARCHIVE_SIZE)) {
         delete pContext;
         return false;
     }
@@ -1370,8 +1318,7 @@ bool XCreateInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
             return false;
         }
         baInfo = lzgeDecode((const quint8 *)baArchive.constData() + header.nInfoOffset, nPackedInfoSize, header.nInfoSize, pPdStruct);
-        if (!isProgressAlive() || !guardedThis || !guardedSource ||
-            ((quint32)baInfo.size() != header.nInfoSize)) {
+        if (!isProgressAlive() || !guardedThis || !guardedSource || ((quint32)baInfo.size() != header.nInfoSize)) {
             delete pContext;
             return false;
         }
@@ -1393,8 +1340,7 @@ bool XCreateInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
     quint64 nAggregateCompressedSize = 0;
     QSet<QString> setOutputNames;
     while (nInfoPos < baInfo.size()) {
-        if ((nInfoPos + 30 > baInfo.size()) || (++nInfoGuard > CI_MAX_FILE_COUNT) ||
-            !isProgressAlive() || !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if ((nInfoPos + 30 > baInfo.size()) || (++nInfoGuard > CI_MAX_FILE_COUNT) || !isProgressAlive() || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             delete pContext;
             return false;
         }
@@ -1405,10 +1351,8 @@ bool XCreateInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
         file.nCompressedSize = ciRd64(pInfoData + nInfoPos + 18);
         nInfoPos += 30;
 
-        if ((file.nSize > (quint64)CI_MAX_ARCHIVE_SIZE) ||
-            (file.nSize > (quint64)CI_MAX_ARCHIVE_SIZE - nAggregateDecodedSize) ||
-            (file.nCompressedSize > header.nSummarySize) ||
-            (file.nCompressedSize > header.nSummarySize - nAggregateCompressedSize)) {
+        if ((file.nSize > (quint64)CI_MAX_ARCHIVE_SIZE) || (file.nSize > (quint64)CI_MAX_ARCHIVE_SIZE - nAggregateDecodedSize) ||
+            (file.nCompressedSize > header.nSummarySize) || (file.nCompressedSize > header.nSummarySize - nAggregateCompressedSize)) {
             delete pContext;
             return false;
         }
@@ -1492,9 +1436,8 @@ bool XCreateInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
     }
 
     QByteArray baLogicalData;
-    const bool bLogicalDataBuilt = !listFiles.isEmpty() &&
-        ciBuildLogicalData(baArchive, sPrimaryFileName, nGeaFileOffset, header, &baLogicalData,
-                           &pContext->listCompanionGuards, pPdStruct);
+    const bool bLogicalDataBuilt =
+        !listFiles.isEmpty() && ciBuildLogicalData(baArchive, sPrimaryFileName, nGeaFileOffset, header, &baLogicalData, &pContext->listCompanionGuards, pPdStruct);
     if (!isProgressAlive() || !guardedThis || !guardedSource || !bLogicalDataBuilt) {
         delete pContext;
         return false;
@@ -1513,8 +1456,7 @@ bool XCreateInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
         }
 
         const CiGeaFile &file = listFiles.at(nFileIndex);
-        if ((nDataPos < 0) || (nDataPos > baLogicalData.size()) ||
-            (file.nCompressedSize > (quint64)(baLogicalData.size() - nDataPos)) || file.nPassword) {
+        if ((nDataPos < 0) || (nDataPos > baLogicalData.size()) || (file.nCompressedSize > (quint64)(baLogicalData.size() - nDataPos)) || file.nPassword) {
             bArchiveOk = false;
             break;
         }
@@ -1524,8 +1466,7 @@ bool XCreateInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
         baFileData.reserve((int)file.nSize);
 
         while ((quint64)baFileData.size() < file.nSize) {
-            if (!isProgressAlive() || !XBinary::isPdStructNotCanceled(pPdStruct) ||
-                (nDataPos + 9 > nFileDataEnd)) {
+            if (!isProgressAlive() || !XBinary::isPdStructNotCanceled(pPdStruct) || (nDataPos + 9 > nFileDataEnd)) {
                 bArchiveOk = false;
                 break;
             }
@@ -1562,8 +1503,7 @@ bool XCreateInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
                     break;
                 }
                 QByteArray baDecoded = lzgeDecode(pStream, (qint64)nStreamSize, nSolidOffset + nOutputSize, pPdStruct);
-                if (!isProgressAlive() || !guardedThis || !guardedSource ||
-                    (baDecoded.size() != nSolidOffset + nOutputSize)) {
+                if (!isProgressAlive() || !guardedThis || !guardedSource || (baDecoded.size() != nSolidOffset + nOutputSize)) {
                     bArchiveOk = false;
                     break;
                 }
@@ -1625,14 +1565,11 @@ bool XCreateInstall::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
         return false;
     }
     const bool bCompanionsFinal = ciFinalizeCompanionGuards(pContext->listCompanionGuards, pPdStruct);
-    const bool bSourceFinal = isProgressAlive() && bCompanionsFinal &&
-        pSourceGuard->validateAndFinalize(pPdStruct);
-    const bool bCompanionsCurrent = isProgressAlive() && bSourceFinal &&
-        XMaterializedUnpackGuard::areCurrent(pSourceGuard.data(), pContext->listCompanionGuards, pPdStruct);
-    if (!isProgressAlive() || !bCompanionsFinal || !bSourceFinal || !bCompanionsCurrent ||
-        !guardedThis || !guardedSource ||
-        (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
-        !isPdStructNotCanceled(pPdStruct)) {
+    const bool bSourceFinal = isProgressAlive() && bCompanionsFinal && pSourceGuard->validateAndFinalize(pPdStruct);
+    const bool bCompanionsCurrent =
+        isProgressAlive() && bSourceFinal && XMaterializedUnpackGuard::areCurrent(pSourceGuard.data(), pContext->listCompanionGuards, pPdStruct);
+    if (!isProgressAlive() || !bCompanionsFinal || !bSourceFinal || !bCompanionsCurrent || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
+        (getDevice() != guardedSource.data()) || !isPdStructNotCanceled(pPdStruct)) {
         delete pContext;
         return false;
     }
@@ -1654,15 +1591,15 @@ XBinary::ARCHIVERECORD XCreateInstall::infoCurrent(UNPACK_STATE *pState, PDSTRUC
     if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !isPdStructNotCanceled(pPdStruct)) return result;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     qint32 nIndex = pState->nCurrentIndex;
-    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) || (pContext->nDeviceGeneration != getDeviceGeneration()) ||
-        (pContext->pSourceDevice.data() != getDevice()) || (pState->nCurrentOffset != pContext->nCurrentOffset) ||
-        (nIndex != pContext->nCurrentIndex) || (pState->nNumberOfRecords != pContext->listEntries.size()) ||
-        (pState->nTotalSize != pContext->nSourceSize) || (nIndex < 0) || (nIndex >= pContext->listEntries.size())) return result;
-    if (!XMaterializedUnpackGuard::areCurrent(pContext->pSourceGuard, pContext->listCompanionGuards, pPdStruct) || !guardedThis ||
-        !pLifetimeState->bOwnerAlive || !pLifetimeState->setContexts.contains(pContext) ||
-        (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) || (pState->nCurrentIndex != pContext->nCurrentIndex)) return result;
+    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
+        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) ||
+        (pState->nCurrentOffset != pContext->nCurrentOffset) || (nIndex != pContext->nCurrentIndex) || (pState->nNumberOfRecords != pContext->listEntries.size()) ||
+        (pState->nTotalSize != pContext->nSourceSize) || (nIndex < 0) || (nIndex >= pContext->listEntries.size()))
+        return result;
+    if (!XMaterializedUnpackGuard::areCurrent(pContext->pSourceGuard, pContext->listCompanionGuards, pPdStruct) || !guardedThis || !pLifetimeState->bOwnerAlive ||
+        !pLifetimeState->setContexts.contains(pContext) || (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
+        (pContext->baToken != pState->baUnpackSourceToken) || (pState->nCurrentIndex != pContext->nCurrentIndex))
+        return result;
 
     const FILE_ENTRY &e = pContext->listEntries.at(nIndex);
     result.nStreamSize = e.baData.size();
@@ -1693,12 +1630,12 @@ bool XCreateInstall::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDS
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     const qint32 nIndex = pState->nCurrentIndex;
     const auto isAuthenticated = [&]() -> bool {
-        return guardedThis && pLifetimeState->bOwnerAlive && pLifetimeState->setContexts.contains(pContext) &&
-               (pState->pContext == pContext) && (pContext->pOwnerState == pState) && (pState->baUnpackSourceToken == pContext->baToken) &&
+        return guardedThis && pLifetimeState->bOwnerAlive && pLifetimeState->setContexts.contains(pContext) && (pState->pContext == pContext) &&
+               (pContext->pOwnerState == pState) && (pState->baUnpackSourceToken == pContext->baToken) &&
                (pContext->nDeviceGeneration == guardedThis->getDeviceGeneration()) && (pContext->pSourceDevice.data() == guardedThis->getDevice()) &&
                (pState->nCurrentIndex == pContext->nCurrentIndex) && (pState->nCurrentOffset == pContext->nCurrentOffset) &&
-               (pState->nNumberOfRecords == pContext->listEntries.size()) && (pState->nTotalSize == pContext->nSourceSize) &&
-               (nIndex >= 0) && (nIndex < pContext->listEntries.size());
+               (pState->nNumberOfRecords == pContext->listEntries.size()) && (pState->nTotalSize == pContext->nSourceSize) && (nIndex >= 0) &&
+               (nIndex < pContext->listEntries.size());
     };
     if (!isAuthenticated()) return false;
     const bool bOpen = guardedOutput->isOpen();
@@ -1708,10 +1645,10 @@ bool XCreateInstall::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDS
     const bool bSequential = guardedOutput->isSequential();
     if (!isAuthenticated() || !guardedOutput || bSequential) return false;
     const QIODevice::OpenMode openMode = guardedOutput->openMode();
-    if (!isAuthenticated() || !guardedOutput || (openMode & (QIODevice::Append | QIODevice::Text)) || !isResizeEnable(guardedOutput.data()) ||
-        !guardedOutput || devicesAlias(pContext->pSourceDevice.data(), guardedOutput.data()) || !isAuthenticated() || !guardedOutput) return false;
-    if (!XMaterializedUnpackGuard::areCurrent(pContext->pSourceGuard, pContext->listCompanionGuards, pPdStruct) ||
-        !guardedOutput || !isAuthenticated()) return false;
+    if (!isAuthenticated() || !guardedOutput || (openMode & (QIODevice::Append | QIODevice::Text)) || !isResizeEnable(guardedOutput.data()) || !guardedOutput ||
+        devicesAlias(pContext->pSourceDevice.data(), guardedOutput.data()) || !isAuthenticated() || !guardedOutput)
+        return false;
+    if (!XMaterializedUnpackGuard::areCurrent(pContext->pSourceGuard, pContext->listCompanionGuards, pPdStruct) || !guardedOutput || !isAuthenticated()) return false;
     // This override bypasses the base decode chain's per-entry gate; account the member here.
     // Produced bytes are charged by writeUnpackData at publication below.
     if (pState->spOutputBudget) {
@@ -1737,8 +1674,7 @@ bool XCreateInstall::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDS
     writeState.nCurrentOffset = 0;
     writeState.spOutputBudget = pState->spOutputBudget;
     const bool bPublished = writeUnpackData(&writeState, guardedOutput.data(), baData, pPdStruct);
-    const bool bSourceCurrent = bPublished &&
-                                XMaterializedUnpackGuard::areCurrent(pContext->pSourceGuard, pContext->listCompanionGuards, pPdStruct);
+    const bool bSourceCurrent = bPublished && XMaterializedUnpackGuard::areCurrent(pContext->pSourceGuard, pContext->listCompanionGuards, pPdStruct);
     const bool bFinal = bSourceCurrent && guardedOutput && isAuthenticated() && isPdStructNotCanceled(pPdStruct);
     if (!bFinal) {
         if (bPublished && guardedOutput) {
@@ -1761,15 +1697,14 @@ bool XCreateInstall::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !isPdStructNotCanceled(pPdStruct)) return false;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) ||
-        (pState->nCurrentIndex != pContext->nCurrentIndex) || (pState->nCurrentOffset != pContext->nCurrentOffset) ||
-        (pState->nNumberOfRecords != pContext->listEntries.size()) || (pState->nTotalSize != pContext->nSourceSize) ||
-        (pContext->nCurrentIndex < 0) || (pContext->nCurrentIndex >= pContext->listEntries.size())) return false;
-    if (!XMaterializedUnpackGuard::areCurrent(pContext->pSourceGuard, pContext->listCompanionGuards, pPdStruct) || !guardedThis ||
-        !pLifetimeState->bOwnerAlive || !pLifetimeState->setContexts.contains(pContext) ||
-        (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pContext->nCurrentIndex >= pContext->listEntries.size())) return false;
+        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) || (pState->nCurrentIndex != pContext->nCurrentIndex) ||
+        (pState->nCurrentOffset != pContext->nCurrentOffset) || (pState->nNumberOfRecords != pContext->listEntries.size()) ||
+        (pState->nTotalSize != pContext->nSourceSize) || (pContext->nCurrentIndex < 0) || (pContext->nCurrentIndex >= pContext->listEntries.size()))
+        return false;
+    if (!XMaterializedUnpackGuard::areCurrent(pContext->pSourceGuard, pContext->listCompanionGuards, pPdStruct) || !guardedThis || !pLifetimeState->bOwnerAlive ||
+        !pLifetimeState->setContexts.contains(pContext) || (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
+        (pContext->baToken != pState->baUnpackSourceToken) || (pContext->nCurrentIndex >= pContext->listEntries.size()))
+        return false;
     ++pContext->nCurrentIndex;
     pContext->nCurrentOffset = 0;
     pState->nCurrentIndex = pContext->nCurrentIndex;
@@ -1789,8 +1724,8 @@ bool XCreateInstall::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         return true;
     }
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!pContext || !pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken)) return false;
+    if (!pContext || !pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken))
+        return false;
     pLifetimeState->setContexts.remove(pContext);
     *pState = UNPACK_STATE();
     delete pContext;

@@ -109,10 +109,8 @@ private:
     QByteArray _readExeFile(const EXE_FILE &file, PDSTRUCT *pPdStruct);
     QString _readExternalMSIName(const EXE_FOOTER &footer, qint64 nMetadataEnd, PDSTRUCT *pPdStruct);
     QIODevice *_openExternalMSI(const QString &sName);
-    bool _initMSIDelegate(UNPACK_STATE *pState, QIODevice *pSourceDevice, QIODevice *pOwnedDevice,
-                          XArchive *pSourceValidator, UNPACK_STATE *pSourceValidationState,
-                          const QMap<QString, QByteArray> &mapExternalCabinets, const QMap<UNPACK_PROP, QVariant> &mapProperties,
-                          PDSTRUCT *pPdStruct);
+    bool _initMSIDelegate(UNPACK_STATE *pState, QIODevice *pSourceDevice, QIODevice *pOwnedDevice, XArchive *pSourceValidator, UNPACK_STATE *pSourceValidationState,
+                          const QMap<QString, QByteArray> &mapExternalCabinets, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct);
     static bool _deleteUnpackContext(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
     QSharedPointer<bool> m_pUnpackOperationState;
     QSharedPointer<UNPACK_DEFERRED_CLEANUP> m_pUnpackDeferredCleanup;

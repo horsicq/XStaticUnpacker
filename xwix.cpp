@@ -29,8 +29,15 @@ public:
             m_bAcquired = true;
         }
     }
-    ~WixOperationGuard() { if (m_pState && m_bAcquired) m_pState->bOperationInProgress = false; }
-    bool isAcquired() const { return m_bAcquired; }
+    ~WixOperationGuard()
+    {
+        if (m_pState && m_bAcquired) m_pState->bOperationInProgress = false;
+    }
+    bool isAcquired() const
+    {
+        return m_bAcquired;
+    }
+
 private:
     QSharedPointer<XWiX::UNPACK_LIFETIME_STATE> m_pState;
     bool m_bAcquired;
@@ -38,7 +45,9 @@ private:
 
 class WixPublisher : public XArchive {
 public:
-    explicit WixPublisher(QIODevice *pDevice) : XArchive(pDevice) {}
+    explicit WixPublisher(QIODevice *pDevice) : XArchive(pDevice)
+    {
+    }
     using XArchive::publishUnpackOutput;
 };
 
@@ -55,8 +64,8 @@ static quint16 wixReadLE16(const QByteArray &baData, qint32 nOffset)
 
 static quint32 wixReadLE32(const QByteArray &baData, qint32 nOffset)
 {
-    return (quint32)(quint8)baData.at(nOffset) | ((quint32)(quint8)baData.at(nOffset + 1) << 8) |
-           ((quint32)(quint8)baData.at(nOffset + 2) << 16) | ((quint32)(quint8)baData.at(nOffset + 3) << 24);
+    return (quint32)(quint8)baData.at(nOffset) | ((quint32)(quint8)baData.at(nOffset + 1) << 8) | ((quint32)(quint8)baData.at(nOffset + 2) << 16) |
+           ((quint32)(quint8)baData.at(nOffset + 3) << 24);
 }
 
 static bool wixIsZeroRange(const QByteArray &baData, quint32 nOffset, quint32 nEnd)
@@ -93,10 +102,8 @@ static QString wixCodePageName(quint16 nCodePage)
 
 static bool wixIsAsciiInvariantCodePage(quint16 nCodePage)
 {
-    return ((nCodePage >= 1250) && (nCodePage <= 1258)) || ((nCodePage >= 28591) && (nCodePage <= 28599)) ||
-           (nCodePage == 28603) || (nCodePage == 28605) || (nCodePage == 874) || (nCodePage == 932) ||
-           (nCodePage == 936) || (nCodePage == 949) || (nCodePage == 950) || (nCodePage == 20127) ||
-           (nCodePage == 65001);
+    return ((nCodePage >= 1250) && (nCodePage <= 1258)) || ((nCodePage >= 28591) && (nCodePage <= 28599)) || (nCodePage == 28603) || (nCodePage == 28605) ||
+           (nCodePage == 874) || (nCodePage == 932) || (nCodePage == 936) || (nCodePage == 949) || (nCodePage == 950) || (nCodePage == 20127) || (nCodePage == 65001);
 }
 
 static bool wixDecodeUtf16(const QByteArray &baData, QString *pResult, XBinary::PDSTRUCT *pPdStruct)
@@ -179,8 +186,7 @@ static bool wixReadCreatingApplication(const QByteArray &baSummary, QString *pRe
     // PropertySetStream header, followed by exactly one SummaryInformation
     // FMTID/offset pair. SummaryInformation streams are single-property-set
     // streams; accepting additional sets would make PID 18 ambiguous.
-    if ((wixReadLE16(baSummary, 0) != 0xFFFE) || (wixReadLE16(baSummary, 2) > 1) ||
-        (wixReadLE32(baSummary, 24) != 1)) {
+    if ((wixReadLE16(baSummary, 0) != 0xFFFE) || (wixReadLE16(baSummary, 2) > 1) || (wixReadLE32(baSummary, 24) != 1)) {
         return false;
     }
     const QByteArray baSummaryFmtid = QByteArray::fromHex("e0859ff2f94f6810ab9108002b27b3d9");
@@ -192,8 +198,7 @@ static bool wixReadCreatingApplication(const QByteArray &baSummary, QString *pRe
     const quint32 nSetSize = wixReadLE32(baSummary, (qint32)nSetOffset);
     const quint32 nProperties = wixReadLE32(baSummary, (qint32)nSetOffset + 4);
     const quint64 nDirectoryEnd = 8ull + (quint64)nProperties * 8ull;
-    if ((nSetSize < 8) || (nSetSize & 3) || ((quint64)nSetOffset + nSetSize > (quint64)baSummary.size()) ||
-        (nProperties > 65536) || (nDirectoryEnd > nSetSize)) {
+    if ((nSetSize < 8) || (nSetSize & 3) || ((quint64)nSetOffset + nSetSize > (quint64)baSummary.size()) || (nProperties > 65536) || (nDirectoryEnd > nSetSize)) {
         return false;
     }
 
@@ -207,8 +212,8 @@ static bool wixReadCreatingApplication(const QByteArray &baSummary, QString *pRe
         WIX_PROPERTY_ENTRY entry = {};
         entry.nID = wixReadLE32(baSummary, nEntryOffset);
         entry.nOffset = wixReadLE32(baSummary, nEntryOffset + 4);
-        if (setIDs.contains(entry.nID) || setOffsets.contains(entry.nOffset) || (entry.nOffset & 3) ||
-            (entry.nOffset < nDirectoryEnd) || ((quint64)entry.nOffset + 4 > nSetSize)) {
+        if (setIDs.contains(entry.nID) || setOffsets.contains(entry.nOffset) || (entry.nOffset & 3) || (entry.nOffset < nDirectoryEnd) ||
+            ((quint64)entry.nOffset + 4 > nSetSize)) {
             return false;
         }
         setIDs.insert(entry.nID);
@@ -222,7 +227,7 @@ static bool wixReadCreatingApplication(const QByteArray &baSummary, QString *pRe
     qint32 nCodePageIndex = -1;
     for (qint32 i = 0; i < listProperties.size(); i++) {
         listProperties[i].nEnd = ((i + 1) < listProperties.size()) ? listProperties.at(i + 1).nOffset : nSetSize;
-        if (listProperties.at(i).nID == 1) nCodePageIndex = i;   // PID_CODEPAGE
+        if (listProperties.at(i).nID == 1) nCodePageIndex = i;      // PID_CODEPAGE
         if (listProperties.at(i).nID == 18) nApplicationIndex = i;  // PIDSI_APPNAME
     }
     if (nApplicationIndex < 0) return false;
@@ -231,8 +236,7 @@ static bool wixReadCreatingApplication(const QByteArray &baSummary, QString *pRe
     if (nCodePageIndex >= 0) {
         const WIX_PROPERTY_ENTRY &entry = listProperties.at(nCodePageIndex);
         const quint32 nAbsolute = nSetOffset + entry.nOffset;
-        if (((entry.nEnd - entry.nOffset) != 8) || (wixReadLE16(baSummary, (qint32)nAbsolute) != 2) ||
-            (wixReadLE16(baSummary, (qint32)nAbsolute + 2) != 0) ||
+        if (((entry.nEnd - entry.nOffset) != 8) || (wixReadLE16(baSummary, (qint32)nAbsolute) != 2) || (wixReadLE16(baSummary, (qint32)nAbsolute + 2) != 0) ||
             (wixReadLE16(baSummary, (qint32)nAbsolute + 6) != 0)) {
             return false;
         }
@@ -261,8 +265,7 @@ static bool wixReadCreatingApplication(const QByteArray &baSummary, QString *pRe
         const quint64 nBytes = (quint64)nCharacters * 2;
         const quint64 nRawEnd = 8ull + nBytes;
         const quint64 nPaddedEnd = (nRawEnd + 3) & ~3ull;
-        if ((nPaddedEnd != nSpan) || (nBytes > 0x7FFFFFFF) ||
-            (wixReadLE16(baSummary, (qint32)(nAbsolute + 8 + nBytes - 2)) != 0) ||
+        if ((nPaddedEnd != nSpan) || (nBytes > 0x7FFFFFFF) || (wixReadLE16(baSummary, (qint32)(nAbsolute + 8 + nBytes - 2)) != 0) ||
             !wixIsZeroRange(baSummary, nAbsolute + 8 + (quint32)nBytes, nAbsolute + nSpan)) {
             return false;
         }
@@ -316,8 +319,7 @@ bool XWiX::isValid(PDSTRUCT *pPdStruct)
 {
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
     QPointer<XWiX> guardedThis(this);
-    const INTERNAL_INFO *pInfo =
-        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
+    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
     return guardedThis && pInfo && pInfo->bIsValid;
 }
 
@@ -340,8 +342,7 @@ bool XWiX::handleInternalInfo(PDSTRUCT *pPdStruct)
     if (!guardedThis) return false;
 
     if (!bAlreadyHandled) {
-        const quint64 nTransaction =
-            guardedThis->beginInternalInfoTransaction();
+        const quint64 nTransaction = guardedThis->beginInternalInfoTransaction();
         if (!nTransaction) return false;
 
         // The transaction supplies the recursion sentinel. Keep every
@@ -349,17 +350,14 @@ bool XWiX::handleInternalInfo(PDSTRUCT *pPdStruct)
         guardedThis->m_internalInfo = INTERNAL_INFO();
         INTERNAL_INFO info = guardedThis->_getInternalInfo(pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
 
-        const auto memoryMap =
-            guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -370,10 +368,7 @@ bool XWiX::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
         guardedThis->m_internalInfo = info;
-        if (!guardedThis->commitInternalInfoTransaction(
-                nTransaction,
-                static_cast<XBinary::INTERNAL_INFO *>(
-                    &guardedThis->m_internalInfo))) {
+        if (!guardedThis->commitInternalInfoTransaction(nTransaction, static_cast<XBinary::INTERNAL_INFO *>(&guardedThis->m_internalInfo))) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -437,8 +432,7 @@ XWiX::INTERNAL_INFO XWiX::_detect(PDSTRUCT *pPdStruct)
             }
 
             QBuffer buffer(&baSummary);
-            if (!buffer.open(QIODevice::ReadWrite) || !cfbf.unpackCurrent(&state, &buffer, pPdStruct) ||
-                (baSummary.size() != record.nStreamSize)) {
+            if (!buffer.open(QIODevice::ReadWrite) || !cfbf.unpackCurrent(&state, &buffer, pPdStruct) || (baSummary.size() != record.nStreamSize)) {
                 bStreamsValid = false;
                 break;
             }
@@ -516,8 +510,8 @@ bool XWiX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     XWiX detector(guardedSource.data(), isImage(), getModuleAddress());
     const qint64 nTotalSize = guardedSource->size();
     const INTERNAL_INFO info = detector._detect(pPdStruct);
-    if (!guardedThis || !guardedSource || (nTotalSize < 0) || !info.bIsValid ||
-        !pSourceValidator->isUnpackSourceCurrent(&sourceValidationState, pPdStruct) || !guardedThis || !guardedSource) {
+    if (!guardedThis || !guardedSource || (nTotalSize < 0) || !info.bIsValid || !pSourceValidator->isUnpackSourceCurrent(&sourceValidationState, pPdStruct) ||
+        !guardedThis || !guardedSource) {
         pSourceValidator->releaseUnpackSource(&sourceValidationState);
         delete pSourceValidator;
         return false;
@@ -537,8 +531,7 @@ bool XWiX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     }
 
     if (!pContext->pMSI->initUnpack(&pContext->state, mapProperties, pPdStruct) || !guardedThis || !guardedSource ||
-        !pContext->pSourceValidator->validateAndFinalizeUnpackSource(&pContext->sourceValidationState, pPdStruct) ||
-        !guardedThis || !guardedSource) {
+        !pContext->pSourceValidator->validateAndFinalizeUnpackSource(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !guardedSource) {
         deleteUnpackContext(pContext);
         return false;
     }
@@ -567,16 +560,17 @@ XBinary::ARCHIVERECORD XWiX::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStru
 
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     if (!pLifetime->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
-        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) ||
-        !pContext->pMSI || !pContext->pSourceValidator || (pContext->state.nCurrentIndex != pState->nCurrentIndex) ||
-        (pContext->state.nCurrentOffset != pState->nCurrentOffset) ||
+        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pMSI || !pContext->pSourceValidator ||
+        (pContext->state.nCurrentIndex != pState->nCurrentIndex) || (pContext->state.nCurrentOffset != pState->nCurrentOffset) ||
         (pContext->state.nNumberOfRecords != pState->nNumberOfRecords) ||
-        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis ||
-        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return result;
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !pLifetime->bOwnerAlive ||
+        !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
+        return result;
     result = pContext->pMSI->infoCurrent(&pContext->state, pPdStruct);
     if (!guardedThis || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return ARCHIVERECORD();
-    if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis ||
-        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return ARCHIVERECORD();
+    if (!pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !pLifetime->bOwnerAlive ||
+        !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
+        return ARCHIVERECORD();
     return result;
 }
 
@@ -587,23 +581,21 @@ bool XWiX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
     if (!operationGuard.isAcquired()) return false;
     QPointer<XWiX> guardedThis(this);
     QPointer<QIODevice> guardedOutput(pDevice);
-    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !guardedOutput || !guardedOutput->isOpen() ||
-        !guardedOutput->isWritable() || guardedOutput->isSequential() || !guardedThis || !guardedOutput ||
-        (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) || !XBinary::isResizeEnable(guardedOutput.data()) ||
-        !guardedThis || !guardedOutput || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+    if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !guardedOutput || !guardedOutput->isOpen() || !guardedOutput->isWritable() ||
+        guardedOutput->isSequential() || !guardedThis || !guardedOutput || (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) ||
+        !XBinary::isResizeEnable(guardedOutput.data()) || !guardedThis || !guardedOutput || !XBinary::isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
         (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
         return false;
     }
 
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     if (!pLifetime->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
-        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) ||
-        !pContext->pMSI || !pContext->pSourceValidator || (pContext->state.nCurrentIndex != pState->nCurrentIndex) ||
-        (pContext->state.nCurrentOffset != pState->nCurrentOffset) ||
-        (pContext->state.nNumberOfRecords != pState->nNumberOfRecords) ||
-        XBinary::devicesAlias(pContext->pOuterSourceDevice.data(), guardedOutput.data()) || !guardedThis || !guardedOutput ||
-        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !guardedOutput ||
-        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return false;
+        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pMSI || !pContext->pSourceValidator ||
+        (pContext->state.nCurrentIndex != pState->nCurrentIndex) || (pContext->state.nCurrentOffset != pState->nCurrentOffset) ||
+        (pContext->state.nNumberOfRecords != pState->nNumberOfRecords) || XBinary::devicesAlias(pContext->pOuterSourceDevice.data(), guardedOutput.data()) ||
+        !guardedThis || !guardedOutput || !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis ||
+        !guardedOutput || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
+        return false;
 
     QTemporaryFile stage;
     if (!stage.open()) return false;
@@ -611,18 +603,18 @@ bool XWiX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
     // debits its production into the stage; the publish copy is not charged.
     pContext->state.spOutputBudget = pState->spOutputBudget;
     bool bResult = pContext->pMSI->unpackCurrent(&pContext->state, &stage, pPdStruct);
-    if (!bResult || !guardedThis || !guardedOutput || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) ||
-        (pState->pContext != pContext) ||
-        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !guardedOutput ||
-        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return false;
+    if (!bResult || !guardedThis || !guardedOutput || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !guardedOutput || !pLifetime->bOwnerAlive ||
+        !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
+        return false;
 
     WixPublisher publisher(pContext->pOuterSourceDevice.data());
     UNPACK_STATE publicationState = {};
-    if (!publisher.bindUnpackSource(&publicationState, pPdStruct) ||
-        !publisher.validateAndFinalizeUnpackSource(&publicationState, pPdStruct) || !guardedThis || !guardedOutput ||
-        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||
-        !publisher.publishUnpackOutput(&stage, guardedOutput.data(), &publicationState, pPdStruct) || !guardedThis || !guardedOutput ||
-        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return false;
+    if (!publisher.bindUnpackSource(&publicationState, pPdStruct) || !publisher.validateAndFinalizeUnpackSource(&publicationState, pPdStruct) || !guardedThis ||
+        !guardedOutput || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||
+        !publisher.publishUnpackOutput(&stage, guardedOutput.data(), &publicationState, pPdStruct) || !guardedThis || !guardedOutput || !pLifetime->bOwnerAlive ||
+        !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
+        return false;
     pState->nCurrentOffset = pContext->state.nCurrentOffset;
     pState->mapArchiveProperties = pContext->state.mapArchiveProperties;
     return true;
@@ -641,16 +633,17 @@ bool XWiX::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     if (!pLifetime->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
-        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) ||
-        !pContext->pMSI || !pContext->pSourceValidator || (pContext->state.nCurrentIndex != pState->nCurrentIndex) ||
-        (pContext->state.nCurrentOffset != pState->nCurrentOffset) ||
+        (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pMSI || !pContext->pSourceValidator ||
+        (pContext->state.nCurrentIndex != pState->nCurrentIndex) || (pContext->state.nCurrentOffset != pState->nCurrentOffset) ||
         (pContext->state.nNumberOfRecords != pState->nNumberOfRecords) ||
-        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis ||
-        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return false;
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !pLifetime->bOwnerAlive ||
+        !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
+        return false;
     bool bResult = pContext->pMSI->moveToNext(&pContext->state, pPdStruct);
     if (!guardedThis || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||
-        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis ||
-        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext)) return false;
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !pLifetime->bOwnerAlive ||
+        !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
+        return false;
     pState->nCurrentIndex = pContext->state.nCurrentIndex;
     pState->nCurrentOffset = pContext->state.nCurrentOffset;
     pState->mapArchiveProperties = pContext->state.mapArchiveProperties;

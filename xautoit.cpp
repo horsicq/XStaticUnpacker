@@ -20,8 +20,7 @@ namespace {
 
 const qint64 AI_RECORD_ACCOUNTING_OVERHEAD = 128;
 const quint8 AI_V2_SIGNATURE[16] = {
-    0xa3, 0x48, 0x4b, 0xbe, 0x98, 0x6c, 0x4a, 0xa9,
-    0x99, 0x4c, 0x53, 0x0a, 0x86, 0xd6, 0x48, 0x7d,
+    0xa3, 0x48, 0x4b, 0xbe, 0x98, 0x6c, 0x4a, 0xa9, 0x99, 0x4c, 0x53, 0x0a, 0x86, 0xd6, 0x48, 0x7d,
 };
 const quint32 AI_V2_MAX_METADATA_SIZE = 1024 * 1024;
 
@@ -53,8 +52,8 @@ static bool aiReserveRecord(XBinary::UNPACK_MEMORY_RESERVATION *pReservation, qi
 {
     if (!pReservation || !pReservation->isActive() || (nDataSize < 0)) return false;
     const quint64 nExtra = (quint64)nDataSize + (quint64)sName.size() * 2 + AI_RECORD_ACCOUNTING_OVERHEAD;
-    if ((nExtra > (quint64)(std::numeric_limits<qint64>::max)()) ||
-        ((quint64)pReservation->size() + nExtra > (quint64)(std::numeric_limits<qint64>::max)())) return false;
+    if ((nExtra > (quint64)(std::numeric_limits<qint64>::max)()) || ((quint64)pReservation->size() + nExtra > (quint64)(std::numeric_limits<qint64>::max)()))
+        return false;
     return pReservation->resize(pReservation->size() + (qint64)nExtra);
 }
 
@@ -86,16 +85,14 @@ static inline quint32 aiRotl32(quint32 nValue, quint32 nBits)
 // pattern explicitly avoids any dependency on x87 long-double precision.
 static double aiLamePush(AI_LAME_STATE *pState)
 {
-    const quint32 nRolled = aiRotl32(pState->values[pState->nIndex0], 9) +
-                                    aiRotl32(pState->values[pState->nIndex1], 13);
+    const quint32 nRolled = aiRotl32(pState->values[pState->nIndex0], 9) + aiRotl32(pState->values[pState->nIndex1], 13);
     pState->values[pState->nIndex0] = nRolled;
     if (pState->nIndex0 == 0) pState->nIndex0 = 16;
     else --pState->nIndex0;
     if (pState->nIndex1 == 0) pState->nIndex1 = 16;
     else --pState->nIndex1;
 
-    const quint64 nBits = (static_cast<quint64>(0x3ff00000U | (nRolled >> 12)) << 32) |
-                          (static_cast<quint64>(nRolled) << 20);
+    const quint64 nBits = (static_cast<quint64>(0x3ff00000U | (nRolled >> 12)) << 32) | (static_cast<quint64>(nRolled) << 20);
     double dValue = 0.0;
     static_assert(sizeof(dValue) == sizeof(nBits), "EA06 requires IEEE-754 binary64");
     memcpy(&dValue, &nBits, sizeof(dValue));
@@ -198,15 +195,13 @@ XAUTOIT::LIFETIME_STATE::~LIFETIME_STATE()
 bool XAUTOIT::isDeviceReplacementAllowed() const
 {
     const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
-    return pLifetimeState && pLifetimeState->bOwnerAlive &&
-           !pLifetimeState->bOperationInProgress && pLifetimeState->setContexts.isEmpty();
+    return pLifetimeState && pLifetimeState->bOwnerAlive && !pLifetimeState->bOperationInProgress && pLifetimeState->setContexts.isEmpty();
 }
 
 bool XAUTOIT::isValid(PDSTRUCT *pPdStruct)
 {
     QPointer<XAUTOIT> guardedThis(this);
-    const INTERNAL_INFO *pInfo =
-        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
+    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
     return guardedThis && pInfo && pInfo->bIsValid;
 }
 
@@ -265,10 +260,8 @@ void XAUTOIT::_mtDecrypt(quint8 *pBuf, quint32 nSize, quint32 nSeed)
             items = 624;
             nextIdx = 0;
             unsigned i;
-            for (i = 0; i < 227; i++)
-                mt[i] = ((((mt[i] ^ mt[i + 1]) & 0x7ffffffe) ^ mt[i]) >> 1) ^ ((0u - (mt[i + 1] & 1)) & 0x9908b0df) ^ mt[i + 397];
-            for (; i < 623; i++)
-                mt[i] = ((((mt[i] ^ mt[i + 1]) & 0x7ffffffe) ^ mt[i]) >> 1) ^ ((0u - (mt[i + 1] & 1)) & 0x9908b0df) ^ mt[i - 227];
+            for (i = 0; i < 227; i++) mt[i] = ((((mt[i] ^ mt[i + 1]) & 0x7ffffffe) ^ mt[i]) >> 1) ^ ((0u - (mt[i + 1] & 1)) & 0x9908b0df) ^ mt[i + 397];
+            for (; i < 623; i++) mt[i] = ((((mt[i] ^ mt[i + 1]) & 0x7ffffffe) ^ mt[i]) >> 1) ^ ((0u - (mt[i + 1] & 1)) & 0x9908b0df) ^ mt[i - 227];
             mt[623] = ((((mt[623] ^ mt[0]) & 0x7ffffffe) ^ mt[623]) >> 1) ^ ((0u - (mt[0] & 1)) & 0x9908b0df) ^ mt[i - 227];
         }
         quint32 r = mt[nextIdx++];
@@ -284,8 +277,7 @@ void XAUTOIT::_mtDecrypt(quint8 *pBuf, quint32 nSize, quint32 nSeed)
 // custom inflate
 // ---------------------------------------------------------------------------
 
-bool XAUTOIT::_inflate(const quint8 *pInput, quint32 nCsize, quint8 *pOutput, quint32 nUsize, bool bEA06,
-                       quint32 *pActualSize)
+bool XAUTOIT::_inflate(const quint8 *pInput, quint32 nCsize, quint8 *pOutput, quint32 nUsize, bool bEA06, quint32 *pActualSize)
 {
     quint32 cur_output = 0;
 
@@ -340,8 +332,7 @@ bool XAUTOIT::_inflate(const quint8 *pInput, quint32 nCsize, quint8 *pOutput, qu
 
 bool XAUTOIT::_inflateV2(const quint8 *pInput, quint32 nCsize, quint8 *pOutput, quint32 nUsize)
 {
-    if (!pInput || (nCsize < 8) || (memcmp(pInput, "JB01", 4) != 0) ||
-        (aiBe32(pInput + 4) != nUsize) || (nUsize && !pOutput)) return false;
+    if (!pInput || (nCsize < 8) || (memcmp(pInput, "JB01", 4) != 0) || (aiBe32(pInput + 4) != nUsize) || (nUsize && !pOutput)) return false;
 
     AI_BITREADER br = {};
     br.pInput = pInput;
@@ -358,8 +349,7 @@ bool XAUTOIT::_inflateV2(const quint8 *pInput, quint32 nCsize, quint8 *pOutput, 
 
         const quint32 nDistance = aiGetBits(&br, 13) + 3;
         const quint32 nLength = aiGetBits(&br, 4) + 3;
-        if (br.error || (nDistance > nOutput) ||
-            (static_cast<quint64>(nOutput) + nLength > nUsize)) return false;
+        if (br.error || (nDistance > nOutput) || (static_cast<quint64>(nOutput) + nLength > nUsize)) return false;
         for (quint32 i = 0; i < nLength; ++i) {
             pOutput[nOutput] = pOutput[nOutput - nDistance];
             ++nOutput;
@@ -400,8 +390,7 @@ quint32 XAUTOIT::_u2a(quint8 *pDest, quint32 nLen)
 // AutoIt v2 record parser
 // ---------------------------------------------------------------------------
 
-QList<XAUTOIT::RECORD> XAUTOIT::_parseV2(const quint8 *pData, qint64 nSize, qint64 nBase, qint64 nOutputLimit,
-                                         const QMap<UNPACK_PROP, QVariant> &mapProperties,
+QList<XAUTOIT::RECORD> XAUTOIT::_parseV2(const quint8 *pData, qint64 nSize, qint64 nBase, qint64 nOutputLimit, const QMap<UNPACK_PROP, QVariant> &mapProperties,
                                          UNPACK_MEMORY_RESERVATION *pRecordReservation, PDSTRUCT *pPdStruct)
 {
     QList<RECORD> listResult;
@@ -412,9 +401,9 @@ QList<XAUTOIT::RECORD> XAUTOIT::_parseV2(const quint8 *pData, qint64 nSize, qint
     // marker must decrypt to "FILE", every size must fit, and the walk must land
     // exactly on nTrailer (checked at the end) - so a coincidental signature
     // match cannot produce output.
-    if (!pData || !pRecordReservation || !pRecordReservation->isActive() ||
-        (nSize < 25) || (nBase < 0) || (nBase > nSize - 25) ||
-        (memcmp(pData + nBase, AI_V2_SIGNATURE, sizeof(AI_V2_SIGNATURE)) != 0)) return listResult;
+    if (!pData || !pRecordReservation || !pRecordReservation->isActive() || (nSize < 25) || (nBase < 0) || (nBase > nSize - 25) ||
+        (memcmp(pData + nBase, AI_V2_SIGNATURE, sizeof(AI_V2_SIGNATURE)) != 0))
+        return listResult;
 
     const qint64 nTrailer = nSize - 4;
     nBase += sizeof(AI_V2_SIGNATURE);
@@ -422,8 +411,7 @@ QList<XAUTOIT::RECORD> XAUTOIT::_parseV2(const quint8 *pData, qint64 nSize, qint
 
     const quint32 nPasswordSize = aiRd32(pData + nBase) ^ 0xfac1U;
     nBase += 4;
-    if ((nPasswordSize > AI_V2_MAX_METADATA_SIZE) ||
-        (static_cast<quint64>(nPasswordSize) > static_cast<quint64>(nTrailer - nBase))) return listResult;
+    if ((nPasswordSize > AI_V2_MAX_METADATA_SIZE) || (static_cast<quint64>(nPasswordSize) > static_cast<quint64>(nTrailer - nBase))) return listResult;
     UNPACK_MEMORY_RESERVATION passwordReservation;
     if (!passwordReservation.acquire(mapProperties, nPasswordSize)) return listResult;
     QByteArray baPassword(reinterpret_cast<const char *>(pData + nBase), static_cast<int>(nPasswordSize));
@@ -437,8 +425,7 @@ QList<XAUTOIT::RECORD> XAUTOIT::_parseV2(const quint8 *pData, qint64 nSize, qint
     const quint32 nDataSeed = static_cast<quint32>(nPasswordSum + 0x22af);
 
     const auto contains = [nTrailer](qint64 nOffset, quint64 nLength) -> bool {
-        return (nOffset >= 0) && (nOffset <= nTrailer) &&
-               (nLength <= static_cast<quint64>(nTrailer - nOffset));
+        return (nOffset >= 0) && (nOffset <= nTrailer) && (nLength <= static_cast<quint64>(nTrailer - nOffset));
     };
 
     while (isPdStructNotCanceled(pPdStruct) && (nBase < nTrailer)) {
@@ -478,13 +465,11 @@ QList<XAUTOIT::RECORD> XAUTOIT::_parseV2(const quint8 *pData, qint64 nSize, qint
         nBase += 4;
         const quint32 nUncompressedSize = aiRd32(pData + nBase) ^ 0x45aaU;
         nBase += 4;
-        if (((nCompression != 0) && (nCompression != 1)) ||
-            (nCompressedSize > static_cast<quint32>(INT_MAX)) ||
-            (nUncompressedSize > 256U * 1024U * 1024U) ||
-            !contains(nBase, nCompressedSize)) return QList<RECORD>();
+        if (((nCompression != 0) && (nCompression != 1)) || (nCompressedSize > static_cast<quint32>(INT_MAX)) || (nUncompressedSize > 256U * 1024U * 1024U) ||
+            !contains(nBase, nCompressedSize))
+            return QList<RECORD>();
 
-        if ((nOutputLimit >= 0) &&
-            (static_cast<quint64>(nUncompressedSize) > static_cast<quint64>(nOutputLimit))) {
+        if ((nOutputLimit >= 0) && (static_cast<quint64>(nUncompressedSize) > static_cast<quint64>(nOutputLimit))) {
             nBase += nCompressedSize;
             continue;
         }
@@ -499,14 +484,12 @@ QList<XAUTOIT::RECORD> XAUTOIT::_parseV2(const quint8 *pData, qint64 nSize, qint
 
         QByteArray baOutput;
         if (nCompression == 1) {
-            if ((static_cast<quint64>(nCompressedSize) + nUncompressedSize >
-                 static_cast<quint64>((std::numeric_limits<qint64>::max)())) ||
+            if ((static_cast<quint64>(nCompressedSize) + nUncompressedSize > static_cast<quint64>((std::numeric_limits<qint64>::max)())) ||
                 !decodeReservation.resize(static_cast<qint64>(nCompressedSize) + nUncompressedSize)) {
                 return QList<RECORD>();
             }
             baOutput.resize(static_cast<int>(nUncompressedSize));
-            if (!_inflateV2(reinterpret_cast<const quint8 *>(baInput.constData()), nCompressedSize,
-                            reinterpret_cast<quint8 *>(baOutput.data()), nUncompressedSize)) {
+            if (!_inflateV2(reinterpret_cast<const quint8 *>(baInput.constData()), nCompressedSize, reinterpret_cast<quint8 *>(baOutput.data()), nUncompressedSize)) {
                 return QList<RECORD>();
             }
         } else {
@@ -517,15 +500,12 @@ QList<XAUTOIT::RECORD> XAUTOIT::_parseV2(const quint8 *pData, qint64 nSize, qint
         const QString sSource = QString::fromLatin1(baSource.constData(), baSource.size());
         const QString sBuildName = QString::fromLatin1(baName.constData(), baName.size());
         RECORD record;
-        record.sName = sSource.contains(QStringLiteral("AUTOIT SCRIPT"), Qt::CaseInsensitive)
-                           ? QStringLiteral("autoit_script.aut")
-                           : aiSafeRecordName(sSource);
+        record.sName = sSource.contains(QStringLiteral("AUTOIT SCRIPT"), Qt::CaseInsensitive) ? QStringLiteral("autoit_script.aut") : aiSafeRecordName(sSource);
         if (record.sName.isEmpty()) record.sName = aiSafeRecordName(sBuildName);
         if (record.sName.isEmpty()) {
             record.sName = QStringLiteral("autoit_%1.bin").arg(listResult.size(), 3, 10, QChar('0'));
         }
-        if ((listResult.size() >= 100000) ||
-            !aiReserveRecord(pRecordReservation, baOutput.size(), record.sName)) return QList<RECORD>();
+        if ((listResult.size() >= 100000) || !aiReserveRecord(pRecordReservation, baOutput.size(), record.sName)) return QList<RECORD>();
         record.baData = baOutput;
         listResult.append(record);
     }
@@ -538,9 +518,8 @@ QList<XAUTOIT::RECORD> XAUTOIT::_parseV2(const quint8 *pData, qint64 nSize, qint
 // EA05 record parser
 // ---------------------------------------------------------------------------
 
-QList<XAUTOIT::RECORD> XAUTOIT::_parseEA05(const quint8 *pData, qint64 nSize, qint64 nBase, qint64 nOutputLimit,
-                                          const QMap<UNPACK_PROP, QVariant> &mapProperties,
-                                          UNPACK_MEMORY_RESERVATION *pRecordReservation, PDSTRUCT *pPdStruct)
+QList<XAUTOIT::RECORD> XAUTOIT::_parseEA05(const quint8 *pData, qint64 nSize, qint64 nBase, qint64 nOutputLimit, const QMap<UNPACK_PROP, QVariant> &mapProperties,
+                                           UNPACK_MEMORY_RESERVATION *pRecordReservation, PDSTRUCT *pPdStruct)
 {
     QList<RECORD> listResult;
 
@@ -602,10 +581,8 @@ QList<XAUTOIT::RECORD> XAUTOIT::_parseEA05(const quint8 *pData, qint64 nSize, qi
             if (aiRd32((const quint8 *)baInput.constData()) != 0x35304145) continue;  // "EA05"
             quint32 usize = aiBe32((const quint8 *)baInput.constData() + 4);
             if (!usize) usize = csize;
-            if ((usize > (256u * 1024 * 1024)) ||
-                ((nOutputLimit >= 0) && ((quint64)usize > (quint64)nOutputLimit))) continue;
-            if ((quint64)csize + usize > (quint64)(std::numeric_limits<qint64>::max)() ||
-                !decodeReservation.resize((qint64)csize + usize)) return QList<RECORD>();
+            if ((usize > (256u * 1024 * 1024)) || ((nOutputLimit >= 0) && ((quint64)usize > (quint64)nOutputLimit))) continue;
+            if ((quint64)csize + usize > (quint64)(std::numeric_limits<qint64>::max)() || !decodeReservation.resize((qint64)csize + usize)) return QList<RECORD>();
             baOutput.resize((int)usize);
             memset(baOutput.data(), 0, usize);
             quint32 nActualSize = 0;
@@ -636,18 +613,15 @@ QList<XAUTOIT::RECORD> XAUTOIT::_parseEA05(const quint8 *pData, qint64 nSize, qi
 // EA06 record parser
 // ---------------------------------------------------------------------------
 
-QList<XAUTOIT::RECORD> XAUTOIT::_parseEA06(const quint8 *pData, qint64 nSize, qint64 nBase, qint64 nOutputLimit,
-                                          const QMap<UNPACK_PROP, QVariant> &mapProperties,
-                                          UNPACK_MEMORY_RESERVATION *pRecordReservation, PDSTRUCT *pPdStruct)
+QList<XAUTOIT::RECORD> XAUTOIT::_parseEA06(const quint8 *pData, qint64 nSize, qint64 nBase, qint64 nOutputLimit, const QMap<UNPACK_PROP, QVariant> &mapProperties,
+                                           UNPACK_MEMORY_RESERVATION *pRecordReservation, PDSTRUCT *pPdStruct)
 {
     QList<RECORD> listResult;
-    if (!pData || !pRecordReservation || !pRecordReservation->isActive() ||
-        (nSize < 0) || (nBase < 0) || (nBase > nSize - 16)) return listResult;
+    if (!pData || !pRecordReservation || !pRecordReservation->isActive() || (nSize < 0) || (nBase < 0) || (nBase > nSize - 16)) return listResult;
     nBase += 16;  // header bytes whose checksum is unusable in the original format
 
     const auto contains = [nSize](qint64 nOffset, quint64 nLength) -> bool {
-        return (nOffset >= 0) && (nOffset <= nSize) &&
-               (nLength <= static_cast<quint64>(nSize - nOffset));
+        return (nOffset >= 0) && (nOffset <= nSize) && (nLength <= static_cast<quint64>(nSize - nOffset));
     };
 
     while (isPdStructNotCanceled(pPdStruct)) {
@@ -663,8 +637,7 @@ QList<XAUTOIT::RECORD> XAUTOIT::_parseEA06(const quint8 *pData, qint64 nSize, qi
         UNPACK_MEMORY_RESERVATION metadataReservation;
         if (!metadataReservation.acquire(mapProperties, (qint64)nMagicBytes * 2)) return QList<RECORD>();
         QByteArray baMagic(reinterpret_cast<const char *>(pData + nBase), static_cast<int>(nMagicBytes));
-        aiLameDecrypt(reinterpret_cast<quint8 *>(baMagic.data()), nMagicBytes,
-                      static_cast<quint16>(nMagicChars + 0xb33fU));
+        aiLameDecrypt(reinterpret_cast<quint8 *>(baMagic.data()), nMagicBytes, static_cast<quint16>(nMagicChars + 0xb33fU));
         const QString sMagic = aiUtf16LeString(baMagic, nMagicChars);
         const bool bScript = (sMagic == QStringLiteral(">>>AUTOIT SCRIPT<<<"));
         nBase += nMagicBytes;
@@ -677,8 +650,7 @@ QList<XAUTOIT::RECORD> XAUTOIT::_parseEA06(const quint8 *pData, qint64 nSize, qi
         if (!contains(nBase, nNameBytes)) return QList<RECORD>();
         if (!metadataReservation.resize((qint64)(nMagicBytes + nNameBytes) * 2)) return QList<RECORD>();
         QByteArray baName(reinterpret_cast<const char *>(pData + nBase), static_cast<int>(nNameBytes));
-        aiLameDecrypt(reinterpret_cast<quint8 *>(baName.data()), nNameBytes,
-                      static_cast<quint16>(nNameChars + 0xf479U));
+        aiLameDecrypt(reinterpret_cast<quint8 *>(baName.data()), nNameBytes, static_cast<quint16>(nNameChars + 0xf479U));
         const QString sBuildName = aiUtf16LeString(baName, nNameChars);
         nBase += nNameBytes;
 
@@ -691,8 +663,7 @@ QList<XAUTOIT::RECORD> XAUTOIT::_parseEA06(const quint8 *pData, qint64 nSize, qi
         nBase += 16;
         if (!nCompressedSize) continue;
         if ((nCompressedSize > (quint32)INT_MAX) || !contains(nBase, nCompressedSize)) return QList<RECORD>();
-        if ((nCompression != 1) && (nOutputLimit >= 0) &&
-            (static_cast<quint64>(nCompressedSize) > static_cast<quint64>(nOutputLimit))) {
+        if ((nCompression != 1) && (nOutputLimit >= 0) && (static_cast<quint64>(nCompressedSize) > static_cast<quint64>(nOutputLimit))) {
             nBase += nCompressedSize;
             continue;
         }
@@ -705,20 +676,20 @@ QList<XAUTOIT::RECORD> XAUTOIT::_parseEA06(const quint8 *pData, qint64 nSize, qi
 
         QByteArray baOutput;
         if (nCompression == 1) {
-            if ((nCompressedSize < 8) ||
-                (aiRd32(reinterpret_cast<const quint8 *>(baInput.constData())) != 0x36304145U)) return QList<RECORD>();
+            if ((nCompressedSize < 8) || (aiRd32(reinterpret_cast<const quint8 *>(baInput.constData())) != 0x36304145U)) return QList<RECORD>();
             quint32 nUncompressedSize = aiBe32(reinterpret_cast<const quint8 *>(baInput.constData()) + 4);
             if (!nUncompressedSize) nUncompressedSize = nCompressedSize;
             if (nUncompressedSize > (256U * 1024U * 1024U)) return QList<RECORD>();
-            if ((nOutputLimit >= 0) &&
-                (static_cast<quint64>(nUncompressedSize) > static_cast<quint64>(nOutputLimit))) continue;
+            if ((nOutputLimit >= 0) && (static_cast<quint64>(nUncompressedSize) > static_cast<quint64>(nOutputLimit))) continue;
             if ((quint64)nCompressedSize + nUncompressedSize > (quint64)(std::numeric_limits<qint64>::max)() ||
-                !decodeReservation.resize((qint64)nCompressedSize + nUncompressedSize)) return QList<RECORD>();
+                !decodeReservation.resize((qint64)nCompressedSize + nUncompressedSize))
+                return QList<RECORD>();
             baOutput.resize(static_cast<int>(nUncompressedSize));
             memset(baOutput.data(), 0, nUncompressedSize);
             quint32 nActualSize = 0;
-            if (!_inflate(reinterpret_cast<const quint8 *>(baInput.constData()), nCompressedSize,
-                          reinterpret_cast<quint8 *>(baOutput.data()), nUncompressedSize, true, &nActualSize)) return QList<RECORD>();
+            if (!_inflate(reinterpret_cast<const quint8 *>(baInput.constData()), nCompressedSize, reinterpret_cast<quint8 *>(baOutput.data()), nUncompressedSize, true,
+                          &nActualSize))
+                return QList<RECORD>();
             baOutput.resize(static_cast<int>(nActualSize));
         } else {
             baOutput = baInput;
@@ -759,8 +730,7 @@ XAUTOIT::INTERNAL_INFO XAUTOIT::_detect(PDSTRUCT *pPdStruct)
         const quint32 nV2Offset = read_uint32(nSize - 4, false);
         if ((static_cast<quint64>(nV2Offset) <= static_cast<quint64>(nSize - 25))) {
             const QByteArray baV2Header = read_array_process(nV2Offset, 17, pPdStruct);
-            if ((baV2Header.size() == 17) &&
-                (memcmp(baV2Header.constData(), AI_V2_SIGNATURE, sizeof(AI_V2_SIGNATURE)) == 0) &&
+            if ((baV2Header.size() == 17) && (memcmp(baV2Header.constData(), AI_V2_SIGNATURE, sizeof(AI_V2_SIGNATURE)) == 0) &&
                 (static_cast<quint8>(baV2Header.at(16)) == 1)) {
                 result.bIsValid = true;
                 result.nVersion = 2;
@@ -827,8 +797,7 @@ bool XAUTOIT::handleInternalInfo(PDSTRUCT *pPdStruct)
     if (!guardedThis) return false;
 
     if (!bAlreadyHandled) {
-        const quint64 nTransaction =
-            guardedThis->beginInternalInfoTransaction();
+        const quint64 nTransaction = guardedThis->beginInternalInfoTransaction();
         if (!nTransaction) return false;
 
         // The transaction supplies the recursion sentinel. Keep every
@@ -836,17 +805,14 @@ bool XAUTOIT::handleInternalInfo(PDSTRUCT *pPdStruct)
         guardedThis->m_internalInfo = INTERNAL_INFO();
         INTERNAL_INFO info = guardedThis->_getInternalInfo(pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
 
-        const auto memoryMap =
-            guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -857,10 +823,7 @@ bool XAUTOIT::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
         guardedThis->m_internalInfo = info;
-        if (!guardedThis->commitInternalInfoTransaction(
-                nTransaction,
-                static_cast<XBinary::INTERNAL_INFO *>(
-                    &guardedThis->m_internalInfo))) {
+        if (!guardedThis->commitInternalInfoTransaction(nTransaction, static_cast<XBinary::INTERNAL_INFO *>(&guardedThis->m_internalInfo))) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -908,9 +871,7 @@ bool XAUTOIT::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant>
     qint64 nOutputLimit = -1;
     if (!getUnpackOutputLimit(mapProperties, &nOutputLimit)) return false;
     const PDSTRUCTLIFETIME progressLifetime = pPdStruct ? retainPdStructLifetime(pPdStruct) : PDSTRUCTLIFETIME();
-    const auto isProgressAlive = [&]() -> bool {
-        return !pPdStruct || isPdStructLifetimeAlive(progressLifetime);
-    };
+    const auto isProgressAlive = [&]() -> bool { return !pPdStruct || isPdStructLifetimeAlive(progressLifetime); };
     if (!isProgressAlive()) return false;
     const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
     if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return false;
@@ -919,9 +880,9 @@ bool XAUTOIT::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant>
 
     if (pState->pContext || !pState->baUnpackSourceToken.isEmpty()) {
         UNPACK_CONTEXT *pOldContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-        if (!pOldContext || !pLifetimeState->setContexts.contains(pOldContext) ||
-            (pOldContext->pOwnerState != pState) ||
-            (pOldContext->baToken != pState->baUnpackSourceToken)) return false;
+        if (!pOldContext || !pLifetimeState->setContexts.contains(pOldContext) || (pOldContext->pOwnerState != pState) ||
+            (pOldContext->baToken != pState->baUnpackSourceToken))
+            return false;
         pLifetimeState->setContexts.remove(pOldContext);
         *pState = UNPACK_STATE();
         delete pOldContext;
@@ -937,27 +898,26 @@ bool XAUTOIT::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant>
     const XADDR nModuleAddress = getModuleAddress();
     if (!guardedSource) return false;
     const qint64 nSourceSize = guardedSource->size();
-    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data()) || (nSourceSize < 0)) return false;
+    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) || (nSourceSize < 0))
+        return false;
 
     QScopedPointer<UNPACK_CONTEXT> pContext(new (std::nothrow) UNPACK_CONTEXT);
     if (!pContext || !pContext->memoryReservation.acquire(mapProperties, 0)) return false;
 
     QScopedPointer<XMaterializedUnpackGuard> pSourceGuard(XMaterializedUnpackGuard::bind(guardedSource.data(), pPdStruct));
-    if (!isProgressAlive() || !pSourceGuard || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data())) return false;
+    if (!isProgressAlive() || !pSourceGuard || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+        return false;
 
     QScopedPointer<QIODevice> pSnapshot(createUnpackFileBuffer(nSourceSize, mapProperties, pPdStruct));
-    if (!isProgressAlive() || !guardedThis || !guardedSource || !pSnapshot ||
-        (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data())) return false;
+    if (!isProgressAlive() || !guardedThis || !guardedSource || !pSnapshot || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+        return false;
     const bool bCopied = copyDeviceMemory(guardedSource.data(), 0, pSnapshot.data(), 0, nSourceSize, pPdStruct);
-    if (!isProgressAlive() || !bCopied || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data())) return false;
+    if (!isProgressAlive() || !bCopied || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data())) return false;
 
     XAUTOIT worker(pSnapshot.data(), bIsImage, nModuleAddress);
     const INTERNAL_INFO info = worker._detect(pPdStruct);
-    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data()) || !info.bIsValid) return false;
+    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) || !info.bIsValid)
+        return false;
 
     QList<RECORD> listRecords;
     {
@@ -965,24 +925,22 @@ bool XAUTOIT::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant>
         UNPACK_MEMORY_RESERVATION inputReservation;
         if ((nWorkerSize < 0) || !inputReservation.acquire(mapProperties, nWorkerSize)) return false;
         QByteArray baFile = worker.read_array_process(0, nWorkerSize, pPdStruct);
-        if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
-            (getDevice() != guardedSource.data()) ||
-            ((qint64)baFile.size() != nWorkerSize)) return false;
+        if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
+            ((qint64)baFile.size() != nWorkerSize))
+            return false;
         if (info.nVersion == 2) {
-            listRecords = worker._parseV2(reinterpret_cast<const quint8 *>(baFile.constData()),
-                                          baFile.size(), info.nMarkerOffset, nOutputLimit,
-                                          mapProperties, &pContext->memoryReservation, pPdStruct);
+            listRecords = worker._parseV2(reinterpret_cast<const quint8 *>(baFile.constData()), baFile.size(), info.nMarkerOffset, nOutputLimit, mapProperties,
+                                          &pContext->memoryReservation, pPdStruct);
         } else if (info.nVersion == 5) {
-            listRecords = worker._parseEA05(reinterpret_cast<const quint8 *>(baFile.constData()),
-                                            baFile.size(), info.nMarkerOffset + 8, nOutputLimit,
-                                            mapProperties, &pContext->memoryReservation, pPdStruct);
+            listRecords = worker._parseEA05(reinterpret_cast<const quint8 *>(baFile.constData()), baFile.size(), info.nMarkerOffset + 8, nOutputLimit, mapProperties,
+                                            &pContext->memoryReservation, pPdStruct);
         } else if (info.nVersion == 6) {
-            listRecords = worker._parseEA06(reinterpret_cast<const quint8 *>(baFile.constData()),
-                                            baFile.size(), info.nMarkerOffset + 8, nOutputLimit,
-                                            mapProperties, &pContext->memoryReservation, pPdStruct);
+            listRecords = worker._parseEA06(reinterpret_cast<const quint8 *>(baFile.constData()), baFile.size(), info.nMarkerOffset + 8, nOutputLimit, mapProperties,
+                                            &pContext->memoryReservation, pPdStruct);
         }
-        if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
-            (getDevice() != guardedSource.data()) || listRecords.isEmpty()) return false;
+        if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
+            listRecords.isEmpty())
+            return false;
     }
     if (!isProgressAlive() || !isPdStructNotCanceled(pPdStruct)) return false;
 
@@ -996,9 +954,9 @@ bool XAUTOIT::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant>
     pContext->nCurrentIndex = 0;
     if (pContext->baToken.isEmpty()) return false;
     const bool bSourceFinal = pSourceGuard->validateAndFinalize(pPdStruct);
-    if (!isProgressAlive() || !bSourceFinal || !guardedThis || !guardedSource ||
-        (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
-        !isPdStructNotCanceled(pPdStruct)) return false;
+    if (!isProgressAlive() || !bSourceFinal || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
+        !isPdStructNotCanceled(pPdStruct))
+        return false;
     pContext->pSourceGuard = pSourceGuard.take();
 
     pState->nCurrentOffset = 0;
@@ -1020,23 +978,18 @@ XBinary::ARCHIVERECORD XAUTOIT::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdS
     if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return result;
     QScopedValueRollback<bool> operationGuard(pLifetimeState->bOperationInProgress, true);
     QPointer<XAUTOIT> guardedThis(this);
-    if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() ||
-        !isPdStructNotCanceled(pPdStruct)) return result;
+    if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !isPdStructNotCanceled(pPdStruct)) return result;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pContext->nDeviceGeneration != getDeviceGeneration()) ||
-        (pContext->pSourceDevice.data() != getDevice()) ||
-        (pState->nCurrentIndex != pContext->nCurrentIndex) ||
-        (pState->nCurrentOffset != pContext->nCurrentOffset) ||
-        (pState->nNumberOfRecords != pContext->listRecords.size()) ||
-        (pState->nTotalSize != pContext->nSourceSize)) return result;
-    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis ||
-        !pLifetimeState->bOwnerAlive || !pLifetimeState->setContexts.contains(pContext) ||
-        (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pState->nCurrentIndex != pContext->nCurrentIndex) ||
-        (pState->nNumberOfRecords != pContext->listRecords.size())) return result;
+    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
+        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) || (pState->nCurrentIndex != pContext->nCurrentIndex) ||
+        (pState->nCurrentOffset != pContext->nCurrentOffset) || (pState->nNumberOfRecords != pContext->listRecords.size()) ||
+        (pState->nTotalSize != pContext->nSourceSize))
+        return result;
+    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis || !pLifetimeState->bOwnerAlive ||
+        !pLifetimeState->setContexts.contains(pContext) || (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
+        (pContext->baToken != pState->baUnpackSourceToken) || (pState->nCurrentIndex != pContext->nCurrentIndex) ||
+        (pState->nNumberOfRecords != pContext->listRecords.size()))
+        return result;
     const qint32 nIndex = pContext->nCurrentIndex;
     if ((nIndex < 0) || (nIndex >= pContext->listRecords.size())) return result;
 
@@ -1057,17 +1010,13 @@ bool XAUTOIT::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *
     QScopedValueRollback<bool> operationGuard(pLifetimeState->bOperationInProgress, true);
     QPointer<XAUTOIT> guardedThis(this);
     QPointer<QIODevice> guardedOutput(pDevice);
-    if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() ||
-        !guardedOutput || !isPdStructNotCanceled(pPdStruct)) return false;
+    if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !guardedOutput || !isPdStructNotCanceled(pPdStruct)) return false;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pContext->nDeviceGeneration != getDeviceGeneration()) ||
-        (pContext->pSourceDevice.data() != getDevice()) ||
-        (pState->nCurrentIndex != pContext->nCurrentIndex) ||
-        (pState->nCurrentOffset != pContext->nCurrentOffset) ||
-        (pState->nNumberOfRecords != pContext->listRecords.size()) ||
-        (pState->nTotalSize != pContext->nSourceSize)) return false;
+    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
+        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) || (pState->nCurrentIndex != pContext->nCurrentIndex) ||
+        (pState->nCurrentOffset != pContext->nCurrentOffset) || (pState->nNumberOfRecords != pContext->listRecords.size()) ||
+        (pState->nTotalSize != pContext->nSourceSize))
+        return false;
     const qint32 nIndex = pContext->nCurrentIndex;
     if ((nIndex < 0) || (nIndex >= pContext->listRecords.size())) return false;
 
@@ -1078,16 +1027,14 @@ bool XAUTOIT::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *
     const bool bSequential = guardedOutput->isSequential();
     if (!guardedThis || !guardedOutput || bSequential) return false;
     const QIODevice::OpenMode openMode = guardedOutput->openMode();
-    if (!guardedThis || !guardedOutput ||
-        (openMode & (QIODevice::Append | QIODevice::Text)) ||
-        !isResizeEnable(guardedOutput.data())) return false;
+    if (!guardedThis || !guardedOutput || (openMode & (QIODevice::Append | QIODevice::Text)) || !isResizeEnable(guardedOutput.data())) return false;
     QPointer<QIODevice> guardedSource(pContext->pSourceDevice);
     if (guardedSource && devicesAlias(guardedSource.data(), guardedOutput.data())) return false;
     if (!guardedThis || !guardedOutput) return false;
-    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis || !guardedOutput ||
-        !pLifetimeState->bOwnerAlive || !pLifetimeState->setContexts.contains(pContext) ||
-        (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken)) return false;
+    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis || !guardedOutput || !pLifetimeState->bOwnerAlive ||
+        !pLifetimeState->setContexts.contains(pContext) || (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
+        (pContext->baToken != pState->baUnpackSourceToken))
+        return false;
 
     // This override bypasses the base decode chain's per-entry gate; account
     // the member here. Produced bytes are charged by writeUnpackData.
@@ -1109,14 +1056,10 @@ bool XAUTOIT::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *
     writeState.baUnpackSourceToken.clear();
     const bool bResult = writeUnpackData(&writeState, guardedOutput.data(), baData, pPdStruct);
     const bool bSourceCurrent = bResult && pContext->pSourceGuard && pContext->pSourceGuard->isCurrent(pPdStruct);
-    const bool bAuthenticated = bSourceCurrent && guardedThis && guardedOutput && pLifetimeState->bOwnerAlive &&
-                                pLifetimeState->setContexts.contains(pContext) &&
-                                (pState->pContext == pContext) && (pContext->pOwnerState == pState) &&
-                                (pState->baUnpackSourceToken == pContext->baToken) &&
-                                (pState->nCurrentIndex == pContext->nCurrentIndex) &&
-                                (pState->nCurrentOffset == pContext->nCurrentOffset) &&
-                                (pState->nNumberOfRecords == pContext->listRecords.size()) &&
-                                (pState->nTotalSize == pContext->nSourceSize);
+    const bool bAuthenticated = bSourceCurrent && guardedThis && guardedOutput && pLifetimeState->bOwnerAlive && pLifetimeState->setContexts.contains(pContext) &&
+                                (pState->pContext == pContext) && (pContext->pOwnerState == pState) && (pState->baUnpackSourceToken == pContext->baToken) &&
+                                (pState->nCurrentIndex == pContext->nCurrentIndex) && (pState->nCurrentOffset == pContext->nCurrentOffset) &&
+                                (pState->nNumberOfRecords == pContext->listRecords.size()) && (pState->nTotalSize == pContext->nSourceSize);
     if (!bResult || !bAuthenticated) {
         if (bResult && guardedOutput) {
             resize(guardedOutput.data(), 0);
@@ -1135,26 +1078,19 @@ bool XAUTOIT::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return false;
     QScopedValueRollback<bool> operationGuard(pLifetimeState->bOperationInProgress, true);
     QPointer<XAUTOIT> guardedThis(this);
-    if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() ||
-        !isPdStructNotCanceled(pPdStruct)) return false;
+    if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !isPdStructNotCanceled(pPdStruct)) return false;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pContext->nDeviceGeneration != getDeviceGeneration()) ||
-        (pContext->pSourceDevice.data() != getDevice()) ||
-        (pState->nCurrentIndex != pContext->nCurrentIndex) ||
-        (pState->nCurrentOffset != pContext->nCurrentOffset) ||
-        (pState->nNumberOfRecords != pContext->listRecords.size()) ||
-        (pState->nTotalSize != pContext->nSourceSize) ||
-        (pContext->nCurrentIndex < 0) ||
-        (pContext->nCurrentIndex >= pContext->listRecords.size() - 1)) return false;
+    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
+        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) || (pState->nCurrentIndex != pContext->nCurrentIndex) ||
+        (pState->nCurrentOffset != pContext->nCurrentOffset) || (pState->nNumberOfRecords != pContext->listRecords.size()) ||
+        (pState->nTotalSize != pContext->nSourceSize) || (pContext->nCurrentIndex < 0) || (pContext->nCurrentIndex >= pContext->listRecords.size() - 1))
+        return false;
 
-    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis ||
-        !pLifetimeState->bOwnerAlive || !pLifetimeState->setContexts.contains(pContext) ||
-        (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pState->nCurrentIndex != pContext->nCurrentIndex) ||
-        (pContext->nCurrentIndex >= pContext->listRecords.size() - 1)) return false;
+    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis || !pLifetimeState->bOwnerAlive ||
+        !pLifetimeState->setContexts.contains(pContext) || (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
+        (pContext->baToken != pState->baUnpackSourceToken) || (pState->nCurrentIndex != pContext->nCurrentIndex) ||
+        (pContext->nCurrentIndex >= pContext->listRecords.size() - 1))
+        return false;
 
     ++pContext->nCurrentIndex;
     pContext->nCurrentOffset = 0;
@@ -1175,9 +1111,8 @@ bool XAUTOIT::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         return true;
     }
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!pContext || !pLifetimeState->setContexts.contains(pContext) ||
-        (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken)) return false;
+    if (!pContext || !pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken))
+        return false;
     pLifetimeState->setContexts.remove(pContext);
     *pState = UNPACK_STATE();
     delete pContext;

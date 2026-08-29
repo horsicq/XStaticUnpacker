@@ -112,15 +112,13 @@ XFSG::LIFETIME_STATE::~LIFETIME_STATE()
 bool XFSG::isDeviceReplacementAllowed() const
 {
     const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
-    return pLifetimeState && pLifetimeState->bOwnerAlive &&
-           !pLifetimeState->bOperationInProgress && pLifetimeState->setContexts.isEmpty();
+    return pLifetimeState && pLifetimeState->bOwnerAlive && !pLifetimeState->bOperationInProgress && pLifetimeState->setContexts.isEmpty();
 }
 
 bool XFSG::isValid(PDSTRUCT *pPdStruct)
 {
     QPointer<XFSG> guardedThis(this);
-    const INTERNAL_INFO *pInfo =
-        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
+    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
     return guardedThis && pInfo && pInfo->bIsValid;
 }
 
@@ -138,10 +136,8 @@ XBinary::FT XFSG::getFileType()
 QString XFSG::getVersion()
 {
     QPointer<XFSG> guardedThis(this);
-    const INTERNAL_INFO *pInfo =
-        static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo());
-    return (guardedThis && pInfo && pInfo->bIsValid) ? pInfo->sVersion
-                                                     : QString();
+    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo());
+    return (guardedThis && pInfo && pInfo->bIsValid) ? pInfo->sVersion : QString();
 }
 
 // ---------------------------------------------------------------------------
@@ -271,8 +267,7 @@ qint64 XFSG::_aplibDepack(const quint8 *pSrc, qint64 nSrcSize, quint8 *pDst, qin
 // minimal analysis-PE rebuild
 // ---------------------------------------------------------------------------
 
-QByteArray XFSG::_rebuildPE(const QByteArray &baBlob, const QList<SECTIONINFO> &listSections, quint32 nImageBase, quint32 nOEP,
-                            qint64 nOutputLimit)
+QByteArray XFSG::_rebuildPE(const QByteArray &baBlob, const QList<SECTIONINFO> &listSections, quint32 nImageBase, quint32 nOEP, qint64 nOutputLimit)
 {
     if (listSections.isEmpty()) {
         return QByteArray();
@@ -308,24 +303,24 @@ QByteArray XFSG::_rebuildPE(const QByteArray &baBlob, const QList<SECTIONINFO> &
 
     // IMAGE_FILE_HEADER
     char *fh = pe + 4;
-    _write_uint16(fh + 0, 0x014C);            // Machine i386
+    _write_uint16(fh + 0, 0x014C);                                // Machine i386
     _write_uint16(fh + 2, (quint16)(nSects + (bGhost ? 1 : 0)));  // NumberOfSections
-    _write_uint16(fh + 16, 0x00E0);           // SizeOfOptionalHeader
-    _write_uint16(fh + 18, 0x010F);           // Characteristics (exe, 32-bit, no relocs)
+    _write_uint16(fh + 16, 0x00E0);                               // SizeOfOptionalHeader
+    _write_uint16(fh + 18, 0x010F);                               // Characteristics (exe, 32-bit, no relocs)
 
     // IMAGE_OPTIONAL_HEADER32
     char *oh = fh + 20;
-    _write_uint16(oh + 0, 0x010B);            // Magic PE32
-    _write_uint32(oh + 16, nOEP);             // AddressOfEntryPoint
-    _write_uint32(oh + 28, nImageBase);       // ImageBase
-    _write_uint32(oh + 32, 0x1000);           // SectionAlignment
-    _write_uint32(oh + 36, 0x200);            // FileAlignment
-    _write_uint16(oh + 40, 4);                // MajorOSVersion
-    _write_uint16(oh + 48, 4);                // MajorSubsystemVersion
+    _write_uint16(oh + 0, 0x010B);                             // Magic PE32
+    _write_uint32(oh + 16, nOEP);                              // AddressOfEntryPoint
+    _write_uint32(oh + 28, nImageBase);                        // ImageBase
+    _write_uint32(oh + 32, 0x1000);                            // SectionAlignment
+    _write_uint32(oh + 36, 0x200);                             // FileAlignment
+    _write_uint16(oh + 40, 4);                                 // MajorOSVersion
+    _write_uint16(oh + 48, 4);                                 // MajorSubsystemVersion
     _write_uint32(oh + 56, fsgAlign(nMaxVirtualEnd, 0x1000));  // SizeOfImage
-    _write_uint32(oh + 60, nRawBase);         // SizeOfHeaders
-    _write_uint16(oh + 68, 2);                // Subsystem (GUI)
-    _write_uint32(oh + 92, 16);               // NumberOfRvaAndSizes
+    _write_uint32(oh + 60, nRawBase);                          // SizeOfHeaders
+    _write_uint16(oh + 68, 2);                                 // Subsystem (GUI)
+    _write_uint32(oh + 92, 16);                                // NumberOfRvaAndSizes
 
     // section table
     char *sec = oh + 0xE0;
@@ -335,10 +330,10 @@ QByteArray XFSG::_rebuildPE(const QByteArray &baBlob, const QList<SECTIONINFO> &
         memcpy(sec, ".ghost", 6);
         quint32 nGhostVA = fsgAlign(nRawBase, 0x1000);
         _write_uint32(sec + 8, listSections.at(0).nRva - nGhostVA);  // VirtualSize
-        _write_uint32(sec + 12, nGhostVA);                          // VirtualAddress
-        _write_uint32(sec + 16, 0);                                 // SizeOfRawData
-        _write_uint32(sec + 20, 0);                                 // PointerToRawData
-        _write_uint32(sec + 36, 0xE00000E0);                        // Characteristics
+        _write_uint32(sec + 12, nGhostVA);                           // VirtualAddress
+        _write_uint32(sec + 16, 0);                                  // SizeOfRawData
+        _write_uint32(sec + 20, 0);                                  // PointerToRawData
+        _write_uint32(sec + 36, 0xE00000E0);                         // Characteristics
         sec += 0x28;
     }
 
@@ -423,9 +418,7 @@ XFSG::INTERNAL_INFO XFSG::_detect(PDSTRUCT *pPdStruct)
         nMinRva = qMin(nMinRva, listSections.at(i).VirtualAddress);
     }
     const quint32 nAoe = pe.getOptionalHeader_AddressOfEntryPoint();
-    const auto isPlausibleSupport = [&](quint32 nSupportRva) -> bool {
-        return (nSupportRva < nMinRva) && (nAoe >= nMinRva);
-    };
+    const auto isPlausibleSupport = [&](quint32 nSupportRva) -> bool { return (nSupportRva < nMinRva) && (nAoe >= nMinRva); };
 
     if ((ep[0] == 0x87) && (ep[1] == 0x25)) {
         result.bIsValid = true;
@@ -446,15 +439,14 @@ XFSG::INTERNAL_INFO XFSG::_detect(PDSTRUCT *pPdStruct)
         // followed by the generation-specific get-bit routine setup.
         const quint32 nPtr = fsgRd32(ep + 1) - nImageBase;
         if (isPlausibleSupport(nPtr)) {
-            if ((ep[16] == 0xE8) && (fsgRd32(ep + 17) == 0x0000000A) && (ep[21] == 0x02) && (ep[22] == 0xD2) && (ep[23] == 0x75) &&
-                (ep[24] == 0x05) && (ep[25] == 0x8A) && (ep[26] == 0x16) && (ep[27] == 0x46) && (ep[28] == 0x12) && (ep[29] == 0xD2) &&
-                (ep[30] == 0xC3)) {
+            if ((ep[16] == 0xE8) && (fsgRd32(ep + 17) == 0x0000000A) && (ep[21] == 0x02) && (ep[22] == 0xD2) && (ep[23] == 0x75) && (ep[24] == 0x05) &&
+                (ep[25] == 0x8A) && (ep[26] == 0x16) && (ep[27] == 0x46) && (ep[28] == 0x12) && (ep[29] == 0xD2) && (ep[30] == 0xC3)) {
                 result.bIsValid = true;
                 result.nVersion = 100;
                 result.sVersion = "1.0-1.3";
                 result.nJeOffset = 224;
-            } else if ((ep[16] == 0xBB) && (ep[21] == 0xB2) && (ep[22] == 0x80) && (ep[23] == 0xA4) && (ep[24] == 0xB6) && (ep[25] == 0x80) &&
-                       (ep[26] == 0xFF) && (ep[27] == 0xD3) && (ep[28] == 0x73) && (ep[29] == 0xF9)) {
+            } else if ((ep[16] == 0xBB) && (ep[21] == 0xB2) && (ep[22] == 0x80) && (ep[23] == 0xA4) && (ep[24] == 0xB6) && (ep[25] == 0x80) && (ep[26] == 0xFF) &&
+                       (ep[27] == 0xD3) && (ep[28] == 0x73) && (ep[29] == 0xF9)) {
                 result.bIsValid = true;
                 result.nVersion = 131;
                 result.sVersion = "1.31";
@@ -519,8 +511,7 @@ bool XFSG::handleInternalInfo(PDSTRUCT *pPdStruct)
     if (!guardedThis) return false;
 
     if (!bAlreadyHandled) {
-        const quint64 nTransaction =
-            guardedThis->beginInternalInfoTransaction();
+        const quint64 nTransaction = guardedThis->beginInternalInfoTransaction();
         if (!nTransaction) return false;
 
         // The transaction supplies the recursion sentinel. Keep every
@@ -528,17 +519,14 @@ bool XFSG::handleInternalInfo(PDSTRUCT *pPdStruct)
         guardedThis->m_internalInfo = INTERNAL_INFO();
         INTERNAL_INFO info = guardedThis->_getInternalInfo(pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
 
-        const auto memoryMap =
-            guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -549,10 +537,7 @@ bool XFSG::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
         guardedThis->m_internalInfo = info;
-        if (!guardedThis->commitInternalInfoTransaction(
-                nTransaction,
-                static_cast<XBinary::INTERNAL_INFO *>(
-                    &guardedThis->m_internalInfo))) {
+        if (!guardedThis->commitInternalInfoTransaction(nTransaction, static_cast<XBinary::INTERNAL_INFO *>(&guardedThis->m_internalInfo))) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
@@ -600,8 +585,7 @@ bool XFSG::_unpackV200(XPE *pPE, qint32 nIndex, QByteArray &baOut, qint64 nOutpu
 
     const quint32 nSsize = secSrc.SizeOfRawData;
     const quint32 nDsize = secDst.Misc.VirtualSize;
-    if ((nSsize <= 0x19) || (nDsize <= nSsize) ||
-        ((nOutputLimit >= 0) && ((quint64)nDsize > (quint64)nOutputLimit))) {
+    if ((nSsize <= 0x19) || (nDsize <= nSsize) || ((nOutputLimit >= 0) && ((quint64)nDsize > (quint64)nOutputLimit))) {
         return false;
     }
 
@@ -671,8 +655,7 @@ bool XFSG::_unpackV133(XPE *pPE, qint32 nIndex, QByteArray &baOut, qint64 nOutpu
 
     const quint32 nSsize = secSrc.SizeOfRawData;
     const quint32 nDsize = secDst.Misc.VirtualSize;
-    if ((nSsize <= 0x19) || (nDsize <= nSsize) ||
-        ((nOutputLimit >= 0) && ((quint64)nDsize > (quint64)nOutputLimit))) return false;
+    if ((nSsize <= 0x19) || (nDsize <= nSsize) || ((nOutputLimit >= 0) && ((quint64)nDsize > (quint64)nOutputLimit))) return false;
 
     qint64 nEpOffset = pPE->relAddressToOffset(pPE->getOptionalHeader_AddressOfEntryPoint());
     QByteArray baEp = read_array_process(nEpOffset, 0xC0, pPdStruct);
@@ -782,8 +765,7 @@ bool XFSG::_unpackV1x(XPE *pPE, qint32 nIndex, const INTERNAL_INFO &info, QByteA
 
     const quint32 nSsize = secSrc.SizeOfRawData;
     const quint32 nDsize = secDst.Misc.VirtualSize;
-    if ((nSsize <= 0x19) || (nDsize <= nSsize) ||
-        ((nOutputLimit >= 0) && ((quint64)nDsize > (quint64)nOutputLimit))) return false;
+    if ((nSsize <= 0x19) || (nDsize <= nSsize) || ((nOutputLimit >= 0) && ((quint64)nDsize > (quint64)nOutputLimit))) return false;
 
     const quint32 nDestRva = info.nDestVa - nImageBase;
     const quint32 nSrcRva = info.nSrcVa - nImageBase;
@@ -836,8 +818,7 @@ bool XFSG::_unpackV1x(XPE *pPE, qint32 nIndex, const INTERNAL_INFO &info, QByteA
 
     for (int k = 0; k < listRva.size(); k++) {
         qint64 nConsumed = 0;
-        qint64 nProduced =
-            _aplibDepack(src + nSrcPos, (qint64)nSsize - nSrcPos, (quint8 *)baDest.data() + nDstPos, (qint64)nDsize - nDstPos, &nConsumed);
+        qint64 nProduced = _aplibDepack(src + nSrcPos, (qint64)nSsize - nSrcPos, (quint8 *)baDest.data() + nDstPos, (qint64)nDsize - nDstPos, &nConsumed);
         if (nProduced < 0) return false;
 
         SECTIONINFO si;
@@ -964,9 +945,7 @@ bool XFSG::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     qint64 nOutputLimit = -1;
     if (!getUnpackOutputLimit(mapProperties, &nOutputLimit)) return false;
     const PDSTRUCTLIFETIME progressLifetime = pPdStruct ? retainPdStructLifetime(pPdStruct) : PDSTRUCTLIFETIME();
-    const auto isProgressAlive = [&]() -> bool {
-        return !pPdStruct || isPdStructLifetimeAlive(progressLifetime);
-    };
+    const auto isProgressAlive = [&]() -> bool { return !pPdStruct || isPdStructLifetimeAlive(progressLifetime); };
     if (!isProgressAlive()) return false;
     const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
     if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return false;
@@ -975,9 +954,9 @@ bool XFSG::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
 
     if (pState->pContext || !pState->baUnpackSourceToken.isEmpty()) {
         UNPACK_CONTEXT *pOldContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-        if (!pOldContext || !pLifetimeState->setContexts.contains(pOldContext) ||
-            (pOldContext->pOwnerState != pState) ||
-            (pOldContext->baToken != pState->baUnpackSourceToken)) return false;
+        if (!pOldContext || !pLifetimeState->setContexts.contains(pOldContext) || (pOldContext->pOwnerState != pState) ||
+            (pOldContext->baToken != pState->baUnpackSourceToken))
+            return false;
         pLifetimeState->setContexts.remove(pOldContext);
         *pState = UNPACK_STATE();
         delete pOldContext;
@@ -993,31 +972,29 @@ bool XFSG::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     const XADDR nModuleAddress = getModuleAddress();
     if (!guardedSource) return false;
     const QString sFileName = getUnpackedFileName(guardedSource.data());
-    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data())) return false;
+    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data())) return false;
     const qint64 nSourceSize = guardedSource->size();
-    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data()) || (nSourceSize < 0)) return false;
+    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) || (nSourceSize < 0))
+        return false;
     QScopedPointer<XMaterializedUnpackGuard> pSourceGuard(XMaterializedUnpackGuard::bind(guardedSource.data(), pPdStruct));
-    if (!isProgressAlive() || !pSourceGuard || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data())) return false;
+    if (!isProgressAlive() || !pSourceGuard || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+        return false;
 
     QScopedPointer<QIODevice> pSnapshot(createFileBuffer(nSourceSize, pPdStruct));
-    if (!isProgressAlive() || !guardedThis || !guardedSource || !pSnapshot ||
-        (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data())) return false;
+    if (!isProgressAlive() || !guardedThis || !guardedSource || !pSnapshot || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+        return false;
     const bool bCopied = copyDeviceMemory(guardedSource.data(), 0, pSnapshot.data(), 0, nSourceSize, pPdStruct);
-    if (!isProgressAlive() || !bCopied || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data())) return false;
+    if (!isProgressAlive() || !bCopied || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data())) return false;
 
     XFSG worker(pSnapshot.data(), bIsImage, nModuleAddress);
     const INTERNAL_INFO info = worker._detect(pPdStruct);
-    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data()) || !info.bIsValid) return false;
+    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) || !info.bIsValid)
+        return false;
     QByteArray baData;
     const bool bUnpacked = worker._unpackToBuffer(baData, nOutputLimit, pPdStruct);
-    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
-        (getDevice() != guardedSource.data()) || !bUnpacked || baData.isEmpty() ||
-        !isPdStructNotCanceled(pPdStruct)) return false;
+    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) || !bUnpacked ||
+        baData.isEmpty() || !isPdStructNotCanceled(pPdStruct))
+        return false;
 
     QScopedPointer<UNPACK_CONTEXT> pContext(new UNPACK_CONTEXT);
     pContext->baData = baData;
@@ -1032,9 +1009,9 @@ bool XFSG::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     pContext->nCurrentIndex = 0;
     if (pContext->baToken.isEmpty()) return false;
     const bool bSourceFinal = pSourceGuard->validateAndFinalize(pPdStruct);
-    if (!isProgressAlive() || !bSourceFinal || !guardedThis || !guardedSource ||
-        (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
-        !isPdStructNotCanceled(pPdStruct)) return false;
+    if (!isProgressAlive() || !bSourceFinal || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
+        !isPdStructNotCanceled(pPdStruct))
+        return false;
     pContext->pSourceGuard = pSourceGuard.take();
 
     pState->nCurrentOffset = 0;
@@ -1056,21 +1033,17 @@ XBinary::ARCHIVERECORD XFSG::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStru
     if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return result;
     QScopedValueRollback<bool> operationGuard(pLifetimeState->bOperationInProgress, true);
     QPointer<XFSG> guardedThis(this);
-    if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() ||
-        !isPdStructNotCanceled(pPdStruct)) return result;
+    if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !isPdStructNotCanceled(pPdStruct)) return result;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pContext->nDeviceGeneration != getDeviceGeneration()) ||
-        (pContext->pSourceDevice.data() != getDevice()) ||
-        (pState->nCurrentIndex != pContext->nCurrentIndex) ||
-        (pState->nCurrentOffset != pContext->nCurrentOffset) ||
-        (pState->nCurrentIndex != 0) || (pState->nNumberOfRecords != 1) ||
-        (pState->nTotalSize != pContext->nSourceSize)) return result;
-    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis ||
-        !pLifetimeState->bOwnerAlive || !pLifetimeState->setContexts.contains(pContext) ||
-        (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken)) return result;
+    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
+        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) || (pState->nCurrentIndex != pContext->nCurrentIndex) ||
+        (pState->nCurrentOffset != pContext->nCurrentOffset) || (pState->nCurrentIndex != 0) || (pState->nNumberOfRecords != 1) ||
+        (pState->nTotalSize != pContext->nSourceSize))
+        return result;
+    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis || !pLifetimeState->bOwnerAlive ||
+        !pLifetimeState->setContexts.contains(pContext) || (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
+        (pContext->baToken != pState->baUnpackSourceToken))
+        return result;
 
     result.nStreamOffset = 0;
     result.nStreamSize = pContext->baData.size();
@@ -1089,17 +1062,13 @@ bool XFSG::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
     if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return false;
     QScopedValueRollback<bool> operationGuard(pLifetimeState->bOperationInProgress, true);
-    if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() ||
-        !isPdStructNotCanceled(pPdStruct)) return false;
+    if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !isPdStructNotCanceled(pPdStruct)) return false;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pContext->nDeviceGeneration != getDeviceGeneration()) ||
-        (pContext->pSourceDevice.data() != getDevice()) ||
-        (pState->nCurrentIndex != pContext->nCurrentIndex) ||
-        (pState->nCurrentOffset != pContext->nCurrentOffset) ||
-        (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= 1) ||
-        (pState->nNumberOfRecords != 1) || (pState->nTotalSize != pContext->nSourceSize)) return false;
+    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
+        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) || (pState->nCurrentIndex != pContext->nCurrentIndex) ||
+        (pState->nCurrentOffset != pContext->nCurrentOffset) || (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= 1) || (pState->nNumberOfRecords != 1) ||
+        (pState->nTotalSize != pContext->nSourceSize))
+        return false;
 
     return false;
 }
@@ -1116,9 +1085,8 @@ bool XFSG::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         return true;
     }
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!pContext || !pLifetimeState->setContexts.contains(pContext) ||
-        (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken)) return false;
+    if (!pContext || !pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken))
+        return false;
     pLifetimeState->setContexts.remove(pContext);
     *pState = UNPACK_STATE();
     delete pContext;
@@ -1132,17 +1100,13 @@ bool XFSG::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
     QScopedValueRollback<bool> operationGuard(pLifetimeState->bOperationInProgress, true);
     QPointer<XFSG> guardedThis(this);
     QPointer<QIODevice> guardedOutput(pDevice);
-    if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() ||
-        !guardedOutput || !isPdStructNotCanceled(pPdStruct)) return false;
+    if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !guardedOutput || !isPdStructNotCanceled(pPdStruct)) return false;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
-    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pContext->nDeviceGeneration != getDeviceGeneration()) ||
-        (pContext->pSourceDevice.data() != getDevice()) ||
-        (pState->nCurrentIndex != pContext->nCurrentIndex) ||
-        (pState->nCurrentOffset != pContext->nCurrentOffset) ||
-        (pState->nCurrentIndex != 0) || (pState->nNumberOfRecords != 1) ||
-        (pState->nTotalSize != pContext->nSourceSize)) return false;
+    if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
+        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) || (pState->nCurrentIndex != pContext->nCurrentIndex) ||
+        (pState->nCurrentOffset != pContext->nCurrentOffset) || (pState->nCurrentIndex != 0) || (pState->nNumberOfRecords != 1) ||
+        (pState->nTotalSize != pContext->nSourceSize))
+        return false;
 
     const bool bOpen = guardedOutput->isOpen();
     if (!guardedThis || !guardedOutput || !bOpen) return false;
@@ -1151,16 +1115,14 @@ bool XFSG::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
     const bool bSequential = guardedOutput->isSequential();
     if (!guardedThis || !guardedOutput || bSequential) return false;
     const QIODevice::OpenMode openMode = guardedOutput->openMode();
-    if (!guardedThis || !guardedOutput ||
-        (openMode & (QIODevice::Append | QIODevice::Text)) ||
-        !isResizeEnable(guardedOutput.data())) return false;
+    if (!guardedThis || !guardedOutput || (openMode & (QIODevice::Append | QIODevice::Text)) || !isResizeEnable(guardedOutput.data())) return false;
     QPointer<QIODevice> guardedSource(pContext->pSourceDevice);
     if (guardedSource && devicesAlias(guardedSource.data(), guardedOutput.data())) return false;
     if (!guardedThis || !guardedOutput) return false;
-    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis || !guardedOutput ||
-        !pLifetimeState->bOwnerAlive || !pLifetimeState->setContexts.contains(pContext) ||
-        (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken)) return false;
+    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis || !guardedOutput || !pLifetimeState->bOwnerAlive ||
+        !pLifetimeState->setContexts.contains(pContext) || (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
+        (pContext->baToken != pState->baUnpackSourceToken))
+        return false;
 
     // This override bypasses the base decode chain's per-entry gate; account
     // the member here. Produced bytes are charged by writeUnpackData.
@@ -1179,14 +1141,10 @@ bool XFSG::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
     writeState.baUnpackSourceToken.clear();
     const bool bResult = writeUnpackData(&writeState, guardedOutput.data(), pContext->baData, pPdStruct);
     const bool bSourceCurrent = bResult && pContext->pSourceGuard && pContext->pSourceGuard->isCurrent(pPdStruct);
-    const bool bAuthenticated = bSourceCurrent && guardedThis && guardedOutput && pLifetimeState->bOwnerAlive &&
-                                pLifetimeState->setContexts.contains(pContext) &&
-                                (pState->pContext == pContext) && (pContext->pOwnerState == pState) &&
-                                (pState->baUnpackSourceToken == pContext->baToken) &&
-                                (pState->nCurrentIndex == pContext->nCurrentIndex) &&
-                                (pState->nCurrentOffset == pContext->nCurrentOffset) &&
-                                (pState->nNumberOfRecords == 1) &&
-                                (pState->nTotalSize == pContext->nSourceSize);
+    const bool bAuthenticated = bSourceCurrent && guardedThis && guardedOutput && pLifetimeState->bOwnerAlive && pLifetimeState->setContexts.contains(pContext) &&
+                                (pState->pContext == pContext) && (pContext->pOwnerState == pState) && (pState->baUnpackSourceToken == pContext->baToken) &&
+                                (pState->nCurrentIndex == pContext->nCurrentIndex) && (pState->nCurrentOffset == pContext->nCurrentOffset) &&
+                                (pState->nNumberOfRecords == 1) && (pState->nTotalSize == pContext->nSourceSize);
     if (!bResult || !bAuthenticated) {
         if (bResult && guardedOutput) {
             resize(guardedOutput.data(), 0);

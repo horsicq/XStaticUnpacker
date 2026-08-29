@@ -27,14 +27,14 @@ class XASPACK : public XBinary {
 public:
     enum AVER {
         AVER_NONE = 0,
-        AVER_200,    // 2.000
-        AVER_201,    // 2.001 and 2.1 share one stub layout
+        AVER_200,  // 2.000
+        AVER_201,  // 2.001 and 2.1 share one stub layout
         AVER_212,
         AVER_22,     // 2.2x
         AVER_OTHER,  // >2.12, <2.42
         AVER_242,
-        AVER_211,    // 2.11 and 2.11r share one stub layout (encrypted head)
-        AVER_211C    // 2.11c and 2.11d share one stub layout (encrypted head)
+        AVER_211,  // 2.11 and 2.11r share one stub layout (encrypted head)
+        AVER_211C  // 2.11c and 2.11d share one stub layout (encrypted head)
     };
 
     struct INTERNAL_INFO : public XBinary::INTERNAL_INFO {
@@ -119,8 +119,8 @@ private:
     static int _decompBlock(ASPK *s, quint32 size, const quint8 *stuff, quint8 *output);
     static void _initDict(ASPK *s, quint8 **ppWrkbuf, int n, quint32 sz);
 
-    static QByteArray _buildPE(const QByteArray &baImage, const QList<XPE_DEF::IMAGE_SECTION_HEADER> &listSections, int nSectCount, quint32 nImageBase,
-                               quint32 nOEP, qint64 nOutputLimit = -1);
+    static QByteArray _buildPE(const QByteArray &baImage, const QList<XPE_DEF::IMAGE_SECTION_HEADER> &listSections, int nSectCount, quint32 nImageBase, quint32 nOEP,
+                               qint64 nOutputLimit = -1);
 
     bool _unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct);
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);

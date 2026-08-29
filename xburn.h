@@ -84,7 +84,9 @@ public:
     };
 
     struct UNPACK_LIFETIME_STATE {
-        UNPACK_LIFETIME_STATE() : bOperationInProgress(false), bOwnerAlive(true) {}
+        UNPACK_LIFETIME_STATE() : bOperationInProgress(false), bOwnerAlive(true)
+        {
+        }
         ~UNPACK_LIFETIME_STATE();
         bool bOperationInProgress;
         bool bOwnerAlive;
@@ -105,8 +107,7 @@ public:
     FT getFileType() override;
 
     QMap<UNPACK_PROP, QVariant> getDefaultUnpackProperties() override;
-    bool initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties,
-                    PDSTRUCT *pPdStruct = nullptr) override;
+    bool initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct = nullptr) override;
     ARCHIVERECORD infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     bool unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
     bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
@@ -115,8 +116,8 @@ public:
 protected:
     bool isDeviceReplacementAllowed() const override
     {
-        return m_pUnpackLifetimeState && m_pUnpackLifetimeState->bOwnerAlive &&
-               !m_pUnpackLifetimeState->bOperationInProgress && m_pUnpackLifetimeState->setContexts.isEmpty();
+        return m_pUnpackLifetimeState && m_pUnpackLifetimeState->bOwnerAlive && !m_pUnpackLifetimeState->bOperationInProgress &&
+               m_pUnpackLifetimeState->setContexts.isEmpty();
     }
 
 private:

@@ -117,8 +117,8 @@ private:
     QByteArray _reconstructImports(QByteArray *pBaBlob, quint32 nRva, quint32 nImpRva, quint32 *pnDescSize, PDSTRUCT *pPdStruct);
     // Not static: restoring the dropped data directories (TLS/resource) needs to
     // read the packed PE's own optional header, so it needs the device.
-    QByteArray _buildPE(const QByteArray &baBlob, quint32 nRva, quint32 nImageBase, quint32 nOEP, const QByteArray &baImportSection = QByteArray(),
-                        quint32 nImpRva = 0, quint32 nDescSize = 0, qint64 nOutputLimit = -1, PDSTRUCT *pPdStruct = nullptr);
+    QByteArray _buildPE(const QByteArray &baBlob, quint32 nRva, quint32 nImageBase, quint32 nOEP, const QByteArray &baImportSection = QByteArray(), quint32 nImpRva = 0,
+                        quint32 nDescSize = 0, qint64 nOutputLimit = -1, PDSTRUCT *pPdStruct = nullptr);
 
     bool _unpackToBuffer(QByteArray &baOut, qint64 nOutputLimit, PDSTRUCT *pPdStruct);
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct);

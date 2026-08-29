@@ -37,12 +37,12 @@ public:
         bool bIsValid;
         qint32 nVersion;  // 100, 112, 131, 133 or 200
         QString sVersion;
-        quint32 nSupportRva;   // support/relocation table RVA (1.x paths)
-        quint32 nDestVa;       // destination VA from the entry-point immediates
-        quint32 nSrcVa;        // packed-stream VA from the entry-point immediates
-        qint32 nJeOffset;      // `0F 84` OEP anchor, entry-point relative
-        bool bWordList;        // 16-bit support list (pre-1.33) instead of 32-bit
-        bool bEncryptedStub;   // 1.1/1.2 polymorphic stub encryption
+        quint32 nSupportRva;  // support/relocation table RVA (1.x paths)
+        quint32 nDestVa;      // destination VA from the entry-point immediates
+        quint32 nSrcVa;       // packed-stream VA from the entry-point immediates
+        qint32 nJeOffset;     // `0F 84` OEP anchor, entry-point relative
+        bool bWordList;       // 16-bit support list (pre-1.33) instead of 32-bit
+        bool bEncryptedStub;  // 1.1/1.2 polymorphic stub encryption
     };
 
     explicit XFSG(QIODevice *pDevice = nullptr, bool bIsImage = false, XADDR nModuleAddress = -1);
@@ -102,8 +102,7 @@ private:
     static qint64 _aplibDepack(const quint8 *pSrc, qint64 nSrcSize, quint8 *pDst, qint64 nDstSize, qint64 *pnSrcConsumed);
 
     // Build a minimal analysis PE from a set of sections + OEP.
-    static QByteArray _rebuildPE(const QByteArray &baBlob, const QList<SECTIONINFO> &listSections, quint32 nImageBase, quint32 nOEP,
-                                 qint64 nOutputLimit = -1);
+    static QByteArray _rebuildPE(const QByteArray &baBlob, const QList<SECTIONINFO> &listSections, quint32 nImageBase, quint32 nOEP, qint64 nOutputLimit = -1);
 
     // Order sections by ascending RVA (std::sort comparator).
     static bool _sectionRvaLess(const SECTIONINFO &a, const SECTIONINFO &b);

@@ -31,7 +31,7 @@ public:
 
     struct FILE_ENTRY {
         QString sName;
-        QByteArray baData;   // decoded content
+        QByteArray baData;  // decoded content
     };
 
     struct UNPACK_CONTEXT {

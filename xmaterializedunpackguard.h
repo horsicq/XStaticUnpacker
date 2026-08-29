@@ -41,9 +41,7 @@ public:
         if (bOwnDevice) {
             pResult->m_ownedDevice.track(guardedOwnedDevice.data());
         }
-        if (!guardedDevice ||
-            !pResult->m_archive.bindUnpackSource(&pResult->m_state,
-                                                pPdStruct)) {
+        if (!guardedDevice || !pResult->m_archive.bindUnpackSource(&pResult->m_state, pPdStruct)) {
             return nullptr;
         }
         pResult->m_bBound = true;
@@ -63,7 +61,6 @@ public:
             m_archive.releaseUnpackSource(&m_state);
             m_bBound = false;
         }
-
     }
 
     bool validateAndFinalize(XBinary::PDSTRUCT *pPdStruct = nullptr)
@@ -78,10 +75,12 @@ public:
         return m_bBound && m_bFinalized && m_archive.isUnpackSourceCurrent(&m_state, pPdStruct);
     }
 
-    QIODevice *device() { return m_archive.getDevice(); }
+    QIODevice *device()
+    {
+        return m_archive.getDevice();
+    }
 
-    static bool areCurrent(XMaterializedUnpackGuard *pPrimary, const QList<XMaterializedUnpackGuard *> &listCompanions,
-                           XBinary::PDSTRUCT *pPdStruct = nullptr)
+    static bool areCurrent(XMaterializedUnpackGuard *pPrimary, const QList<XMaterializedUnpackGuard *> &listCompanions, XBinary::PDSTRUCT *pPdStruct = nullptr)
     {
         if (!pPrimary || !pPrimary->isCurrent(pPdStruct)) return false;
         for (XMaterializedUnpackGuard *pGuard : listCompanions) {
@@ -104,15 +103,17 @@ private:
             delete pDevice;
         }
 
-        void track(QIODevice *pDevice) { m_pDevice = pDevice; }
+        void track(QIODevice *pDevice)
+        {
+            m_pDevice = pDevice;
+        }
 
     private:
         Q_DISABLE_COPY(TRACKED_DEVICE_OWNER)
         QPointer<QIODevice> m_pDevice;
     };
 
-    explicit XMaterializedUnpackGuard(QIODevice *pDevice)
-        : m_archive(pDevice)
+    explicit XMaterializedUnpackGuard(QIODevice *pDevice) : m_archive(pDevice)
     {
     }
 
