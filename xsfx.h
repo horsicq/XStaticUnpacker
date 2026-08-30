@@ -11,10 +11,11 @@ class SubDevice;
 struct XSFX_ZPAQ_SCAN_CACHE;
 struct XSFX_FREEARC_SCAN_CACHE;
 
-/* XSFX detects self-extracting archives: an executable (PE/MZ/ELF) stub followed
- * by an embedded archive in its unmapped suffix. It locates the archive and
- * delegates the streaming unpack API to the matching XArchive handler,
- * presenting only the archive region through a SubDevice. */
+/* XSFX detects self-extracting archives in executable overlays and, for
+ * explicitly selected resource-container families, in the mapped executable
+ * image. It locates the archive and delegates the streaming unpack API to the
+ * matching XArchive handler, presenting only the archive region through a
+ * SubDevice. */
 
 class XSFX : public XBinary {
     Q_OBJECT
@@ -27,7 +28,15 @@ public:
         ARC_RAR,
         ARC_CAB,
         ARC_FREEARC,
-        ARC_ZPAQ
+        ARC_ZPAQ,
+        ARC_ARC,
+        ARC_ARJ,
+        ARC_LHA,
+        ARC_GZIP,
+        ARC_KWAJ,
+        ARC_SZDD,
+        ARC_PYINSTALLER,
+        ARC_DEARK_LEGACY
     };
 
     struct INTERNAL_INFO : public XBinary::INTERNAL_INFO {

@@ -41,6 +41,21 @@ public:
 
     explicit XISCab(QIODevice *pDevice = nullptr);
 
+    // Embedded media support: an installer wrapper (XInstallShield) locates
+    // ISc( blobs inside its host executable; volume data is then read from
+    // the container file at the recorded windows instead of sibling
+    // <prefix><n>.cab files.  Public so the file-local segment helpers can
+    // name the type.
+    struct EMBEDDED_VOLUME {
+        quint64 nOffset = 0;
+        quint64 nSize = 0;
+        // Header bytes captured when the media was scanned.  Volume reads
+        // re-open the container by path, so the header is re-validated
+        // against this snapshot to reject a file swapped between the scan
+        // and the extraction.
+        QByteArray baPinnedHeader;
+    };
+
     bool isValid(PDSTRUCT *pPdStruct = nullptr) override;
     static bool isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr);
 
@@ -70,7 +85,7 @@ public:
     bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     QList<FPART_PROP> getAvailableFPARTProperties() override;
 
-private:
+protected:
     struct COMMON_HEADER {
         quint32 nVersion = 0;
         quint32 nVolumeInfo = 0;
@@ -92,6 +107,11 @@ private:
         quint8 nLinkFlags = 0;
         quint16 nVolume = 0;
         QString sFileName;
+        // Raw catalog directory/name (pre-sanitization): external loose-file
+        // lookup must use these — duplicate catalog entries all reference the
+        // same loose file, while sFileName is uniquified per entry.
+        QString sRawDirectory;
+        QString sRawName;
         bool bVisible = false;
     };
 
@@ -102,11 +122,13 @@ private:
         QString sMediaPrefix;
         QString sSourcePath;
         COMMON_HEADER common;
+        QString sContainerPath;
+        QMap<quint32, EMBEDDED_VOLUME> mapEmbeddedVolumes;
     };
 
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
     bool _readCommonHeader(QIODevice *pDevice, COMMON_HEADER *pHeader, PDSTRUCT *pPdStruct) const;
-    bool _loadCatalog(QByteArray *pCatalog, QString *pMediaPrefix, QString *pSourcePath, COMMON_HEADER *pHeader, PDSTRUCT *pPdStruct) const;
+    virtual bool _loadCatalog(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct) const;
     bool _parseCatalog(const QByteArray &baCatalog, const COMMON_HEADER &common, QList<FILE_ENTRY> *pEntries, QList<qint32> *pVisibleIndices, PDSTRUCT *pPdStruct) const;
     bool _extractEntry(const UNPACK_CONTEXT *pContext, qint32 nEntryIndex, QIODevice *pStageDevice, UNPACK_STATE *pState, PDSTRUCT *pPdStruct) const;
 

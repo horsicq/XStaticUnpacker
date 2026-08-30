@@ -68,12 +68,26 @@ set(XSTATICUNPACKER_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/xcabsfx.h
     ${CMAKE_CURRENT_LIST_DIR}/xiscab.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xiscab.h
+    ${CMAKE_CURRENT_LIST_DIR}/xinstallshield.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xinstallshield.h
     ${CMAKE_CURRENT_LIST_DIR}/xrib.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xrib.h
     ${CMAKE_CURRENT_LIST_DIR}/xfreearcsfx.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xfreearcsfx.h
     ${CMAKE_CURRENT_LIST_DIR}/xzpaqsfx.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xzpaqsfx.h
+    ${CMAKE_CURRENT_LIST_DIR}/xgzipsfx.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xgzipsfx.h
+    ${CMAKE_CURRENT_LIST_DIR}/xkwajsfx.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xkwajsfx.h
+    ${CMAKE_CURRENT_LIST_DIR}/xszddsfx.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xszddsfx.h
+    ${CMAKE_CURRENT_LIST_DIR}/xarcsfx.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xarcsfx.h
+    ${CMAKE_CURRENT_LIST_DIR}/xarjsfx.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xarjsfx.h
+    ${CMAKE_CURRENT_LIST_DIR}/xlhasfx.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xlhasfx.h
     ${CMAKE_CURRENT_LIST_DIR}/xfsg.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xfsg.h
     ${CMAKE_CURRENT_LIST_DIR}/xyoda.cpp

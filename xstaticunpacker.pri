@@ -48,9 +48,16 @@ HEADERS += \
     $$PWD/xrarsfx.h \
     $$PWD/xcabsfx.h \
     $$PWD/xiscab.h \
+    $$PWD/xinstallshield.h \
     $$PWD/xrib.h \
     $$PWD/xfreearcsfx.h \
     $$PWD/xzpaqsfx.h \
+    $$PWD/xgzipsfx.h \
+    $$PWD/xkwajsfx.h \
+    $$PWD/xszddsfx.h \
+    $$PWD/xarcsfx.h \
+    $$PWD/xarjsfx.h \
+    $$PWD/xlhasfx.h \
     $$PWD/xfsg.h \
     $$PWD/xyoda.h \
     $$PWD/xnspack.h \
@@ -90,9 +97,16 @@ SOURCES += \
     $$PWD/xrarsfx.cpp \
     $$PWD/xcabsfx.cpp \
     $$PWD/xiscab.cpp \
+    $$PWD/xinstallshield.cpp \
     $$PWD/xrib.cpp \
     $$PWD/xfreearcsfx.cpp \
     $$PWD/xzpaqsfx.cpp \
+    $$PWD/xgzipsfx.cpp \
+    $$PWD/xkwajsfx.cpp \
+    $$PWD/xszddsfx.cpp \
+    $$PWD/xarcsfx.cpp \
+    $$PWD/xarjsfx.cpp \
+    $$PWD/xlhasfx.cpp \
     $$PWD/xfsg.cpp \
     $$PWD/xyoda.cpp \
     $$PWD/xnspack.cpp \

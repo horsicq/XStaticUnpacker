@@ -14,15 +14,26 @@
 #include <new>
 
 #include "subdevice.h"
+#include "xatarist.h"
+#include "xcom.h"
 #include "xelf.h"
 #include "xmsdos.h"
 #include "xpe.h"
+#include "../XArchive/xarj.h"
 #include "../XArchive/xfreearc.h"
+#include "../XArchive/xgzip.h"
+#include "../XArchive/xkwaj.h"
+#include "../XArchive/xlha.h"
+#include "../XArchive/xdearkarchive.h"
 #include "../XArchive/xsevenzip.h"
 #include "../XArchive/xrar.h"
 #include "../XArchive/xcab.h"
+#include "../XArchive/xseaarc.h"
+#include "../XArchive/xszdd.h"
 #include "../XArchive/xzpaq.h"
 #include "../XArchive/xzip.h"
+#include "../XArchive/xconcatziparchive.h"
+#include "../XArchive/xpyinstallercarchive.h"
 
 // A modeled ZPAQ segment can legitimately be much larger than the overlay
 // signature window, so validation must be allowed to stream to EOF.  Keep the
@@ -176,6 +187,8 @@ const qint64 SFX_OVERLAY_SCAN_LIMIT = 16LL * 1024 * 1024;
 const qint32 SFX_ELF_TABLE_LIMIT = 4096;
 const qint64 SFX_ZPAQ_METADATA_SCAN_LIMIT = 1024 * 1024;
 const qint32 SFX_SIGNATURE_CANDIDATE_LIMIT = 256;
+const qint64 SFX_ATARIST_EMBEDDED_PREFIX_LIMIT = 64LL * 1024;
+const qint64 SFX_ATARIST_TRAILER_LIMIT = 64LL * 1024;
 // FreeArc's aSCAN_MAX permits descriptors (including long method chains) up
 // to 4096 bytes. Read the same bounded window so valid encrypted/composed
 // footers are not rejected merely because their method descriptor exceeds 1 KiB.
@@ -1429,6 +1442,13 @@ XBinary::FT XSFX::getFileType()
             case ARC_CAB: return b64 ? FT_PE64_CABSFX : FT_PE32_CABSFX;
             case ARC_FREEARC: return b64 ? FT_PE64_FREEARCSFX : FT_PE32_FREEARCSFX;
             case ARC_ZPAQ: return b64 ? FT_PE64_ZPAQSFX : FT_PE32_ZPAQSFX;
+            case ARC_ARC: return FT_ARCSFX;
+            case ARC_ARJ: return FT_ARJSFX;
+            case ARC_LHA: return FT_LHASFX;
+            case ARC_GZIP: return FT_GZIPSFX;
+            case ARC_KWAJ: return FT_KWAJSFX;
+            case ARC_SZDD: return FT_SZDDSFX;
+            case ARC_PYINSTALLER: return FT_PYINSTALLER_SFX;
             default: return b64 ? FT_PE64_SFX : FT_PE32_SFX;
         }
     }
@@ -1442,16 +1462,30 @@ XBinary::FT XSFX::getFileType()
             case ARC_CAB: return b64 ? FT_ELF64_CABSFX : FT_ELF32_CABSFX;
             case ARC_FREEARC: return b64 ? FT_ELF64_FREEARCSFX : FT_ELF32_FREEARCSFX;
             case ARC_ZPAQ: return b64 ? FT_ELF64_ZPAQSFX : FT_ELF32_ZPAQSFX;
+            case ARC_ARC: return FT_ARCSFX;
+            case ARC_ARJ: return FT_ARJSFX;
+            case ARC_LHA: return FT_LHASFX;
+            case ARC_GZIP: return FT_GZIPSFX;
+            case ARC_KWAJ: return FT_KWAJSFX;
+            case ARC_SZDD: return FT_SZDDSFX;
+            case ARC_PYINSTALLER: return FT_PYINSTALLER_SFX;
             default: return b64 ? FT_ELF64_SFX : FT_ELF32_SFX;
         }
     }
 
     switch (arcType) {
-        case ARC_ZIP: return FT_PE32_ZIPSFX;
-        case ARC_RAR: return FT_PE32_RARSFX;
-        case ARC_CAB: return FT_PE32_CABSFX;
-        case ARC_FREEARC: return FT_PE32_FREEARCSFX;
-        case ARC_ZPAQ: return FT_PE32_ZPAQSFX;
+        case ARC_ZIP: return FT_ZIPSFX;
+        case ARC_RAR: return FT_RARSFX;
+        case ARC_CAB: return FT_CABSFX;
+        case ARC_FREEARC: return FT_FREEARCSFX;
+        case ARC_ZPAQ: return FT_ZPAQSFX;
+        case ARC_ARC: return FT_ARCSFX;
+        case ARC_ARJ: return FT_ARJSFX;
+        case ARC_LHA: return FT_LHASFX;
+        case ARC_GZIP: return FT_GZIPSFX;
+        case ARC_KWAJ: return FT_KWAJSFX;
+        case ARC_SZDD: return FT_SZDDSFX;
+        case ARC_PYINSTALLER: return FT_PYINSTALLER_SFX;
         default: break;
     }
 
@@ -1466,6 +1500,8 @@ QString XSFX::getArch()
     }
     XELF elf(getDevice(), isImage(), getModuleAddress());
     if (elf.isValid()) return elf.getArch();
+    XAtariST atariST(getDevice(), isImage(), getModuleAddress());
+    if (atariST.isValid()) return atariST.getArch();
     return QString();
 }
 
@@ -1522,6 +1558,30 @@ bool XSFX::_matchArchiveAt(qint64 nOffset, qint64 nSize, ARCTYPE *pType, qint64 
         // Untagged zPQ is accepted only when the caller checks the exact
         // executable boundary. It is never one of the fallback scan patterns.
         candidate = ARC_ZPAQ;
+    } else if ((p[0] == 0x1A) && (p[1] >= 0x01) && (p[1] <= 0x0B)) {
+        candidate = ARC_ARC;
+    } else if ((p[0] == 0x60) && (p[1] == 0xEA)) {
+        candidate = ARC_ARJ;
+    } else if ((baMagic.size() >= 7) && (p[2] == 0x2D) && (p[6] == 0x2D) &&
+               (((p[3] == 0x6C) && ((p[4] == 0x68) || (p[4] == 0x7A))) || ((p[3] == 0x70) && (p[4] == 0x6D)))) {
+        candidate = ARC_LHA;
+    } else if ((baMagic.size() >= 10) && (p[0] == 0x1F) && (p[1] == 0x8B) && (p[2] == 0x08)) {
+        candidate = ARC_GZIP;
+    } else if ((baMagic.size() >= 8) && (p[0] == 0x4B) && (p[1] == 0x57) && (p[2] == 0x41) && (p[3] == 0x4A) && (p[4] == 0x88) &&
+               (p[5] == 0xF0) && (p[6] == 0x27) && (p[7] == 0xD1)) {
+        candidate = ARC_KWAJ;
+    } else if ((baMagic.size() >= 8) &&
+               (((p[0] == 0x53) && (p[1] == 0x5A) && (p[2] == 0x44) && (p[3] == 0x44) && (p[4] == 0x88) && (p[5] == 0xF0) &&
+                 (p[6] == 0x27) && ((p[7] == 0x33) || (p[7] == 0x3A))) ||
+                ((p[0] == 0x5A) && (p[1] == 0x44) && (p[2] == 0x44) && (p[3] == 0x88) && (p[4] == 0xF0) && (p[5] == 0x27) &&
+                 ((p[6] == 0x33) || (p[6] == 0x3A)) && (p[7] == 0x41)))) {
+        candidate = ARC_SZDD;
+    } else if ((baMagic.size() >= 11) &&
+               (p[0] == 0x01) && (p[1] == 0xCA) &&
+               (memcmp(p + 2, "Copyright", 9) == 0)) {
+        // NeoBook/NeoShow launchers append a complete NeoSoft GX Library.
+        // The long copyright preamble is the format's native signature.
+        candidate = ARC_DEARK_LEGACY;
     } else {
         return false;
     }
@@ -1529,11 +1589,64 @@ bool XSFX::_matchArchiveAt(qint64 nOffset, qint64 nSize, ARCTYPE *pType, qint64 
     if ((m_requiredArcType != ARC_UNKNOWN) && (candidate != m_requiredArcType)) {
         return false;
     }
-
     if (candidate == ARC_FREEARC) {
         const qint64 nMethodSize = qMin(nSize - 13, (qint64)256);
         if ((nMethodSize <= 0) || !hasFreeArcMethod(read_array_process(nOffset + 13, nMethodSize, pPdStruct))) {
             return false;
+        }
+    }
+
+    // Some installer builders concatenate several complete, single-member
+    // ZIP archives in one overlay. XZip intentionally locates the final EOCD,
+    // which makes a view beginning at the first local header appear invalid.
+    // Prefer the bounded concatenated adapter when the full sequence validates;
+    // otherwise bound an ordinary candidate at the earliest authentic EOCD.
+    if ((candidate == ARC_ZIP) && (p[2] == 0x03) && (p[3] == 0x04)) {
+        bool bConcatenated = false;
+        SubDevice concatDevice(getDevice(), nOffset, nSize);
+        if (concatDevice.open(QIODevice::ReadOnly)) {
+            XConcatZipArchive concatZip(&concatDevice);
+            if (concatZip.isValid(pPdStruct)) {
+                const qint64 nConcatSize = concatZip.getFileFormatSize(pPdStruct);
+                if ((nConcatSize > 0) && (nConcatSize <= nSize)) {
+                    nSize = nConcatSize;
+                    bConcatenated = true;
+                }
+            }
+            concatDevice.close();
+        }
+
+        if (!bConcatenated) {
+        const qint64 nCandidateEnd = nOffset + nSize;
+        qint64 nSearchOffset = nOffset + 4;
+        for (qint32 nAttempt = 0; (nAttempt < SFX_SIGNATURE_CANDIDATE_LIMIT) &&
+                                   (nSearchOffset <= nCandidateEnd - 22) &&
+                                   XBinary::isPdStructNotCanceled(pPdStruct);
+             ++nAttempt) {
+            const qint64 nEcdOffset = find_signature(nSearchOffset, nCandidateEnd - nSearchOffset,
+                                                     "504B0506", nullptr, pPdStruct);
+            if ((nEcdOffset < nSearchOffset) || (nEcdOffset > nCandidateEnd - 22)) break;
+            const quint16 nCommentSize = read_uint16(nEcdOffset + 20);
+            const qint64 nTrialEnd = nEcdOffset + 22 + nCommentSize;
+            if ((nTrialEnd >= nEcdOffset + 22) && (nTrialEnd <= nCandidateEnd)) {
+                const qint64 nTrialSize = nTrialEnd - nOffset;
+                SubDevice trialDevice(getDevice(), nOffset, nTrialSize);
+                if (trialDevice.open(QIODevice::ReadOnly)) {
+                    XZip trialZip(&trialDevice);
+                    UNPACK_STATE trialState = {};
+                    QMap<UNPACK_PROP, QVariant> trialProperties;
+                    bool bTrialValid = trialZip.initUnpack(&trialState, trialProperties, pPdStruct);
+                    if (bTrialValid) bTrialValid = trialZip.finishUnpack(&trialState, pPdStruct);
+                    if (bTrialValid && (trialZip.getFileFormatSize(pPdStruct) == nTrialSize)) {
+                        nSize = nTrialSize;
+                        trialDevice.close();
+                        break;
+                    }
+                    trialDevice.close();
+                }
+            }
+            nSearchOffset = nEcdOffset + 4;
+        }
         }
     }
 
@@ -1676,7 +1789,32 @@ XSFX::INTERNAL_INFO XSFX::_detect(PDSTRUCT *pPdStruct, XSFX_ZPAQ_SCAN_CACHE *pZp
     const bool bMSDOS = msdos.isValid(pPdStruct);
     XELF elf(getDevice(), isImage(), getModuleAddress());
     const bool bELF = elf.isValid(pPdStruct);
-    if (!bMSDOS && !bELF) {
+    XAtariST atariST(getDevice(), isImage(), getModuleAddress());
+    const bool bAtariST = atariST.isValid(pPdStruct);
+    const bool bCOM = !bMSDOS && (XBinary::getDeviceFileSuffix(getDevice()).compare(QStringLiteral("COM"), Qt::CaseInsensitive) == 0) &&
+                      XCOM::isValid(getDevice(), isImage(), getModuleAddress(), pPdStruct);
+    // A small family of Atari 68000 self-extractors uses the literal EXEC
+    // loader header instead of the GEMDOS 0x601a executable header.  Accept
+    // that carrier only for LHA probing; the embedded archive still has to
+    // pass XLHA's complete structural validation below.
+    const QByteArray baCarrierPrefix = read_array_process(0, 4, pPdStruct);
+    const bool bExecLha = ((m_requiredArcType == ARC_UNKNOWN) ||
+                           (m_requiredArcType == ARC_LHA)) &&
+                          (baCarrierPrefix == QByteArrayLiteral("EXEC"));
+    if (!bMSDOS && !bELF && !bAtariST && !bCOM && !bExecLha) {
+        return result;
+    }
+
+    // PyInstaller CArchive is footer-indexed and spans the executable image,
+    // so it cannot be represented by the ordinary overlay signature scan.
+    if ((m_requiredArcType == ARC_UNKNOWN ||
+         m_requiredArcType == ARC_PYINSTALLER) &&
+        XPyInstallerCArchive::isValid(getDevice(), pPdStruct)) {
+        result.bIsValid = true;
+        result.bUseOuterDevice = true;
+        result.arcType = ARC_PYINSTALLER;
+        result.nArchiveOffset = 0;
+        result.nArchiveSize = nTotalSize;
         return result;
     }
 
@@ -1690,10 +1828,11 @@ XSFX::INTERNAL_INFO XSFX::_detect(PDSTRUCT *pPdStruct, XSFX_ZPAQ_SCAN_CACHE *pZp
         nOverlayOffset = pe.getOverlayOffset(pPdStruct);
     } else if (bELF) {
         nOverlayOffset = getExactELFExtent(&elf, nTotalSize);
+    } else if (bAtariST) {
+        nOverlayOffset = atariST.getOverlayOffset(pPdStruct);
     } else if (bMSDOS) {
         nOverlayOffset = msdos.getOverlayOffset(pPdStruct);
     }
-
     // Current zpaqfranz SFX files place an encoded extraction command between
     // two fixed tags at the PE overlay boundary. Derive the authoritative
     // payload boundary from that framing before signature scanning: encrypted
@@ -1768,7 +1907,17 @@ XSFX::INTERNAL_INFO XSFX::_detect(PDSTRUCT *pPdStruct, XSFX_ZPAQ_SCAN_CACHE *pZp
 
     // 2) Fallback: scan only the executable overlay. Searching mapped PE
     // sections classified ordinary programs containing CAB resources as SFXs.
-    if ((nOverlayOffset <= 0) || (nOverlayOffset >= nTotalSize)) return result;
+    // Dedicated GZIP/KWAJ/SZDD wrappers are the exception: historical setup
+    // builders deliberately place their compressed payloads in PE/NE resource
+    // areas, so those required-family probes scan the bounded complete image.
+    // Atari ST relocation/symbol data can precede the payload, so scanning from
+    // the mapped image boundary also covers that executable metadata. A COM
+    // image has no file-backed size metadata, so its complete (at most
+    // 65280-byte) body is the only meaningful search range. Candidates still
+    // have to initialize as complete archives before they are accepted.
+    const bool bScanEmbeddedImage = (m_requiredArcType == ARC_GZIP) || (m_requiredArcType == ARC_KWAJ) || (m_requiredArcType == ARC_SZDD);
+    if (!bScanEmbeddedImage && !bCOM && !bAtariST && !bExecLha &&
+        ((nOverlayOffset <= 0) || (nOverlayOffset >= nTotalSize))) return result;
 
     const char *apszSignatures[] = {"377ABCAF271C",
                                     "504B0304",
@@ -1777,9 +1926,43 @@ XSFX::INTERNAL_INFO XSFX::_detect(PDSTRUCT *pPdStruct, XSFX_ZPAQ_SCAN_CACHE *pZp
                                     "52457E5E",
                                     "4D534346",
                                     "41724301........4172430102",         // FreeArc header + first data block
-                                    "376B5374A03183D38CB228B0D37A5051"};  // full ZPAQ locator
-    const qint64 nScanEnd = nOverlayOffset + qMin(nTotalSize - nOverlayOffset, SFX_OVERLAY_SCAN_LIMIT);
-    const qint64 nScanStart = qMax(nOverlayOffset, (nMinimumArchiveOffset < 0) ? nOverlayOffset : nMinimumArchiveOffset);
+                                    "376B5374A03183D38CB228B0D37A5051",  // full ZPAQ locator
+                                    "1A01",                              // ARC method 1
+                                    "1A02",                              // ARC method 2
+                                    "1A03",                              // ARC method 3
+                                    "1A04",                              // ARC method 4
+                                    "1A05",                              // ARC method 5
+                                    "1A06",                              // ARC method 6
+                                    "1A07",                              // ARC method 7
+                                    "1A08",                              // ARC method 8
+                                    "1A09",                              // ARC method 9
+                                    "1A0A",                              // ARC method 10
+                                    "1A0B",                              // ARC method 11
+                                    "60EA",                              // ARJ basic-header marker
+                                    "2D6C68..2D",                        // -lh?- (candidate begins two bytes earlier)
+                                    "2D6C7A..2D",                        // -lz?-
+                                    "2D706D..2D",                        // -pm?-
+                                    "1F8B08",                            // GZIP
+                                    "4B57414A88F027D1",                  // KWAJ
+                                    "535A444488F02733",                  // SZDD mode A
+                                    "535A444488F0273A",                  // SZDD mode B
+                                    "5A444488F0273341",                  // legacy SZDD mode A
+                                    "5A444488F0273A41",                  // legacy SZDD mode B
+                                    "01CA436F70797269676874"};           // NeoSoft GX Library
+    const qint32 anCandidateAdjustments[] = {0, 0, 0, 0, 0, 0, 0, 0,  // 7z through ZPAQ
+                                             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // ARC methods 1 through 11
+                                             0,                                // ARJ
+                                             -2, -2, -2,                       // LHA header markers
+                                             0,                                // GZIP
+                                             0,                                // KWAJ
+                                             0, 0, 0, 0,                       // SZDD signatures
+                                             0};                               // GX Library
+    static_assert((sizeof(apszSignatures) / sizeof(apszSignatures[0])) == (sizeof(anCandidateAdjustments) / sizeof(anCandidateAdjustments[0])),
+                  "SFX signature and adjustment tables must stay aligned");
+    const qint64 nBaseScanStart = bScanEmbeddedImage ? 0 :
+        ((bCOM || bAtariST || bExecLha) ? 0 : nOverlayOffset);
+    const qint64 nScanEnd = nBaseScanStart + qMin(nTotalSize - nBaseScanStart, SFX_OVERLAY_SCAN_LIMIT);
+    const qint64 nScanStart = qMax(nBaseScanStart, (nMinimumArchiveOffset < 0) ? nBaseScanStart : nMinimumArchiveOffset);
     if (nScanStart >= nScanEnd) return result;
     const qint64 nScanSize = nScanEnd - nScanStart;
     const int nSignatureCount = sizeof(apszSignatures) / sizeof(apszSignatures[0]);
@@ -1795,8 +1978,9 @@ XSFX::INTERNAL_INFO XSFX::_detect(PDSTRUCT *pPdStruct, XSFX_ZPAQ_SCAN_CACHE *pZp
     while (isPdStructNotCanceled(pPdStruct)) {
         qint64 nPos = -1;
         for (int i = 0; i < nSignatureCount; i++) {
-            if ((anNextCandidate[i] >= 0) && ((nPos == -1) || (anNextCandidate[i] < nPos))) {
-                nPos = anNextCandidate[i];
+            const qint64 nAdjustedCandidate = (anNextCandidate[i] >= 0) ? (anNextCandidate[i] + anCandidateAdjustments[i]) : -1;
+            if ((nAdjustedCandidate >= nScanStart) && ((nPos == -1) || (nAdjustedCandidate < nPos))) {
+                nPos = nAdjustedCandidate;
             }
         }
         if ((nPos < nScanStart) || (nPos >= nScanEnd)) break;
@@ -1806,27 +1990,76 @@ XSFX::INTERNAL_INFO XSFX::_detect(PDSTRUCT *pPdStruct, XSFX_ZPAQ_SCAN_CACHE *pZp
         bool bProvisional = false;
         bool bResourceIndeterminate = false;
         bool bUseOuterDevice = false;
-        if ((nPos != nTestedOverlayOffset) && _matchArchiveAt(nPos, nTotalSize - nPos, &type, &nArchiveSize, pPdStruct, pZpaqScanCache, pFreeArcScanCache, &bProvisional,
-                                                              &bResourceIndeterminate, &bUseOuterDevice)) {
-            result.bIsValid = true;
-            result.bProvisional = bProvisional;
-            result.arcType = type;
-            result.bUseOuterDevice = bUseOuterDevice;
-            result.nArchiveOffset = nPos;
-            result.nArchiveSize = nArchiveSize;
-            return result;
+        if (nPos != nTestedOverlayOffset) {
+            qint64 nCandidateSize = nTotalSize - nPos;
+            // KWAJ and SZDD store the uncompressed length but not the packed
+            // byte count. Resource-based installers concatenate independently
+            // aligned streams, so cap the current view at the next same-family
+            // header instead of treating the rest of the executable as data.
+            if ((m_requiredArcType == ARC_KWAJ) || (m_requiredArcType == ARC_SZDD)) {
+                qint64 nNextFamilyOffset = -1;
+                // Standard SZDD also contains the legacy magic beginning one
+                // byte later ("SZDD..." vs "ZDD..."). Skip the complete
+                // current signature so that overlap cannot truncate it to a
+                // one-byte candidate.
+                const qint64 nNextSearchOffset = nPos + 8;
+                if (nNextSearchOffset < nScanEnd) {
+                    if (m_requiredArcType == ARC_KWAJ) {
+                        nNextFamilyOffset = find_signature(nNextSearchOffset, nScanEnd - nNextSearchOffset, "4B57414A88F027D1", nullptr, pPdStruct);
+                    } else {
+                        const char *apszSzddSignatures[] = {"535A444488F02733", "535A444488F0273A", "5A444488F0273341", "5A444488F0273A41"};
+                        for (const char *pszSignature : apszSzddSignatures) {
+                            const qint64 nNext = find_signature(nNextSearchOffset, nScanEnd - nNextSearchOffset, pszSignature, nullptr, pPdStruct);
+                            if ((nNext >= 0) && ((nNextFamilyOffset < 0) || (nNext < nNextFamilyOffset))) nNextFamilyOffset = nNext;
+                        }
+                    }
+                }
+                if ((nNextFamilyOffset > nPos) && (nNextFamilyOffset <= nTotalSize)) {
+                    nCandidateSize = nNextFamilyOffset - nPos;
+                    // Resource records are sector-aligned with zero fill. The
+                    // KWAJ/SZDD bitstreams terminate before that fill, and their
+                    // decoders intentionally require the bounded physical EOF.
+                    const qint64 nTrimWindow = qMin<qint64>(qMax<qint64>(0, nCandidateSize - 8), 4096);
+                    if (nTrimWindow > 0) {
+                        const QByteArray baTail = read_array_process(nPos + nCandidateSize - nTrimWindow, nTrimWindow, pPdStruct);
+                        if (!isPdStructNotCanceled(pPdStruct) || (baTail.size() != nTrimWindow)) return INTERNAL_INFO();
+                        qint64 nTrailingZeroes = 0;
+                        while ((nTrailingZeroes < baTail.size()) && (baTail.at(baTail.size() - 1 - nTrailingZeroes) == 0)) ++nTrailingZeroes;
+                        nCandidateSize -= nTrailingZeroes;
+                    }
+                }
+            }
+            bool bMatched = _matchArchiveAt(nPos, nCandidateSize, &type, &nArchiveSize, pPdStruct, pZpaqScanCache, pFreeArcScanCache, &bProvisional,
+                                            &bResourceIndeterminate, &bUseOuterDevice);
+            if (bMatched && bAtariST && (nPos < nOverlayOffset)) {
+                const qint64 nTrailerSize = nTotalSize - nPos - nArchiveSize;
+                // Atari SFX images can keep relocation data after an archive
+                // embedded in the text image. Require both ends to remain near
+                // the executable boundaries so ordinary in-code tags or data
+                // resources cannot classify a program as an SFX container.
+                bMatched = (nPos <= SFX_ATARIST_EMBEDDED_PREFIX_LIMIT) && (nTrailerSize >= 0) && (nTrailerSize <= SFX_ATARIST_TRAILER_LIMIT);
+            }
+            if (bMatched) {
+                result.bIsValid = true;
+                result.bProvisional = bProvisional;
+                result.arcType = type;
+                result.bUseOuterDevice = bUseOuterDevice;
+                result.nArchiveOffset = nPos;
+                result.nArchiveSize = nArchiveSize;
+                return result;
+            }
         }
         if (bResourceIndeterminate) {
             result.bResourceIndeterminate = true;
             return result;
         }
 
-        const qint64 nNextStart = nPos + 1;
         for (int i = 0; i < nSignatureCount; i++) {
-            if (anNextCandidate[i] == nPos) {
+            if ((anNextCandidate[i] >= 0) && ((anNextCandidate[i] + anCandidateAdjustments[i]) == nPos)) {
                 anCandidateCounts[i]++;
-                anNextCandidate[i] = ((anCandidateCounts[i] < SFX_SIGNATURE_CANDIDATE_LIMIT) && (nNextStart < nScanEnd))
-                                         ? find_signature(nNextStart, nScanEnd - nNextStart, apszSignatures[i], nullptr, pPdStruct)
+                const qint64 nNextSignatureStart = anNextCandidate[i] + 1;
+                anNextCandidate[i] = ((anCandidateCounts[i] < SFX_SIGNATURE_CANDIDATE_LIMIT) && (nNextSignatureStart < nScanEnd))
+                                         ? find_signature(nNextSignatureStart, nScanEnd - nNextSignatureStart, apszSignatures[i], nullptr, pPdStruct)
                                          : -1;
             }
         }
@@ -1844,9 +2077,26 @@ XArchive *XSFX::_createArchive(ARCTYPE arcType, QIODevice *pDevice, bool bAllowO
 {
     switch (arcType) {
         case ARC_7Z: return new XSevenZip(pDevice);
-        case ARC_ZIP: return new XZip(pDevice);
+        case ARC_ZIP: {
+            XConcatZipArchive *pConcat = new XConcatZipArchive(pDevice);
+            if (pConcat->XGameStoreArchiveBase::isValid(nullptr)) return pConcat;
+            delete pConcat;
+            return new XZip(pDevice);
+        }
         case ARC_RAR: return new XRar(pDevice);
         case ARC_CAB: return new XCab(pDevice);
+        case ARC_ARC: return new XSEAARC(pDevice);
+        case ARC_ARJ: return new XARJ(pDevice);
+        // Deark's LHA reader accepts the historical LArc/LZ5 headers used by
+        // EXEC-format Atari self-extractors as well as ordinary LHA members.
+        // The native XLHA reader remains the bare-archive implementation, but
+        // the bounded SFX view benefits from Deark's wider header dialects.
+        case ARC_LHA: return new XDearkArchive(pDevice);
+        case ARC_GZIP: return new XGzip(pDevice);
+        case ARC_KWAJ: return new XKWAJ(pDevice);
+        case ARC_SZDD: return new XSZDD(pDevice);
+        case ARC_PYINSTALLER: return new XPyInstallerCArchive(pDevice);
+        case ARC_DEARK_LEGACY: return new XDearkArchive(pDevice);
         case ARC_FREEARC: return new XFREEARC(pDevice);
         case ARC_ZPAQ: {
             XZPAQ *pZpaq = new XZPAQ(pDevice);
