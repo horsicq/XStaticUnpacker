@@ -36,7 +36,10 @@ public:
         ARC_KWAJ,
         ARC_SZDD,
         ARC_PYINSTALLER,
-        ARC_DEARK_LEGACY
+        ARC_DEARK_LEGACY,
+        ARC_ARQ,
+        ARC_SQZ,
+        ARC_RTPATCH
     };
 
     struct INTERNAL_INFO : public XBinary::INTERNAL_INFO {
@@ -101,10 +104,13 @@ protected:
     }
 
 private:
+    struct SCAN_CANDIDATE_EVALUATOR;
+
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
     INTERNAL_INFO m_internalInfo;
     INTERNAL_INFO _detect(PDSTRUCT *pPdStruct, XSFX_ZPAQ_SCAN_CACHE *pZpaqScanCache = nullptr, XSFX_FREEARC_SCAN_CACHE *pFreeArcScanCache = nullptr,
                           qint64 nMinimumArchiveOffset = -1);
+    INTERNAL_INFO _detectScan(PDSTRUCT *pPdStruct, XSFX_ZPAQ_SCAN_CACHE *pZpaqScanCache, XSFX_FREEARC_SCAN_CACHE *pFreeArcScanCache, qint64 nMinimumArchiveOffset);
     bool _matchArchiveAt(qint64 nOffset, qint64 nSize, ARCTYPE *pType, qint64 *pArchiveSize, PDSTRUCT *pPdStruct, XSFX_ZPAQ_SCAN_CACHE *pZpaqScanCache,
                          XSFX_FREEARC_SCAN_CACHE *pFreeArcScanCache, bool *pbProvisional, bool *pbResourceIndeterminate, bool *pbUseOuterDevice);
     XArchive *_createArchive(ARCTYPE arcType, QIODevice *pDevice, bool bAllowOpaqueZpaq = false);

@@ -1,6 +1,11 @@
 INCLUDEPATH += $$PWD
 DEPENDPATH += $$PWD
 
+# XFormats gates the factories and detectors that refer to these sources on
+# this define.  Keep qmake aligned with xstaticunpacker.cmake so compiling the
+# sources also makes the corresponding file types reachable.
+DEFINES += USE_STATICUNPACKER
+
 contains(XCONFIG, use_xemulator) {
     DEFINES += USE_XEMULATOR
     XCONFIG += xinstallsimple_xemulator
@@ -50,6 +55,12 @@ HEADERS += \
     $$PWD/xiscab.h \
     $$PWD/xinstallshield.h \
     $$PWD/xrib.h \
+    $$PWD/xspis.h \
+    $$PWD/xspissfx.h \
+    $$PWD/xarqsfx.h \
+    $$PWD/xsqzsfx.h \
+    $$PWD/xrtpatchsfx.h \
+    $$PWD/xfpak.h \
     $$PWD/xfreearcsfx.h \
     $$PWD/xzpaqsfx.h \
     $$PWD/xgzipsfx.h \
@@ -67,17 +78,21 @@ HEADERS += \
     $$PWD/xautoit.h \
     $$PWD/xsevenzipsfx.h \
     $$PWD/xiexpress.h \
+    $$PWD/xpftw.h \
     $$PWD/xmsi.h \
     $$PWD/xwix.h \
     $$PWD/xburn.h \
     $$PWD/xadvancedinstaller.h \
     $$PWD/xactualinstaller.h \
     $$PWD/xclickteam.h \
+    $$PWD/xcopyqm.h \
     $$PWD/xcreateinstall.h \
     $$PWD/xenigmavb.h \
     $$PWD/xboxedapp.h \
     $$PWD/xinstallforge.h \
+    $$PWD/xjugglor.h \
     $$PWD/xsmartinstall.h \
+    $$PWD/xsetupfactory.h \
     $$PWD/xtarma.h \
 
 NSIS_BZIP2_SOURCE = $$PWD/nsis_bzip2/nsis_bzip2.cpp
@@ -99,6 +114,12 @@ SOURCES += \
     $$PWD/xiscab.cpp \
     $$PWD/xinstallshield.cpp \
     $$PWD/xrib.cpp \
+    $$PWD/xspis.cpp \
+    $$PWD/xspissfx.cpp \
+    $$PWD/xarqsfx.cpp \
+    $$PWD/xsqzsfx.cpp \
+    $$PWD/xrtpatchsfx.cpp \
+    $$PWD/xfpak.cpp \
     $$PWD/xfreearcsfx.cpp \
     $$PWD/xzpaqsfx.cpp \
     $$PWD/xgzipsfx.cpp \
@@ -116,15 +137,19 @@ SOURCES += \
     $$PWD/xautoit.cpp \
     $$PWD/xsevenzipsfx.cpp \
     $$PWD/xiexpress.cpp \
+    $$PWD/xpftw.cpp \
     $$PWD/xmsi.cpp \
     $$PWD/xwix.cpp \
     $$PWD/xburn.cpp \
     $$PWD/xadvancedinstaller.cpp \
     $$PWD/xactualinstaller.cpp \
     $$PWD/xclickteam.cpp \
+    $$PWD/xcopyqm.cpp \
     $$PWD/xcreateinstall.cpp \
     $$PWD/xenigmavb.cpp \
     $$PWD/xboxedapp.cpp \
     $$PWD/xinstallforge.cpp \
+    $$PWD/xjugglor.cpp \
     $$PWD/xsmartinstall.cpp \
+    $$PWD/xsetupfactory.cpp \
     $$PWD/xtarma.cpp \

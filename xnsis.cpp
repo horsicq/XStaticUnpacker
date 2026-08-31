@@ -17,7 +17,7 @@
 #include "xnsis.h"
 
 #include "xpe.h"
-#include "../XArchive/xarchive.h"
+#include "../Formats/xarchive.h"
 
 #include <QByteArray>
 #include <QBuffer>

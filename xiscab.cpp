@@ -112,10 +112,19 @@ QString resolveCaseInsensitivePath(const QString &sCandidate)
     return QString();
 }
 
-QString mediaPath(const QString &sPrefix, quint32 nVolume, const QString &sSuffix)
+QString mediaPath(const QString &sPrefix, quint32 nVolume, const QString &sSuffix, QMap<QString, QString> *pResolvedPaths = nullptr)
 {
     if (sPrefix.isEmpty() || !nVolume) return QString();
-    return resolveCaseInsensitivePath(QStringLiteral("%1%2.%3").arg(sPrefix).arg(nVolume).arg(sSuffix));
+    const QString sCandidate = QStringLiteral("%1%2.%3").arg(sPrefix).arg(nVolume).arg(sSuffix);
+    if (pResolvedPaths) {
+        const QMap<QString, QString>::const_iterator it =
+            pResolvedPaths->constFind(sCandidate);
+        if (it != pResolvedPaths->constEnd()) return it.value();
+    }
+
+    const QString sResult = resolveCaseInsensitivePath(sCandidate);
+    if (pResolvedPaths) pResolvedPaths->insert(sCandidate, sResult);
+    return sResult;
 }
 
 bool readFileBounded(const QString &sFileName, QByteArray *pData)
@@ -294,7 +303,8 @@ struct INPUT_SEGMENT {
     quint64 nSize = 0;
 };
 
-bool buildSegments(const QString &sPrefix, const QString &sContainerPath, const QMap<quint32, XISCab::EMBEDDED_VOLUME> &mapEmbedded, qint32 nMajorVersion,
+bool buildSegments(const QString &sPrefix, const QString &sContainerPath, const QMap<quint32, XISCab::EMBEDDED_VOLUME> &mapEmbedded,
+                   QMap<QString, QString> *pResolvedMediaPaths, qint32 nMajorVersion,
                    quint16 nFlags, quint64 nExpandedSize, quint64 nCompressedSize, quint64 nDataOffset, quint16 nEntryVolume, qint32 nEntryIndex, qint32 nEntryCount,
                    QList<INPUT_SEGMENT> *pSegments)
 {
@@ -306,7 +316,6 @@ bool buildSegments(const QString &sPrefix, const QString &sContainerPath, const 
     const bool bCompressed = nFlags & IS_FILE_COMPRESSED;
     bool bSplit = nFlags & IS_FILE_SPLIT;
     quint64 nRemaining = bCompressed ? nCompressedSize : nExpandedSize;
-    if (!nRemaining) return true;
     quint32 nVolume = (nMajorVersion <= 5) ? 1U : qMax<quint32>(1U, nEntryVolume);
 
     for (quint32 nAttempt = 0; nAttempt < 10000U; ++nAttempt, ++nVolume) {
@@ -323,12 +332,16 @@ bool buildSegments(const QString &sPrefix, const QString &sContainerPath, const 
             nWindowSize = window.nSize;
             baPinnedHeader = window.baPinnedHeader;
         } else {
-            sPath = mediaPath(sPrefix, nVolume, QStringLiteral("cab"));
+            sPath = mediaPath(sPrefix, nVolume, QStringLiteral("cab"), pResolvedMediaPaths);
         }
         if (sPath.isEmpty()) return false;
         VOLUME_HEADER volume = {};
         qint64 nFileSize = -1;
         if (!parseVolumeFile(sPath, nMajorVersion, &volume, &nFileSize, nBaseOffset, nWindowSize, baPinnedHeader.isEmpty() ? nullptr : &baPinnedHeader)) return false;
+        // Empty members still require a real, structurally valid companion
+        // volume.  Otherwise a detached catalog could appear extractable just
+        // because no payload bytes need copying.
+        if (!nRemaining) return true;
 
         if ((nMajorVersion <= 5) && (static_cast<quint32>(nEntryIndex) > volume.nLastFileIndex)) {
             continue;
@@ -729,6 +742,7 @@ bool XISCab::_loadCatalog(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct) const
     pSourcePath->clear();
     pContext->sContainerPath.clear();
     pContext->mapEmbeddedVolumes.clear();
+    pContext->mapResolvedMediaPaths.clear();
     *pHeader = COMMON_HEADER();
 
     QPointer<XISCab> guardedThis(const_cast<XISCab *>(this));
@@ -772,7 +786,8 @@ bool XISCab::_loadCatalog(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct) const
         return false;
     }
 
-    const QStringList listCandidates = QStringList() << mediaPath(sPrefix, 1, QStringLiteral("hdr")) << mediaPath(sPrefix, 1, QStringLiteral("cab"));
+    const QStringList listCandidates = QStringList() << mediaPath(sPrefix, 1, QStringLiteral("hdr"), &pContext->mapResolvedMediaPaths)
+                                                     << mediaPath(sPrefix, 1, QStringLiteral("cab"), &pContext->mapResolvedMediaPaths);
     for (const QString &sCandidate : listCandidates) {
         if (sCandidate.isEmpty()) continue;
         QByteArray baCandidate;
@@ -914,6 +929,16 @@ bool XISCab::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> 
     }
     bool bResult = _loadCatalog(pContext, pPdStruct);
     bResult = bResult && guardedThis && _parseCatalog(pContext->baCatalog, pContext->common, &pContext->listEntries, &pContext->listVisibleIndices, pPdStruct);
+    const bool bMetadataOnly = mapProperties.value(UNPACK_PROP_METADATAONLY, false).toBool();
+    if (bResult && !bMetadataOnly && pContext->mapEmbeddedVolumes.isEmpty()) {
+        const QString sVolumePath = mediaPath(pContext->sMediaPrefix, 1, QStringLiteral("cab"), &pContext->mapResolvedMediaPaths);
+        VOLUME_HEADER volume = {};
+        qint64 nVolumeSize = -1;
+        if (sVolumePath.isEmpty() || !parseVolumeFile(sVolumePath, pContext->common.nMajorVersion, &volume, &nVolumeSize)) {
+            XBinary::setPdStructErrorString(pPdStruct, tr("InstallShield companion volume is missing; only the cabinet catalog is present"));
+            bResult = false;
+        }
+    }
     if (!guardedThis) {
         delete pContext;
         *pState = UNPACK_STATE();
@@ -1012,7 +1037,8 @@ bool XISCab::_extractEntry(const UNPACK_CONTEXT *pContext, qint32 nEntryIndex, Q
     QList<INPUT_SEGMENT> listSegments;
     QByteArray baExternal;
     bool bExternal = false;
-    if (!buildSegments(pContext->sMediaPrefix, pContext->sContainerPath, pContext->mapEmbeddedVolumes, pContext->common.nMajorVersion, entry.nFlags,
+    if (!buildSegments(pContext->sMediaPrefix, pContext->sContainerPath, pContext->mapEmbeddedVolumes, &pContext->mapResolvedMediaPaths,
+                       pContext->common.nMajorVersion, entry.nFlags,
                        entry.nExpandedSize, entry.nCompressedSize, entry.nDataOffset, entry.nVolume, nSourceIndex, pContext->listEntries.count(), &listSegments)) {
         // Distinguish the two common non-decodable layouts so a missing
         // companion file does not read like a parser defect: a detached
@@ -1022,7 +1048,7 @@ bool XISCab::_extractEntry(const UNPACK_CONTEXT *pContext, qint32 nEntryIndex, Q
         QString sError = tr("InstallShield cabinet volume is missing or invalid");
         if (pContext->mapEmbeddedVolumes.isEmpty()) {
             const quint32 nStartVolume = (pContext->common.nMajorVersion <= 5) ? 1U : qMax<quint32>(1U, entry.nVolume);
-            const QString sVolumePath = mediaPath(pContext->sMediaPrefix, nStartVolume, QStringLiteral("cab"));
+            const QString sVolumePath = mediaPath(pContext->sMediaPrefix, nStartVolume, QStringLiteral("cab"), &pContext->mapResolvedMediaPaths);
             if (sVolumePath.isEmpty()) {
                 sError = tr("InstallShield companion volume is missing; only the cabinet catalog is present");
             } else {

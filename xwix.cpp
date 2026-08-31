@@ -17,7 +17,7 @@
 
 #include "../XArchive/xcfbf.h"
 #include "xmsi.h"
-#include "../XArchive/xarchive.h"
+#include "../Formats/xarchive.h"
 
 namespace {
 class WixOperationGuard {

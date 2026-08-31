@@ -33,7 +33,7 @@ public:
         bool bIsValid;
         qint64 nTableOffset;  // Absolute offset of the rDlPtS magic
         quint32 nRevision;
-        quint16 nLoaderVersion;  // 2/4/5/6/7 for fixed-pointer historical tables
+        quint16 nLoaderVersion;  // Internal legacy markers or 2/4/5/6/7 for fixed-pointer tables
         quint64 nTotalSize;
         qint64 nExeOffset;
         quint32 nExeUncompressedSize;
@@ -71,6 +71,8 @@ public:
         bool bIsValid;
         bool bUnicode;
         bool bWin16;
+        bool bLegacyShortId;
+        bool bIsx;
         quint16 nMajor;
         quint16 nMinor;
         quint16 nPatch;
@@ -216,6 +218,12 @@ private:
 
     // Real InnoSetup format parsing
     OFFSET_TABLE _findOffsetTable(PDSTRUCT *pPdStruct);
+    OFFSET_TABLE _decodeLegacyOffsetTable(qint64 nTableOffset, const QByteArray &baExpectedId,
+                                          quint16 nLoaderVersion, qint64 nFileSize,
+                                          PDSTRUCT *pPdStruct);
+    QByteArray _readLegacyBlock(qint64 nOffset, qint64 nLimit, qint64 *pnConsumed, PDSTRUCT *pPdStruct);
+    bool _readNextLegacySetupBlock(qint64 *pnCursor, qint64 nSetup0End,
+                                   QByteArray *pBlock, PDSTRUCT *pPdStruct);
     QByteArray _readBlockStream(qint64 nOffset, qint64 *pnConsumed, PDSTRUCT *pPdStruct, bool b64BitStoredSize, const QByteArray &baCryptKey = QByteArray(),
                                 const QByteArray &baCryptNonce = QByteArray(), const INNO_VERSION *pVersion = nullptr);
     QByteArray _stripCRCChunks(const QByteArray &baData, bool *pbValid);
@@ -228,6 +236,11 @@ private:
                                         quint32 nAnsiCodePageOverride = 0, quint32 *pnAnsiCodePage = nullptr);
     QList<FILE_ENTRY> _parseFileEntriesAnsi(const QByteArray &baBlock1, const HEADER_INFO &headerInfo, const INNO_VERSION &version, quint32 nAnsiCodePageOverride = 0,
                                             quint32 *pnAnsiCodePage = nullptr);
+    bool _parseLegacySetup0(UNPACK_CONTEXT *pContext, const OFFSET_TABLE &offsetTable, const INNO_VERSION &version, qint32 nVersionIdSize, PDSTRUCT *pPdStruct);
+    bool _parseISXDataFallback(UNPACK_CONTEXT *pContext, const OFFSET_TABLE &offsetTable, const INNO_VERSION &version, PDSTRUCT *pPdStruct);
+    bool _probeZlibMember(qint64 nOffset, qint64 nLimit, qint64 *pnCompressedSize, qint64 *pnOriginalSize, quint32 *pnAdler32, PDSTRUCT *pPdStruct);
+    bool _finalizeRealRecords(UNPACK_CONTEXT *pContext, const QList<DATA_ENTRY> &listDataEntries, const QList<FILE_ENTRY> &listFileEntries,
+                              qint64 nDataStreamOffset, const INNO_VERSION &version, PDSTRUCT *pPdStruct);
     bool _parseRealInnoSetup(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct);
     bool _prepareSliceSources(UNPACK_CONTEXT *pContext, const QList<DATA_ENTRY> &listDataEntries, PDSTRUCT *pPdStruct);
     bool _areSliceSourcesCurrent(const UNPACK_CONTEXT *pContext, quint32 nFirstSlice, quint32 nLastSlice, PDSTRUCT *pPdStruct) const;

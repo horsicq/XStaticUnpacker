@@ -12,7 +12,7 @@
 #include <QPointer>
 #include <QScopedPointer>
 
-#include "../XArchive/xarchive.h"
+#include "../Formats/xarchive.h"
 
 // Materialized handlers decode into private memory during initUnpack(), then
 // serve those cached bytes later.  Keep the same complete source identity and

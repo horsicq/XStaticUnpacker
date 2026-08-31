@@ -21,7 +21,7 @@
 #ifndef XRIB_H
 #define XRIB_H
 
-#include "../XArchive/xarchive.h"
+#include "../Formats/xarchive.h"
 
 // Parsec engine's backwards-decoded RIB resource wrapper.  RIB is a single
 // compressed stream rather than a named multi-file archive; exposing it through

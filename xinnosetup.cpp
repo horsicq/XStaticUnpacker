@@ -34,7 +34,7 @@
 #include <new>
 #include <algorithm>
 
-#include "../XArchive/xarchive.h"
+#include "../Formats/xarchive.h"
 
 XBinary::XCONVERT _TABLE_XINNOSETUP_STRUCTID[] = {
     {XInnoSetup::STRUCTID_UNKNOWN, "Unknown", QObject::tr("Unknown")},
@@ -48,15 +48,50 @@ static const quint8 g_aRDlPtS04Magic[] = {0x72, 0x44, 0x6C, 0x50, 0x74, 0x53, 0x
 static const quint8 g_aRDlPtS05Magic[] = {0x72, 0x44, 0x6C, 0x50, 0x74, 0x53, 0x30, 0x35, 0x87, 0x65, 0x56, 0x78};
 static const quint8 g_aRDlPtS06Magic[] = {0x72, 0x44, 0x6C, 0x50, 0x74, 0x53, 0x30, 0x36, 0x87, 0x65, 0x56, 0x78};
 static const quint8 g_aRDlPtS07Magic[] = {0x72, 0x44, 0x6C, 0x50, 0x74, 0x53, 0x30, 0x37, 0x87, 0x65, 0x56, 0x78};
+static const quint8 g_aRDlPtSVxMagic[] = {0x72, 0x44, 0x6C, 0x50, 0x74, 0x53, 0x56, 0x78, 0x87, 0x65, 0x56, 0x78};
 static const qint32 g_nRDlPtSMagicSize = 12;
 
 namespace {
+const quint16 INNO_LOADER_LEGACY_VX = 0x100;
+const quint16 INNO_LOADER_LEGACY_EOF40 = 0x101;
 const qint64 INNO_MAX_HEADER_BLOCK_SIZE = 64LL * 1024 * 1024;
 const qint64 INNO_MAX_HEADER_STORED_SIZE = INNO_MAX_HEADER_BLOCK_SIZE + ((INNO_MAX_HEADER_BLOCK_SIZE + 4095) / 4096) * 4;
 const quint32 INNO_MAX_HEADER_LZMA_DICTIONARY_SIZE = 64U * 1024 * 1024;
 const qint32 INNO_MAX_KDF_ITERATIONS = 10000000;
 const qint32 INNO_MAX_EXTERNAL_SLICES = 4096;
 const qint32 INNO_MAX_PASSWORD_BYTES = 1024 * 1024;
+const qint64 INNO_MAX_LEGACY_BLOCK_SIZE = 16LL * 1024 * 1024;
+const qint32 INNO_MAX_LEGACY_RECORDS = 100000;
+const qint64 INNO_MAX_FALLBACK_DATA_SIZE = 1024LL * 1024 * 1024;
+const qint64 INNO_MAX_FALLBACK_TOTAL_OUTPUT = 1024LL * 1024 * 1024;
+
+bool innoCalculateAdler32(const QByteArray &baData, quint32 *pnResult, XBinary::PDSTRUCT *pPdStruct)
+{
+    if (pnResult) *pnResult = 0;
+    if (!pnResult || !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+
+    static const quint32 nModAdler = 65521U;
+    const uchar *pData = reinterpret_cast<const uchar *>(baData.constData());
+    qint32 nRemaining = baData.size();
+    quint32 a = 1;
+    quint32 b = 0;
+
+    // 5552 bytes is the largest safe deferred-modulo block for Adler-32.
+    while (nRemaining > 0) {
+        if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+        const qint32 nBlockSize = qMin(nRemaining, 5552);
+        nRemaining -= nBlockSize;
+        for (qint32 i = 0; i < nBlockSize; i++) {
+            a += *pData++;
+            b += a;
+        }
+        a %= nModAdler;
+        b %= nModAdler;
+    }
+
+    *pnResult = (b << 16) | a;
+    return true;
+}
 
 void innoSecureClear(QByteArray *pData)
 {
@@ -712,6 +747,44 @@ XInnoSetup::INTERNAL_INFO XInnoSetup::_analyse(PDSTRUCT *pPdStruct)
     const char *apszSignatures[] = {"Inno Setup Setup Data", "Inno Setup: Setup Data"};
     const qint32 nSignatureCount = sizeof(apszSignatures) / sizeof(const char *);
     qint64 nFileSize = getSize();
+
+    // Prefer a loader table anchored to the exact setup-data offset. Pointer-
+    // era installers and both supported pre-pointer layouts can be recognized
+    // without scanning multi-megabyte payloads for a textual banner.
+    if ((nFileSize >= 8) && XBinary::isPdStructNotCanceled(pPdStruct)) {
+        const OFFSET_TABLE table = _findOffsetTable(pPdStruct);
+        if (table.bIsValid && (table.nHeaderOffset >= 0) && (table.nHeaderOffset <= nFileSize - 8)) {
+            INNO_VERSION version = _parseVersionId(read_array(table.nHeaderOffset, 8));
+            if (!version.bIsValid && (table.nHeaderOffset <= nFileSize - 12)) version = _parseVersionId(read_array(table.nHeaderOffset, 12));
+            if (!version.bIsValid && (table.nHeaderOffset <= nFileSize - 64)) version = _parseVersionId(read_array(table.nHeaderOffset, 64));
+
+            const bool bLegacyPair = version.bIsValid && version.bLegacyShortId && !version.bWin16 &&
+                                     (((version.nMinor == 9) && (table.nLoaderVersion == INNO_LOADER_LEGACY_VX)) ||
+                                      ((version.nMinor == 11) && (table.nLoaderVersion == INNO_LOADER_LEGACY_EOF40)));
+            const bool bNative12 = version.bIsValid && !version.bLegacyShortId && (innoVersionValue(version) == innoVersionValue(1, 2, 10));
+            bool bNativePair = false;
+            if (bNative12 && (table.nRevision == 0) && (table.nLoaderVersion == 2) && (nFileSize >= 0x40) && (read_uint16(0, false) == 0x5a4dU)) {
+                const quint32 nNewHeaderOffset = read_uint32(0x3c, false);
+                if ((nNewHeaderOffset >= 0x40U) && (quint64(nNewHeaderOffset) <= quint64(nFileSize - (version.bWin16 ? 2 : 4)))) {
+                    bNativePair = version.bWin16 ? (read_uint16(nNewHeaderOffset, false) == 0x454eU) : (read_uint32(nNewHeaderOffset, false) == 0x00004550U);
+                }
+            }
+            const bool bBannerPair = version.bIsValid && !version.bLegacyShortId && !bNative12 &&
+                                     (table.nLoaderVersion != INNO_LOADER_LEGACY_VX) && (table.nLoaderVersion != INNO_LOADER_LEGACY_EOF40);
+
+            if (bLegacyPair || bNativePair || bBannerPair) {
+                result.bIsValid = true;
+                result.nSignatureOffset = table.nHeaderOffset;
+                if (version.bLegacyShortId) {
+                    result.sVersion = QStringLiteral("1.%1-32").arg(version.nMinor, 2, 10, QChar('0'));
+                } else {
+                    result.sVersion = QStringLiteral("%1.%2.%3").arg(version.nMajor).arg(version.nMinor).arg(version.nPatch);
+                    if (version.nRevision != 0) result.sVersion += QStringLiteral(".%1").arg(version.nRevision);
+                    if (version.bIsx) result.sVersion += QStringLiteral(" with ISX");
+                }
+            }
+        }
+    }
 
     for (qint32 i = 0; (i < nSignatureCount) && (!result.bIsValid); i++) {
         QString sSignature = QString::fromLatin1(apszSignatures[i]);
@@ -1406,6 +1479,68 @@ bool XInnoSetup::finishUnpack(XBinary::UNPACK_STATE *pState, XBinary::PDSTRUCT *
 // Real InnoSetup format parsing methods
 // ============================================================================
 
+XInnoSetup::OFFSET_TABLE XInnoSetup::_decodeLegacyOffsetTable(
+    qint64 nTableOffset, const QByteArray &baExpectedId,
+    quint16 nLoaderVersion, qint64 nFileSize, PDSTRUCT *pPdStruct)
+{
+    OFFSET_TABLE result = {};
+    if ((nTableOffset < 0) || (nTableOffset > nFileSize - 40) ||
+        !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        return result;
+    }
+
+    const QByteArray baTable = read_array(nTableOffset, 40);
+    if ((baTable.size() != 40) || (baTable.left(12) != baExpectedId)) {
+        return result;
+    }
+
+    result.nTableOffset = nTableOffset;
+    result.nRevision = 0;
+    result.nLoaderVersion = nLoaderVersion;
+    result.nTotalSize = qFromLittleEndian<quint32>(
+        reinterpret_cast<const uchar *>(baTable.constData() + 12));
+    result.nExeOffset = qFromLittleEndian<quint32>(
+        reinterpret_cast<const uchar *>(baTable.constData() + 16));
+    const quint32 nExeCompressedSize = qFromLittleEndian<quint32>(
+        reinterpret_cast<const uchar *>(baTable.constData() + 20));
+    result.nExeUncompressedSize = qFromLittleEndian<quint32>(
+        reinterpret_cast<const uchar *>(baTable.constData() + 24));
+    result.nExeChecksum = qFromLittleEndian<quint32>(
+        reinterpret_cast<const uchar *>(baTable.constData() + 28));
+    const quint64 nHeaderOffset = qFromLittleEndian<quint32>(
+        reinterpret_cast<const uchar *>(baTable.constData() + 32));
+    const quint64 nDataOffset = qFromLittleEndian<quint32>(
+        reinterpret_cast<const uchar *>(baTable.constData() + 36));
+    const quint64 nExeOffset = quint64(result.nExeOffset);
+    const quint64 nExeEnd = nExeOffset + quint64(nExeCompressedSize);
+
+    if ((result.nTotalSize != quint64(nFileSize)) ||
+        (result.nExeOffset <= 0) || (nExeCompressedSize == 0) ||
+        (result.nExeUncompressedSize == 0) || (nExeEnd < nExeOffset) ||
+        (nExeEnd != nHeaderOffset) ||
+        (nHeaderOffset > quint64(nFileSize - 8)) ||
+        (nDataOffset > quint64(nFileSize - 12))) {
+        return OFFSET_TABLE();
+    }
+
+    const bool bEof40 = nLoaderVersion == INNO_LOADER_LEGACY_EOF40;
+    const bool bLayoutValid =
+        bEof40 ? ((nTableOffset == nFileSize - 40) &&
+                  (nDataOffset >= 12) && (nDataOffset < nExeOffset) &&
+                  (nExeOffset < nHeaderOffset) &&
+                  (nHeaderOffset <= quint64(nTableOffset - 8)))
+               : ((nTableOffset <= result.nExeOffset - 40) &&
+                  (nExeOffset < nHeaderOffset) &&
+                  (nHeaderOffset + 8 <= nDataOffset) &&
+                  (nDataOffset <= quint64(nFileSize - 12)));
+    if (!bLayoutValid) return OFFSET_TABLE();
+
+    result.nHeaderOffset = (qint64)nHeaderOffset;
+    result.nDataOffset = (qint64)nDataOffset;
+    result.bIsValid = true;
+    return result;
+}
+
 XInnoSetup::OFFSET_TABLE XInnoSetup::_findOffsetTable(PDSTRUCT *pPdStruct)
 {
     OFFSET_TABLE invalidResult = {};
@@ -1483,6 +1618,35 @@ XInnoSetup::OFFSET_TABLE XInnoSetup::_findOffsetTable(PDSTRUCT *pPdStruct)
         }
     }
 
+    // Inno 1.09 and 1.11 predate the loader pointer at 0x30. They use the
+    // same seven-dword body, but always a 40-byte table with Offset0/Offset1
+    // at +32/+36. Decode only the two layouts whose complete extent and
+    // ordering can be anchored to this device.
+    const QByteArray ba02(reinterpret_cast<const char *>(g_aRDlPtS02Magic), 12);
+    if ((nFileSize >= 40) && XBinary::isPdStructNotCanceled(pPdStruct)) {
+        const OFFSET_TABLE eofCandidate = _decodeLegacyOffsetTable(
+            nFileSize - 40, ba02, INNO_LOADER_LEGACY_EOF40,
+            nFileSize, pPdStruct);
+        if (eofCandidate.bIsValid) return eofCandidate;
+    }
+
+    const QByteArray baVx(reinterpret_cast<const char *>(g_aRDlPtSVxMagic), 12);
+    const qint64 nLoaderWindowSize = qMin<qint64>(nFileSize, 1024LL * 1024);
+    if ((nLoaderWindowSize >= baVx.size()) && (nLoaderWindowSize <= (std::numeric_limits<qint32>::max)()) && XBinary::isPdStructNotCanceled(pPdStruct)) {
+        const QByteArray baLoaderWindow = read_array(0, nLoaderWindowSize);
+        qint32 nSearchOffset = 0;
+        while ((baLoaderWindow.size() == nLoaderWindowSize) && XBinary::isPdStructNotCanceled(pPdStruct)) {
+            const qint32 nRelativeOffset = baLoaderWindow.indexOf(baVx, nSearchOffset);
+            if (nRelativeOffset < 0) break;
+            const OFFSET_TABLE vxCandidate = _decodeLegacyOffsetTable(
+                nRelativeOffset, baVx, INNO_LOADER_LEGACY_VX,
+                nFileSize, pPdStruct);
+            if (vxCandidate.bIsValid) return vxCandidate;
+            if (nRelativeOffset == (std::numeric_limits<qint32>::max)()) break;
+            nSearchOffset = nRelativeOffset + 1;
+        }
+    }
+
     const QByteArray baMagic(reinterpret_cast<const char *>(g_aRDlPtSMagic), g_nRDlPtSMagicSize);
     qint64 nSearchOffset = 0;
 
@@ -1555,6 +1719,50 @@ XInnoSetup::OFFSET_TABLE XInnoSetup::_findOffsetTable(PDSTRUCT *pPdStruct)
     }
 
     return invalidResult;
+}
+
+QByteArray XInnoSetup::_readLegacyBlock(qint64 nOffset, qint64 nLimit, qint64 *pnConsumed, PDSTRUCT *pPdStruct)
+{
+    if (pnConsumed) *pnConsumed = 0;
+    const qint64 nFileSize = getSize();
+    if ((nOffset < 0) || (nLimit < 0) || (nLimit > nFileSize) || (nOffset > nLimit - 16) || !XBinary::isPdStructNotCanceled(pPdStruct)) return QByteArray();
+
+    const quint32 nExpectedHeaderAdler = read_uint32(nOffset, false);
+    const QByteArray baHeader = read_array(nOffset + 4, 12);
+    quint32 nActualHeaderAdler = 0;
+    if ((baHeader.size() != 12) || !innoCalculateAdler32(baHeader, &nActualHeaderAdler, pPdStruct) || (nActualHeaderAdler != nExpectedHeaderAdler)) {
+        setPdStructErrorString(pPdStruct, tr("Invalid legacy Inno Setup block header Adler-32"));
+        return QByteArray();
+    }
+
+    const quint32 nCompressedSize = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baHeader.constData()));
+    const quint32 nUncompressedSize = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baHeader.constData() + 4));
+    const quint32 nExpectedDataAdler = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baHeader.constData() + 8));
+    const bool bStored = nCompressedSize == 0xffffffffU;
+    const quint64 nPayloadSize = bStored ? quint64(nUncompressedSize) : quint64(nCompressedSize);
+
+    if ((nUncompressedSize == 0) || (nUncompressedSize > quint64(INNO_MAX_LEGACY_BLOCK_SIZE)) || (nPayloadSize == 0) ||
+        (nPayloadSize > quint64(INNO_MAX_LEGACY_BLOCK_SIZE)) || (nPayloadSize > quint64(nLimit - nOffset - 16))) {
+        setPdStructErrorString(pPdStruct, tr("Invalid legacy Inno Setup block size"));
+        return QByteArray();
+    }
+
+    const QByteArray baPayload = read_array(nOffset + 16, (qint64)nPayloadSize);
+    if (quint64(baPayload.size()) != nPayloadSize) return QByteArray();
+    const QByteArray baResult = bStored ? baPayload : _decompressZlib(baPayload, nUncompressedSize);
+    if (baResult.size() != nUncompressedSize) {
+        setPdStructErrorString(pPdStruct, tr("Could not decompress legacy Inno Setup block"));
+        return QByteArray();
+    }
+
+    quint32 nActualDataAdler = 0;
+    if (!innoCalculateAdler32(baResult, &nActualDataAdler, pPdStruct) || (nActualDataAdler != nExpectedDataAdler)) {
+        setPdStructErrorString(pPdStruct, tr("Invalid legacy Inno Setup block data Adler-32"));
+        return QByteArray();
+    }
+
+    if (pnConsumed) *pnConsumed = 16 + (qint64)nPayloadSize;
+    return baResult;
 }
 
 QByteArray XInnoSetup::_stripCRCChunks(const QByteArray &baData, bool *pbValid)
@@ -2002,6 +2210,26 @@ XInnoSetup::INNO_VERSION XInnoSetup::_parseVersionId(const QByteArray &baVersion
 {
     INNO_VERSION result = {};
 
+    // Inno 1.09/1.11 used compact binary IDs. Keep this deliberately
+    // generation-whitelisted: adjacent releases changed serialized records.
+    if ((baVersionId.size() == 8) && (baVersionId.at(0) == 'i') && (baVersionId.at(4) == '-') && (baVersionId.at(7) == '\x1a') &&
+        ((baVersionId.mid(5, 2) == "16") || (baVersionId.mid(5, 2) == "32"))) {
+        bool bDigits = true;
+        for (qint32 i = 1; i <= 3; i++) {
+            if ((baVersionId.at(i) < '0') || (baVersionId.at(i) > '9')) bDigits = false;
+        }
+        const QByteArray baCompactVersion = baVersionId.mid(1, 3);
+        if (bDigits && ((baCompactVersion == "109") || (baCompactVersion == "111"))) {
+            result.bIsValid = true;
+            result.bUnicode = false;
+            result.bWin16 = baVersionId.mid(5, 2) == "16";
+            result.bLegacyShortId = true;
+            result.nMajor = 1;
+            result.nMinor = (baCompactVersion == "109") ? 9 : 11;
+            return result;
+        }
+    }
+
     // Inno 1.2.10-1.2.16 used native-width 12-byte IDs. The bitness is part of
     // the schema because Integer, Cardinal, pointer-bearing record tails, and
     // file times differ between the two compilers.
@@ -2036,7 +2264,24 @@ XInnoSetup::INNO_VERSION XInnoSetup::_parseVersionId(const QByteArray &baVersion
     QByteArray baVersion = baId.mid(baPrefix.size(), nClose - baPrefix.size());
     const QByteArray baSuffix = baId.mid(nClose + 1);
 
-    if (!baSuffix.isEmpty() && (baSuffix != " (u)") && (baSuffix != " (U)")) return result;
+    bool bIsx = false;
+    if (!baSuffix.isEmpty() && (baSuffix != " (u)") && (baSuffix != " (U)")) {
+        static const QByteArray baIsxPrefix(" with ISX (");
+        if (!baSuffix.startsWith(baIsxPrefix) || !baSuffix.endsWith(')')) return result;
+        const QByteArray baIsxVersion = baSuffix.mid(baIsxPrefix.size(), baSuffix.size() - baIsxPrefix.size() - 1);
+        const QList<QByteArray> listIsxParts = baIsxVersion.split('.');
+        if ((listIsxParts.size() != 3) && (listIsxParts.size() != 4)) return result;
+        for (const QByteArray &baPart : listIsxParts) {
+            if (baPart.isEmpty()) return result;
+            for (char ch : baPart) {
+                if ((ch < '0') || (ch > '9')) return result;
+            }
+            bool bOk = false;
+            const uint nValue = baPart.toUInt(&bOk);
+            if (!bOk || (nValue > 0xffff)) return result;
+        }
+        bIsx = true;
+    }
 
     bool bAlphaSchema = false;
     if (baVersion.endsWith('a')) {
@@ -2065,10 +2310,12 @@ XInnoSetup::INNO_VERSION XInnoSetup::_parseVersionId(const QByteArray &baVersion
     result.nPatch = anParts[2];
     result.nRevision = anParts[3];
     result.bUnicode = !baSuffix.isEmpty() || (result.nMajor >= 6);
+    result.bIsx = bIsx;
+    if (bIsx) result.bUnicode = false;
     result.bWin16 = false;
 
-    // These are the standard JR Software setup-data IDs emitted before 5.0.
-    // ISX uses additional strings/entries and deliberately remains fail-closed.
+    // These are the stock JR Software base setup-data IDs emitted before 5.0.
+    // ISX record deltas use a separate, bounded data-chunk fallback.
     const bool bHistoricalSchema =
         (result.nRevision == 0) &&
         (((result.nMajor == 1) && (result.nMinor == 3) &&
@@ -3379,6 +3626,454 @@ QList<XInnoSetup::FILE_ENTRY> XInnoSetup::_parseFileEntriesAnsi(const QByteArray
     return listResult;
 }
 
+bool XInnoSetup::_readNextLegacySetupBlock(
+    qint64 *pnCursor, qint64 nSetup0End, QByteArray *pBlock,
+    PDSTRUCT *pPdStruct)
+{
+    if (pBlock) pBlock->clear();
+    if (!pnCursor || !pBlock ||
+        !XBinary::isPdStructNotCanceled(pPdStruct)) {
+        return false;
+    }
+    qint64 nConsumed = 0;
+    const QByteArray baBlock = _readLegacyBlock(
+        *pnCursor, nSetup0End, &nConsumed, pPdStruct);
+    if (baBlock.isEmpty() || (nConsumed <= 16) ||
+        (*pnCursor > nSetup0End - nConsumed)) {
+        return false;
+    }
+    *pnCursor += nConsumed;
+    *pBlock = baBlock;
+    return true;
+}
+
+bool XInnoSetup::_parseLegacySetup0(UNPACK_CONTEXT *pContext, const OFFSET_TABLE &offsetTable, const INNO_VERSION &version, qint32 nVersionIdSize,
+                                     PDSTRUCT *pPdStruct)
+{
+    if (!pContext || !offsetTable.bIsValid || !version.bIsValid || !version.bLegacyShortId || version.bWin16 || (nVersionIdSize != 8)) return false;
+
+    const bool b109 = (version.nMajor == 1) && (version.nMinor == 9) && (offsetTable.nLoaderVersion == INNO_LOADER_LEGACY_VX);
+    const bool b111 = (version.nMajor == 1) && (version.nMinor == 11) && (offsetTable.nLoaderVersion == INNO_LOADER_LEGACY_EOF40);
+    if (!b109 && !b111) return false;
+
+    const qint64 nFileSize = getSize();
+    const qint64 nSetup0End = b109 ? offsetTable.nDataOffset : offsetTable.nTableOffset;
+    if ((offsetTable.nHeaderOffset < 0) || (offsetTable.nHeaderOffset > nSetup0End - nVersionIdSize - 16) || (nSetup0End > nFileSize)) return false;
+
+    qint64 nCursor = offsetTable.nHeaderOffset + nVersionIdSize;
+
+    QByteArray baHeader;
+    if (!_readNextLegacySetupBlock(&nCursor, nSetup0End, &baHeader,
+                                   pPdStruct)) {
+        return false;
+    }
+
+    quint32 anCounts[9] = {};
+    quint32 anInfoSizes[3] = {};
+    qint32 nCountCount = 0;
+    if (b109) {
+        if (baHeader.size() != 434) return false;
+        nCountCount = 8;
+        for (qint32 i = 0; i < nCountCount; i++) {
+            anCounts[i] = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baHeader.constData() + 0x180 + i * 4));
+        }
+    } else {
+        qint32 nHeaderOffset = 0;
+        for (qint32 i = 0; i < 6; i++) {
+            if ((nHeaderOffset < 0) || (nHeaderOffset > baHeader.size() - 4)) return false;
+            const quint32 nLength = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baHeader.constData() + nHeaderOffset));
+            if ((nLength > 0x1000000U) || (nLength > quint32(baHeader.size() - nHeaderOffset - 4))) return false;
+            nHeaderOffset += 4 + (qint32)nLength;
+        }
+        // Nine counts, three optional-text sizes, and the exact 14-byte 1.11
+        // options tail form the generation anchor after the six strings.
+        if ((nHeaderOffset < 0) || (baHeader.size() - nHeaderOffset != 62)) return false;
+        nCountCount = 9;
+        for (qint32 i = 0; i < nCountCount; i++) {
+            anCounts[i] = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baHeader.constData() + nHeaderOffset + i * 4));
+        }
+        for (qint32 i = 0; i < 3; i++) {
+            anInfoSizes[i] = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baHeader.constData() + nHeaderOffset + (9 + i) * 4));
+        }
+    }
+
+    quint64 nBlockCount = 1;
+    for (qint32 i = 0; i < nCountCount; i++) {
+        if (anCounts[i] > quint32(INNO_MAX_LEGACY_RECORDS)) return false;
+        nBlockCount += anCounts[i];
+    }
+    nBlockCount += anCounts[1];  // One location record per file record.
+    for (quint32 nSize : anInfoSizes) {
+        if (nSize > quint32(INNO_MAX_LEGACY_BLOCK_SIZE)) return false;
+        if (nSize != 0) nBlockCount++;
+    }
+    if ((anCounts[1] == 0) || (nBlockCount > quint64(INNO_MAX_LEGACY_RECORDS))) return false;
+
+    for (quint32 nExpectedSize : anInfoSizes) {
+        if (nExpectedSize == 0) continue;
+        QByteArray baInfo;
+        if (!_readNextLegacySetupBlock(&nCursor, nSetup0End, &baInfo,
+                                       pPdStruct) ||
+            (baInfo.size() != nExpectedSize)) {
+            return false;
+        }
+    }
+    for (quint32 i = 0; i < anCounts[0]; i++) {
+        QByteArray baDirectory;
+        if (!_readNextLegacySetupBlock(&nCursor, nSetup0End, &baDirectory,
+                                       pPdStruct)) {
+            return false;
+        }
+    }
+
+    struct LEGACY_FILE_INFO {
+        QString sName;
+        quint64 nFileTime;
+        quint32 nOriginalSize;
+        quint32 nCompressedSize;
+        quint32 nAdler32;
+    };
+    QList<LEGACY_FILE_INFO> listLegacyFiles;
+    listLegacyFiles.reserve((qint32)anCounts[1]);
+    const quint32 nCodePage = pContext->nAnsiCodePageOverride ? pContext->nAnsiCodePageOverride : 1252U;
+
+    for (quint32 i = 0; i < anCounts[1]; i++) {
+        QByteArray baFile;
+        if (!_readNextLegacySetupBlock(&nCursor, nSetup0End, &baFile,
+                                       pPdStruct)) {
+            return false;
+        }
+
+        QByteArray baName;
+        LEGACY_FILE_INFO fileInfo = {};
+        if (b109) {
+            if (baFile.size() != 95) return false;
+            const quint8 nNameLength = (quint8)baFile.at(0);
+            if (nNameLength > 63) return false;
+            baName = baFile.mid(1, nNameLength);
+            fileInfo.nFileTime = qFromLittleEndian<quint64>(reinterpret_cast<const uchar *>(baFile.constData() + 0x40));
+            fileInfo.nOriginalSize = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baFile.constData() + 0x50));
+            fileInfo.nCompressedSize = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baFile.constData() + 0x54));
+            fileInfo.nAdler32 = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baFile.constData() + 0x58));
+        } else {
+            if (baFile.size() < 51) return false;
+            const quint32 nNameLength = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baFile.constData()));
+            if ((nNameLength > 0x1000000U) || (nNameLength > quint32(baFile.size() - 4)) || (quint64(nNameLength) + 51 != quint64(baFile.size()))) return false;
+            baName = baFile.mid(4, (qint32)nNameLength);
+            const qint32 nNameEnd = 4 + (qint32)nNameLength;
+            fileInfo.nFileTime = qFromLittleEndian<quint64>(reinterpret_cast<const uchar *>(baFile.constData() + nNameEnd + 0x0c));
+            fileInfo.nOriginalSize = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baFile.constData() + baFile.size() - 19));
+            fileInfo.nCompressedSize = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baFile.constData() + baFile.size() - 15));
+            fileInfo.nAdler32 = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baFile.constData() + baFile.size() - 11));
+        }
+
+        if ((fileInfo.nOriginalSize > quint32((std::numeric_limits<qint32>::max)())) || (fileInfo.nCompressedSize == 0) ||
+            (fileInfo.nCompressedSize > quint32((std::numeric_limits<qint32>::max)())))
+            return false;
+        if (pContext->nAnsiCodePageOverride != 0) {
+            if (!_decodeAnsiCodePage(baName, nCodePage, &fileInfo.sName)) return false;
+        } else {
+            fileInfo.sName = _decodeWindows1252(baName.constData(), baName.size());
+        }
+        for (QChar ch : fileInfo.sName) {
+            if ((ch.unicode() == 0) || (ch.unicode() < 0x20)) return false;
+        }
+        listLegacyFiles.append(fileInfo);
+    }
+
+    if ((offsetTable.nDataOffset < 0) || (offsetTable.nDataOffset > nFileSize - 12) ||
+        (read_array(offsetTable.nDataOffset, 8) != QByteArray("idska32\x1a", 8)))
+        return false;
+    const quint32 nDeclaredDataSize = read_uint32(offsetTable.nDataOffset + 8, false);
+    const qint64 nDataEnd = b109 ? nFileSize : offsetTable.nExeOffset;
+    if ((nDataEnd <= offsetTable.nDataOffset + 12) || (nDataEnd > nFileSize) ||
+        (b109 ? (quint64(nDeclaredDataSize) != quint64(nDataEnd - offsetTable.nDataOffset)) : (nDeclaredDataSize != 0)))
+        return false;
+
+    QList<DATA_ENTRY> listDataEntries;
+    QList<FILE_ENTRY> listFileEntries;
+    listDataEntries.reserve(listLegacyFiles.size());
+    listFileEntries.reserve(listLegacyFiles.size());
+    qint64 nExpectedStart = 12;
+    const qint64 nDataExtent = nDataEnd - offsetTable.nDataOffset;
+    for (qint32 i = 0; i < listLegacyFiles.size(); i++) {
+        QByteArray baLocation;
+        if (!_readNextLegacySetupBlock(&nCursor, nSetup0End, &baLocation,
+                                       pPdStruct) ||
+            (baLocation.size() != 12)) {
+            return false;
+        }
+        const quint32 nFirstDisk = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baLocation.constData()));
+        const quint32 nLastDisk = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baLocation.constData() + 4));
+        const quint32 nStartOffset = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baLocation.constData() + 8));
+        const LEGACY_FILE_INFO &fileInfo = listLegacyFiles.at(i);
+
+        if ((nFirstDisk != 1) || (nLastDisk != 1) || (qint64(nStartOffset) != nExpectedStart) || (nExpectedStart > nDataExtent - 4) ||
+            (qint64(fileInfo.nCompressedSize) > nDataExtent - nExpectedStart - 4) ||
+            (read_array(offsetTable.nDataOffset + nExpectedStart, 4) != QByteArray("zlb\x1a", 4)))
+            return false;
+
+        DATA_ENTRY dataEntry = {};
+        dataEntry.nFirstSlice = 0;
+        dataEntry.nLastSlice = 0;
+        dataEntry.nChunkStartOffset = nExpectedStart;
+        dataEntry.nChunkSubOffset = 0;
+        dataEntry.nOriginalSize = fileInfo.nOriginalSize;
+        dataEntry.nChunkCompressedSize = fileInfo.nCompressedSize;
+        dataEntry.baChecksum.resize(4);
+        qToLittleEndian<quint32>(fileInfo.nAdler32, reinterpret_cast<uchar *>(dataEntry.baChecksum.data()));
+        dataEntry.checksumType = INNO_CHECKSUM_ADLER32;
+        dataEntry.compression = INNO_COMPRESSION_ZLIB;
+        dataEntry.nFileTime = fileInfo.nFileTime;
+        dataEntry.bChunkCompressed = true;
+        listDataEntries.append(dataEntry);
+
+        if (!fileInfo.sName.isEmpty()) {
+            FILE_ENTRY fileEntry = {};
+            fileEntry.sDestName = fileInfo.sName;
+            fileEntry.nLocationEntry = i;
+            listFileEntries.append(fileEntry);
+        }
+        nExpectedStart += 4 + qint64(fileInfo.nCompressedSize);
+    }
+    if (nExpectedStart != nDataExtent) return false;
+
+    for (qint32 nCountIndex = 2; nCountIndex < nCountCount; nCountIndex++) {
+        for (quint32 i = 0; i < anCounts[nCountIndex]; i++) {
+            QByteArray baIgnored;
+            if (!_readNextLegacySetupBlock(&nCursor, nSetup0End, &baIgnored,
+                                           pPdStruct)) {
+                return false;
+            }
+        }
+    }
+    if (nCursor != nSetup0End) return false;
+
+    pContext->nAnsiCodePage = nCodePage;
+    return _finalizeRealRecords(pContext, listDataEntries, listFileEntries, offsetTable.nDataOffset, version, pPdStruct);
+}
+
+bool XInnoSetup::_probeZlibMember(qint64 nOffset, qint64 nLimit, qint64 *pnCompressedSize, qint64 *pnOriginalSize, quint32 *pnAdler32, PDSTRUCT *pPdStruct)
+{
+    if (pnCompressedSize) *pnCompressedSize = 0;
+    if (pnOriginalSize) *pnOriginalSize = 0;
+    if (pnAdler32) *pnAdler32 = 0;
+    if (!pnCompressedSize || !pnOriginalSize || !pnAdler32 || (nOffset < 0) || (nLimit > getSize()) || (nOffset > nLimit - 6) ||
+        !XBinary::isPdStructNotCanceled(pPdStruct))
+        return false;
+
+    const QByteArray baHeader = read_array(nOffset, 2);
+    if (baHeader.size() != 2) return false;
+    const quint8 nCMF = (quint8)baHeader.at(0);
+    const quint8 nFLG = (quint8)baHeader.at(1);
+    const quint16 nHeader = (quint16(nCMF) << 8) | nFLG;
+    if (((nCMF & 0x0fU) != 8U) || ((nCMF >> 4) > 7U) || ((nHeader % 31U) != 0U) || ((nFLG & 0x20U) != 0U)) return false;
+
+    InnoBoundedBuffer output(INNO_MAX_HEADER_BLOCK_SIZE);
+    if (!output.open(QIODevice::ReadWrite)) return false;
+    XBinary::DATAPROCESS_STATE state = {};
+    state.pDeviceInput = getDevice();
+    state.pDeviceOutput = &output;
+    state.nInputOffset = nOffset + 2;
+    state.nInputLimit = nLimit - state.nInputOffset;
+    state.nProcessedOffset = 0;
+    state.nProcessedLimit = INNO_MAX_HEADER_BLOCK_SIZE + 1;
+    const bool bDecoded = XDeflateDecoder::decompress(&state, pPdStruct);
+    output.close();
+    if (!bDecoded || state.bReadError || state.bWriteError || (state.nCountInput <= 0) || (state.nCountOutput < 0) ||
+        (state.nCountOutput > INNO_MAX_HEADER_BLOCK_SIZE) || (state.nCountOutput != output.data().size()) ||
+        (state.nCountInput > nLimit - nOffset - 6))
+        return false;
+
+    const qint64 nFooterOffset = nOffset + 2 + state.nCountInput;
+    if ((nFooterOffset < nOffset) || (nFooterOffset > nLimit - 4)) return false;
+    const QByteArray baFooter = read_array(nFooterOffset, 4);
+    if (baFooter.size() != 4) return false;
+    const quint32 nExpectedAdler = qFromBigEndian<quint32>(reinterpret_cast<const uchar *>(baFooter.constData()));
+    quint32 nActualAdler = 0;
+    if (!innoCalculateAdler32(output.data(), &nActualAdler, pPdStruct) || (nActualAdler != nExpectedAdler)) return false;
+
+    *pnCompressedSize = 2 + state.nCountInput + 4;
+    *pnOriginalSize = state.nCountOutput;
+    *pnAdler32 = nExpectedAdler;
+    return true;
+}
+
+bool XInnoSetup::_parseISXDataFallback(UNPACK_CONTEXT *pContext, const OFFSET_TABLE &offsetTable, const INNO_VERSION &version, PDSTRUCT *pPdStruct)
+{
+    if (!pContext || !offsetTable.bIsValid || !version.bIsValid || !version.bIsx || (offsetTable.nRevision != 0) || (offsetTable.nLoaderVersion != 2)) return false;
+    const qint64 nDataOffset = offsetTable.nDataOffset;
+    const qint64 nDataEnd = offsetTable.nExeOffset;
+    if ((nDataOffset <= 0) || (nDataEnd <= nDataOffset) || (nDataEnd > getSize()) || (nDataEnd - nDataOffset > INNO_MAX_FALLBACK_DATA_SIZE)) return false;
+
+    QList<DATA_ENTRY> listDataEntries;
+    QList<FILE_ENTRY> listFileEntries;
+    qint64 nPosition = nDataOffset;
+    qint64 nTotalOutput = 0;
+    while ((nPosition < nDataEnd) && XBinary::isPdStructNotCanceled(pPdStruct)) {
+        if ((listDataEntries.size() >= INNO_MAX_LEGACY_RECORDS) || (nPosition > nDataEnd - 4) ||
+            (read_array(nPosition, 4) != QByteArray("zlb\x1a", 4)))
+            return false;
+
+        qint64 nCompressedSize = 0;
+        qint64 nOriginalSize = 0;
+        quint32 nAdler32 = 0;
+        if (!_probeZlibMember(nPosition + 4, nDataEnd, &nCompressedSize, &nOriginalSize, &nAdler32, pPdStruct) ||
+            (nCompressedSize <= 0) || (nCompressedSize > (std::numeric_limits<qint32>::max)()) ||
+            (nOriginalSize > (std::numeric_limits<qint32>::max)()) || (nTotalOutput > INNO_MAX_FALLBACK_TOTAL_OUTPUT - nOriginalSize))
+            return false;
+
+        DATA_ENTRY dataEntry = {};
+        dataEntry.nFirstSlice = 0;
+        dataEntry.nLastSlice = 0;
+        dataEntry.nChunkStartOffset = nPosition - nDataOffset;
+        dataEntry.nChunkSubOffset = 0;
+        dataEntry.nOriginalSize = nOriginalSize;
+        dataEntry.nChunkCompressedSize = nCompressedSize;
+        dataEntry.baChecksum.resize(4);
+        qToLittleEndian<quint32>(nAdler32, reinterpret_cast<uchar *>(dataEntry.baChecksum.data()));
+        dataEntry.checksumType = INNO_CHECKSUM_ADLER32;
+        dataEntry.compression = INNO_COMPRESSION_ZLIB;
+        dataEntry.bChunkCompressed = true;
+        listDataEntries.append(dataEntry);
+
+        FILE_ENTRY fileEntry = {};
+        fileEntry.sDestName = QStringLiteral("data/%1.bin").arg(listDataEntries.size(), 4, 10, QChar('0'));
+        fileEntry.nLocationEntry = listDataEntries.size() - 1;
+        listFileEntries.append(fileEntry);
+
+        nTotalOutput += nOriginalSize;
+        if (nPosition > nDataEnd - 4 - nCompressedSize) return false;
+        nPosition += 4 + nCompressedSize;
+    }
+
+    if ((nPosition != nDataEnd) || listDataEntries.isEmpty()) return false;
+    return _finalizeRealRecords(pContext, listDataEntries, listFileEntries, nDataOffset, version, pPdStruct);
+}
+
+bool XInnoSetup::_finalizeRealRecords(UNPACK_CONTEXT *pContext, const QList<DATA_ENTRY> &listDataEntries, const QList<FILE_ENTRY> &listFileEntries,
+                                      qint64 nDataStreamOffset, const INNO_VERSION &version, PDSTRUCT *pPdStruct)
+{
+    if (!pContext || !version.bIsValid || listDataEntries.isEmpty() || listFileEntries.isEmpty() || (nDataStreamOffset < 0)) return false;
+    const qint64 nFileSize = getSize();
+    const qint32 nNumDataEntries = listDataEntries.count();
+
+    pContext->listDataEntries = listDataEntries;
+    pContext->listFileEntries = listFileEntries;
+    pContext->nDataStreamOffset = nDataStreamOffset;
+    pContext->version = version;
+    pContext->sPassword.fill(QChar());
+    pContext->sPassword.clear();
+    innoSecureClear(&pContext->baPasswordBytes);
+    pContext->bHasPasswordBytes = false;
+
+    for (const DATA_ENTRY &entry : listDataEntries) {
+        if (entry.bChunkEncrypted && ((pContext->nEncryptionUse == 0) || (pContext->encryption == INNO_ENCRYPTION_NONE))) {
+            setPdStructErrorString(pPdStruct, tr("Invalid encrypted Inno Setup data entry"));
+            return false;
+        }
+    }
+
+    const bool bExternalSlices = (nDataStreamOffset == 0);
+    if (bExternalSlices && !_prepareSliceSources(pContext, listDataEntries, pPdStruct)) return false;
+
+    // Validate every exact StartOffset. Solid members share a start; unrelated chunks may
+    // legitimately have equal compressed sizes and must remain distinct.
+    QMap<QString, QString> mapChunks;
+    for (const DATA_ENTRY &entry : listDataEntries) {
+        if ((entry.nChunkCompressedSize < 0) || (entry.nChunkCompressedSize > (std::numeric_limits<qint32>::max)())) return false;
+        const qint64 nEncryptionOverhead =
+            entry.bChunkEncrypted && ((pContext->encryption == INNO_ENCRYPTION_ARC4_MD5) || (pContext->encryption == INNO_ENCRYPTION_ARC4_SHA1)) ? 8 : 0;
+
+        if (!bExternalSlices) {
+            if ((entry.nFirstSlice != 0) || (entry.nLastSlice != 0) || (nDataStreamOffset > nFileSize - 4) ||
+                (entry.nChunkStartOffset > nFileSize - nDataStreamOffset - 4) || (nEncryptionOverhead > nFileSize - nDataStreamOffset - entry.nChunkStartOffset - 4) ||
+                (entry.nChunkCompressedSize > nFileSize - nDataStreamOffset - entry.nChunkStartOffset - 4 - nEncryptionOverhead))
+                return false;
+            const qint64 nChunkOffset = nDataStreamOffset + entry.nChunkStartOffset;
+            if (read_array(nChunkOffset, 4) != QByteArray("zlb\x1a", 4)) return false;
+        } else {
+            SLICE_SOURCE *pFirst = pContext->mapSliceSources.value(entry.nFirstSlice, nullptr);
+            if (!pFirst || !pFirst->pFile || !pFirst->pValidator || (entry.nChunkStartOffset < pFirst->nDataOffset) ||
+                (entry.nChunkStartOffset > pFirst->pFile->size() - 4) || !pFirst->pValidator->isUnpackSourceCurrent(&pFirst->validationState, pPdStruct) ||
+                !pFirst->pFile->seek(entry.nChunkStartOffset) || (pFirst->pFile->read(4) != QByteArray("zlb\x1a", 4)) ||
+                !pFirst->pValidator->isUnpackSourceCurrent(&pFirst->validationState, pPdStruct))
+                return false;
+
+            qint64 nRequired = entry.nChunkCompressedSize + 4 + nEncryptionOverhead;
+            for (quint64 nSlice64 = entry.nFirstSlice; nSlice64 <= quint64(entry.nLastSlice); nSlice64++) {
+                SLICE_SOURCE *pSlice = pContext->mapSliceSources.value((quint32)nSlice64, nullptr);
+                if (!pSlice || !pSlice->pFile) return false;
+                const qint64 nStart = (nSlice64 == entry.nFirstSlice) ? entry.nChunkStartOffset : pSlice->nDataOffset;
+                if ((nStart < pSlice->nDataOffset) || (nStart > pSlice->pFile->size())) return false;
+                const qint64 nAvailable = pSlice->pFile->size() - nStart;
+                if (nSlice64 < entry.nLastSlice) {
+                    if (nRequired <= nAvailable) return false;
+                    nRequired -= nAvailable;
+                } else if (nRequired > nAvailable) {
+                    return false;
+                }
+            }
+        }
+
+        const QString sChunkKey = QString::number(entry.nFirstSlice) + QLatin1Char(':') + QString::number(entry.nChunkStartOffset);
+        const QString sChunkSignature = QString::number(entry.nLastSlice) + QLatin1Char(':') + QString::number(entry.nChunkCompressedSize) + QLatin1Char(':') +
+                                        QString::number((qint32)entry.compression) + QLatin1Char(':') + QString::number(entry.bChunkEncrypted ? 1 : 0);
+        if (mapChunks.contains(sChunkKey)) {
+            if (mapChunks.value(sChunkKey) != sChunkSignature) return false;
+        } else {
+            mapChunks.insert(sChunkKey, sChunkSignature);
+        }
+    }
+
+    QList<ARCHIVERECORD> listRecords;
+    QList<qint32> listRecordDataEntryIndexes;
+    for (const FILE_ENTRY &fileEntry : listFileEntries) {
+        const qint32 nLocIdx = fileEntry.nLocationEntry;
+        if ((nLocIdx < 0) || (nLocIdx >= nNumDataEntries)) continue;
+        const DATA_ENTRY &dataEntry = listDataEntries.at(nLocIdx);
+
+        ARCHIVERECORD record = {};
+        if (!bExternalSlices && (dataEntry.nChunkStartOffset > (std::numeric_limits<qint64>::max)() - nDataStreamOffset)) return false;
+        record.nStreamOffset = bExternalSlices ? dataEntry.nChunkStartOffset : nDataStreamOffset + dataEntry.nChunkStartOffset;
+        record.nStreamSize = dataEntry.nChunkCompressedSize;
+        _setDestinationProperties(&record, fileEntry.sDestName);
+        record.mapProperties.insert(FPART_PROP_UNCOMPRESSEDSIZE, dataEntry.nOriginalSize);
+        record.mapProperties.insert(FPART_PROP_COMPRESSEDSIZE, dataEntry.nChunkCompressedSize);
+        record.mapProperties.insert(FPART_PROP_STREAMOFFSET, dataEntry.nChunkSubOffset);
+        record.mapProperties.insert(FPART_PROP_STREAMSIZE, dataEntry.nOriginalSize);
+        record.mapProperties.insert(FPART_PROP_ISFOLDER, false);
+        record.mapProperties.insert(FPART_PROP_HANDLEMETHOD, (quint32)innoCompressionToHandleMethod(dataEntry.compression));
+        if (dataEntry.bCallInstructionOptimized) record.mapProperties.insert(FPART_PROP_HANDLEMETHOD2, (quint32)HANDLE_METHOD_BCJ);
+
+        if (!dataEntry.baChecksum.isEmpty()) {
+            if ((dataEntry.checksumType == INNO_CHECKSUM_ADLER32) || (dataEntry.checksumType == INNO_CHECKSUM_CRC32)) {
+                if (dataEntry.baChecksum.size() != 4) return false;
+                const quint32 nChecksum = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(dataEntry.baChecksum.constData()));
+                record.mapProperties.insert(FPART_PROP_RESULTCRC, nChecksum);
+                record.mapProperties.insert(FPART_PROP_CRC_TYPE,
+                                            dataEntry.checksumType == INNO_CHECKSUM_ADLER32 ? CRC_TYPE_ADLER32 : CRC_TYPE_FFFFFFFF_EDB88320_FFFFFFFFF);
+            } else {
+                QString sChecksumType;
+                if (dataEntry.checksumType == INNO_CHECKSUM_MD5) sChecksumType = QStringLiteral("MD5");
+                else if (dataEntry.checksumType == INNO_CHECKSUM_SHA1) sChecksumType = QStringLiteral("SHA1");
+                else if (dataEntry.checksumType == INNO_CHECKSUM_SHA256) sChecksumType = QStringLiteral("SHA256");
+                else return false;
+                record.mapProperties.insert(FPART_PROP_CHECKSUM, QString::fromLatin1(dataEntry.baChecksum.toHex()));
+                record.mapProperties.insert(FPART_PROP_CHECKSUMTYPE, sChecksumType);
+            }
+        }
+
+        listRecords.append(record);
+        listRecordDataEntryIndexes.append(nLocIdx);
+    }
+
+    if (listRecords.isEmpty() || (listRecords.size() != listRecordDataEntryIndexes.size())) return false;
+    pContext->listAllRecords = listRecords;
+    pContext->listRecordDataEntryIndexes = listRecordDataEntryIndexes;
+    return true;
+}
+
 bool XInnoSetup::_parseRealInnoSetup(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStruct)
 {
     if (!pContext) return false;
@@ -3398,12 +4093,18 @@ bool XInnoSetup::_parseRealInnoSetup(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStru
         return false;
     }
 
-    // Win16 1.2.x uses an exact 12-byte binary ID; later releases use the
-    // descriptive, zero-padded 64-byte setup-data string.
-    if (nSetup0Offset > nFileSize - 12) return false;
-    qint32 nVersionIdSize = 12;
+    // 1.09/1.11 use an 8-byte ID, 1.2.x uses an exact 12-byte binary ID,
+    // and later releases use the descriptive zero-padded 64-byte string.
+    if (nSetup0Offset > nFileSize - 8) return false;
+    qint32 nVersionIdSize = 8;
     QByteArray baVersionId = read_array(nSetup0Offset, nVersionIdSize);
     INNO_VERSION version = _parseVersionId(baVersionId);
+    if (!version.bIsValid) {
+        nVersionIdSize = 12;
+        if (nSetup0Offset > nFileSize - nVersionIdSize) return false;
+        baVersionId = read_array(nSetup0Offset, nVersionIdSize);
+        version = _parseVersionId(baVersionId);
+    }
     if (!version.bIsValid) {
         nVersionIdSize = 64;
         if (nSetup0Offset > nFileSize - nVersionIdSize) return false;
@@ -3434,16 +4135,24 @@ bool XInnoSetup::_parseRealInnoSetup(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStru
     // Couple each fixed-pointer loader generation to the historical interval
     // in which the official loader emitted it. The setup-data whitelist still
     // rejects unknown/custom schemas inside these broad loader intervals.
+    const bool bLegacyLoaderSchema = version.bLegacyShortId && !version.bWin16 &&
+                                     (((version.nMajor == 1) && (version.nMinor == 9) && (offsetTable.nLoaderVersion == INNO_LOADER_LEGACY_VX)) ||
+                                      ((version.nMajor == 1) && (version.nMinor == 11) && (offsetTable.nLoaderVersion == INNO_LOADER_LEGACY_EOF40)));
     const bool bHistoricalLoaderSchema =
-        (offsetTable.nRevision == 0) && (((offsetTable.nLoaderVersion == 2) && (nVersion >= innoVersionValue(1, 2, 10)) && (nVersion < innoVersionValue(4, 0, 0))) ||
-                                         ((offsetTable.nLoaderVersion == 4) && (nVersion >= innoVersionValue(4, 0, 0)) && (nVersion < innoVersionValue(4, 0, 3))) ||
-                                         ((offsetTable.nLoaderVersion == 5) && (nVersion >= innoVersionValue(4, 0, 3)) && (nVersion < innoVersionValue(4, 0, 10))) ||
-                                         ((offsetTable.nLoaderVersion == 6) && (nVersion >= innoVersionValue(4, 0, 10)) && (nVersion < innoVersionValue(4, 1, 6))) ||
-                                         ((offsetTable.nLoaderVersion == 7) && (nVersion >= innoVersionValue(4, 1, 6)) && (nVersion < innoVersionValue(5, 1, 5))));
+        (offsetTable.nRevision == 0) &&
+        (bLegacyLoaderSchema ||
+         (!version.bLegacyShortId && (((offsetTable.nLoaderVersion == 2) && (nVersion >= innoVersionValue(1, 2, 10)) && (nVersion < innoVersionValue(4, 0, 0))) ||
+                                      ((offsetTable.nLoaderVersion == 4) && (nVersion >= innoVersionValue(4, 0, 0)) && (nVersion < innoVersionValue(4, 0, 3))) ||
+                                      ((offsetTable.nLoaderVersion == 5) && (nVersion >= innoVersionValue(4, 0, 3)) && (nVersion < innoVersionValue(4, 0, 10))) ||
+                                      ((offsetTable.nLoaderVersion == 6) && (nVersion >= innoVersionValue(4, 0, 10)) && (nVersion < innoVersionValue(4, 1, 6))) ||
+                                      ((offsetTable.nLoaderVersion == 7) && (nVersion >= innoVersionValue(4, 1, 6)) && (nVersion < innoVersionValue(5, 1, 5))))));
     if (((offsetTable.nRevision == 0) && !bHistoricalLoaderSchema) ||
         ((offsetTable.nRevision == 1) && ((nVersion < innoVersionValue(5, 1, 5)) || (nVersion >= innoVersionValue(6, 5, 0)))) ||
         ((offsetTable.nRevision == 2) && (nVersion < innoVersionValue(6, 5, 0))) || (offsetTable.nRevision > 2))
         return false;
+
+    if (version.bLegacyShortId) return _parseLegacySetup0(pContext, offsetTable, version, nVersionIdSize, pPdStruct);
+    if (version.bIsx) return _parseISXDataFallback(pContext, offsetTable, version, pPdStruct);
 
     QByteArray baBlock1Key;
     QByteArray baBlock1Nonce;

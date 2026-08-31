@@ -13,7 +13,7 @@
 
 #include "xpe.h"
 #include "subdevice.h"
-#include "../XArchive/xzip.h"
+#include "../Formats/archives/xzip.h"
 
 namespace {
 QString actualNameKey(const QString &sName)

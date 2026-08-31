@@ -14,7 +14,7 @@
 #include "../XArchive/xbzip2.h"
 #include "../XArchive/xsevenzip.h"
 #include "../XArchive/xtar_bzip2.h"
-#include "../XArchive/xtar_gz.h"
+#include "../Formats/archives/xtar_gz.h"
 
 namespace {
 

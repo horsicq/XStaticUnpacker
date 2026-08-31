@@ -14,7 +14,7 @@
 
 #include "subdevice.h"
 #include "xpe.h"
-#include "../XArchive/xarchive.h"
+#include "../Formats/xarchive.h"
 #include "../XArchive/xcab.h"
 
 namespace {

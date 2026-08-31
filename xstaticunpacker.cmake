@@ -72,6 +72,18 @@ set(XSTATICUNPACKER_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/xinstallshield.h
     ${CMAKE_CURRENT_LIST_DIR}/xrib.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xrib.h
+    ${CMAKE_CURRENT_LIST_DIR}/xspis.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xspis.h
+    ${CMAKE_CURRENT_LIST_DIR}/xspissfx.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xspissfx.h
+    ${CMAKE_CURRENT_LIST_DIR}/xarqsfx.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xarqsfx.h
+    ${CMAKE_CURRENT_LIST_DIR}/xsqzsfx.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xsqzsfx.h
+    ${CMAKE_CURRENT_LIST_DIR}/xrtpatchsfx.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xrtpatchsfx.h
+    ${CMAKE_CURRENT_LIST_DIR}/xfpak.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xfpak.h
     ${CMAKE_CURRENT_LIST_DIR}/xfreearcsfx.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xfreearcsfx.h
     ${CMAKE_CURRENT_LIST_DIR}/xzpaqsfx.cpp
@@ -106,6 +118,8 @@ set(XSTATICUNPACKER_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/xsevenzipsfx.h
     ${CMAKE_CURRENT_LIST_DIR}/xiexpress.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xiexpress.h
+    ${CMAKE_CURRENT_LIST_DIR}/xpftw.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xpftw.h
     ${CMAKE_CURRENT_LIST_DIR}/xmsi.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xmsi.h
     ${CMAKE_CURRENT_LIST_DIR}/xwix.cpp
@@ -118,6 +132,8 @@ set(XSTATICUNPACKER_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/xactualinstaller.h
     ${CMAKE_CURRENT_LIST_DIR}/xclickteam.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xclickteam.h
+    ${CMAKE_CURRENT_LIST_DIR}/xcopyqm.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xcopyqm.h
     ${CMAKE_CURRENT_LIST_DIR}/xcreateinstall.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xcreateinstall.h
     ${CMAKE_CURRENT_LIST_DIR}/xenigmavb.cpp
@@ -126,8 +142,12 @@ set(XSTATICUNPACKER_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/xboxedapp.h
     ${CMAKE_CURRENT_LIST_DIR}/xinstallforge.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xinstallforge.h
+    ${CMAKE_CURRENT_LIST_DIR}/xjugglor.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xjugglor.h
     ${CMAKE_CURRENT_LIST_DIR}/xsmartinstall.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xsmartinstall.h
+    ${CMAKE_CURRENT_LIST_DIR}/xsetupfactory.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xsetupfactory.h
     ${CMAKE_CURRENT_LIST_DIR}/xtarma.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xtarma.h
 )

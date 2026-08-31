@@ -5,7 +5,7 @@
 
 #include "xupx.h"
 
-#include "../XArchive/xarchive.h"
+#include "../Formats/xarchive.h"
 
 #include "Algos/xucldecoder.h"
 #include "Algos/xalgo_local.h"

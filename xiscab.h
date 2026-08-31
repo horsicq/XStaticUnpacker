@@ -21,7 +21,7 @@
 #ifndef XISCAB_H
 #define XISCAB_H
 
-#include "../XArchive/xarchive.h"
+#include "../Formats/xarchive.h"
 
 // InstallShield's proprietary ISc( cabinet family.  This is deliberately a
 // separate reader from XCab: Microsoft cabinets use MSCF and have an unrelated
@@ -124,6 +124,7 @@ protected:
         COMMON_HEADER common;
         QString sContainerPath;
         QMap<quint32, EMBEDDED_VOLUME> mapEmbeddedVolumes;
+        mutable QMap<QString, QString> mapResolvedMediaPaths;
     };
 
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);

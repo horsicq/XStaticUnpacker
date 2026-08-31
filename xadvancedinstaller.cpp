@@ -18,7 +18,7 @@
 
 #include "xmsi.h"
 #include "xpe.h"
-#include "../XArchive/xarchive.h"
+#include "../Formats/xarchive.h"
 
 namespace {
 static bool isSafeAdvancedRecordName(const QString &sName)
