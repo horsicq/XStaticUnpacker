@@ -345,55 +345,95 @@ bool XRIB::decompress(const QByteArray &baPackedData, qint64 nUncompressedSize, 
     qint64 nOutput = nUncompressedSize - 1;
     quint32 nCancelCounter = 0;
 
-    const auto getByte = [&](quint8 *pValue) -> bool {
-        if (!pValue || (nInput < 0) || (nInput >= nPackedSize)) return false;
-        *pValue = static_cast<quint8>(baOutput.at(nInput));
-        --nInput;
-        return true;
+    struct GET_BYTE {
+        const QByteArray *pOutputData;
+        qint64 nPackedSize;
+        qint64 *pInputPosition;
+        bool operator()(quint8 *pValue) const
+        {
+            if (!pValue || (*pInputPosition < 0) || (*pInputPosition >= nPackedSize)) return false;
+            *pValue = static_cast<quint8>(pOutputData->at(*pInputPosition));
+            --(*pInputPosition);
+            return true;
+        }
     };
+    const GET_BYTE getByte = {&baOutput, nPackedSize, &nInput};
 
-    const auto putByte = [&](quint8 nValue) -> bool {
-        if ((nOutput < 0) || (nOutput >= nUncompressedSize)) return false;
-        if (((nCancelCounter++ & RIB_CANCEL_INTERVAL_MASK) == 0) && !XBinary::isPdStructNotCanceled(pPdStruct)) {
-            return false;
-        }
-        baOutput[static_cast<qint32>(nOutput)] = static_cast<char>(nValue);
-        --nOutput;
-        return true;
-    };
-
-    const auto repeatByte = [&](quint8 nValue, qint64 nCount) -> bool {
-        if ((nCount <= 0) || (nCount > (nOutput + 1))) return false;
-        for (qint64 i = 0; i < nCount; ++i) {
-            if (!putByte(nValue)) return false;
-        }
-        return true;
-    };
-
-    const auto literal = [&](qint64 nCount) -> bool {
-        if ((nCount <= 0) || (nCount > (nOutput + 1)) || (nCount > (nInput + 1))) {
-            return false;
-        }
-        for (qint64 i = 0; i < nCount; ++i) {
-            quint8 nValue = 0;
-            if (!getByte(&nValue) || !putByte(nValue)) return false;
-        }
-        return true;
-    };
-
-    const auto reference = [&](qint64 nDistance, qint64 nCount) -> bool {
-        if ((nDistance <= 0) || (nCount <= 0) || (nCount > (nOutput + 1)) || (nDistance > ((nUncompressedSize - 1) - nOutput))) {
-            return false;
-        }
-        qint64 nSource = nOutput + nDistance;
-        for (qint64 i = 0; i < nCount; ++i) {
-            if ((nSource <= nOutput) || (nSource < 0) || (nSource >= nUncompressedSize) || !putByte(static_cast<quint8>(baOutput.at(nSource)))) {
+    struct PUT_BYTE {
+        QByteArray *pOutputData;
+        qint64 nUncompressedSize;
+        qint64 *pOutputPosition;
+        quint32 *pCancelCounter;
+        XBinary::PDSTRUCT *pPdStruct;
+        bool operator()(quint8 nValue) const
+        {
+            if ((*pOutputPosition < 0) || (*pOutputPosition >= nUncompressedSize)) return false;
+            if ((((*pCancelCounter)++ & RIB_CANCEL_INTERVAL_MASK) == 0) && !XBinary::isPdStructNotCanceled(pPdStruct)) {
                 return false;
             }
-            --nSource;
+            (*pOutputData)[static_cast<qint32>(*pOutputPosition)] = static_cast<char>(nValue);
+            --(*pOutputPosition);
+            return true;
         }
-        return true;
     };
+    const PUT_BYTE putByte = {&baOutput, nUncompressedSize, &nOutput, &nCancelCounter, pPdStruct};
+
+    struct REPEAT_BYTE {
+        const PUT_BYTE *pPutByte;
+        const qint64 *pOutputPosition;
+        bool operator()(quint8 nValue, qint64 nCount) const
+        {
+            if ((nCount <= 0) || (nCount > (*pOutputPosition + 1))) return false;
+            for (qint64 i = 0; i < nCount; ++i) {
+                if (!(*pPutByte)(nValue)) return false;
+            }
+            return true;
+        }
+    };
+    const REPEAT_BYTE repeatByte = {&putByte, &nOutput};
+
+    struct LITERAL {
+        const GET_BYTE *pGetByte;
+        const PUT_BYTE *pPutByte;
+        const qint64 *pInputPosition;
+        const qint64 *pOutputPosition;
+        bool operator()(qint64 nCount) const
+        {
+            if ((nCount <= 0) || (nCount > (*pOutputPosition + 1)) || (nCount > (*pInputPosition + 1))) {
+                return false;
+            }
+            for (qint64 i = 0; i < nCount; ++i) {
+                quint8 nValue = 0;
+                if (!(*pGetByte)(&nValue) || !(*pPutByte)(nValue)) return false;
+            }
+            return true;
+        }
+    };
+    const LITERAL literal = {&getByte, &putByte, &nInput, &nOutput};
+
+    struct REFERENCE {
+        const QByteArray *pOutputData;
+        const PUT_BYTE *pPutByte;
+        const qint64 *pOutputPosition;
+        qint64 nUncompressedSize;
+        bool operator()(qint64 nDistance, qint64 nCount) const
+        {
+            if ((nDistance <= 0) || (nCount <= 0) || (nCount > (*pOutputPosition + 1)) ||
+                (nDistance > ((nUncompressedSize - 1) - *pOutputPosition))) {
+                return false;
+            }
+            qint64 nSource = *pOutputPosition + nDistance;
+            for (qint64 i = 0; i < nCount; ++i) {
+                if ((nSource <= *pOutputPosition) || (nSource < 0) || (nSource >= nUncompressedSize) ||
+                    !(*pPutByte)(static_cast<quint8>(pOutputData->at(nSource)))) {
+                    return false;
+                }
+                --nSource;
+            }
+            return true;
+        }
+    };
+    const REFERENCE reference = {&baOutput, &putByte, &nOutput, nUncompressedSize};
 
     while (nInput < nOutput) {
         if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;

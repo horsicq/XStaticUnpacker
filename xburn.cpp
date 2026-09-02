@@ -497,7 +497,7 @@ static bool burnParseManifest(const QByteArray &baManifest, BURN_MANIFEST_INFO *
     }
 
     pInfo->bIsV4 = bIsV4;
-    for (auto it = mapContainers.constBegin(); it != mapContainers.constEnd(); ++it) {
+    for (QMap<QString, BURN_MANIFEST_CONTAINER>::const_iterator it = mapContainers.constBegin(); it != mapContainers.constEnd(); ++it) {
         // Detached containers are declared by the manifest but are not bytes in
         // this bundle.  Accepting them would make a successful open silently
         // omit part of the bundle, so the embedded-only reader fails closed.
@@ -724,7 +724,7 @@ bool XBurn::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
 
-        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const XBinary::_MEMORY_MAP memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
         if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);

@@ -188,6 +188,21 @@ struct XSFX_FREEARC_SCAN_CACHE {
 
 namespace {
 
+class SFX_OPERATION_STATE_DELETER {
+public:
+    explicit SFX_OPERATION_STATE_DELETER(const QSharedPointer<XSFX::UNPACK_DEFERRED_CLEANUP> &pCleanup) : m_pCleanup(pCleanup)
+    {
+    }
+
+    void operator()(bool *pValue) const
+    {
+        delete pValue;
+    }
+
+private:
+    QSharedPointer<XSFX::UNPACK_DEFERRED_CLEANUP> m_pCleanup;
+};
+
 const qint64 SFX_OVERLAY_SCAN_LIMIT = 16LL * 1024 * 1024;
 const qint32 SFX_ELF_TABLE_LIMIT = 4096;
 const qint64 SFX_ZPAQ_METADATA_SCAN_LIMIT = 1024 * 1024;
@@ -217,44 +232,82 @@ qint64 getZipSfxCandidate(XBinary *pOuter, XBinary::PDSTRUCT *pPdStruct)
     const qint64 nFileSize = pOuter->getSize();
     if (nFileSize < (qint64)sizeof(XZip::ENDOFCENTRALDIRECTORYRECORD)) return -1;
 
-    XZip zip(pOuter->getDevice());
-    const qint64 nEcdOffset = zip.findECDOffset(pPdStruct);
-    if ((nEcdOffset < 0) || (nEcdOffset > nFileSize - (qint64)sizeof(XZip::ENDOFCENTRALDIRECTORYRECORD))) return -1;
+    // XZip deliberately interprets offsets against its complete device.  A
+    // traditional SFX stores them relative to the appended ZIP instead, so a
+    // full-file XZip probe must remain invalid.  Locate EOCD candidates in the
+    // format-defined 64 KiB tail, derive the one possible archive prefix, and
+    // authenticate the complete structure through a zero-based SubDevice.
+    const qint64 nMaximumSearchSize = 0xffff +
+                                      (qint64)sizeof(XZip::ENDOFCENTRALDIRECTORYRECORD);
+    const qint64 nSearchOffset = qMax((qint64)0, nFileSize - nMaximumSearchSize);
+    const qint64 nSearchSize = nFileSize - nSearchOffset;
+    const QByteArray baTail = pOuter->read_array_process(nSearchOffset, nSearchSize, pPdStruct);
+    if (!XBinary::isPdStructNotCanceled(pPdStruct) || (baTail.size() != nSearchSize)) return -1;
 
-    const quint16 nDisk = zip.read_uint16(nEcdOffset + offsetof(XZip::ENDOFCENTRALDIRECTORYRECORD, nDiskNumber));
-    const quint16 nCentralDisk = zip.read_uint16(nEcdOffset + offsetof(XZip::ENDOFCENTRALDIRECTORYRECORD, nStartDisk));
-    const quint16 nDiskRecords = zip.read_uint16(nEcdOffset + offsetof(XZip::ENDOFCENTRALDIRECTORYRECORD, nDiskNumberOfRecords));
-    const quint16 nRecords = zip.read_uint16(nEcdOffset + offsetof(XZip::ENDOFCENTRALDIRECTORYRECORD, nTotalNumberOfRecords));
-    const quint16 nCommentSize = zip.read_uint16(nEcdOffset + offsetof(XZip::ENDOFCENTRALDIRECTORYRECORD, nCommentLength));
-    if ((nDisk != 0) || (nCentralDisk != 0) || (nDiskRecords != nRecords) ||
-        (nRecords == 0xffff) || (nEcdOffset + (qint64)sizeof(XZip::ENDOFCENTRALDIRECTORYRECORD) + nCommentSize > nFileSize)) {
-        return -1;
+    static const QByteArray baEcdSignature("PK\x05\x06", 4);
+    qint32 nCandidatePosition = baTail.lastIndexOf(baEcdSignature);
+    qint32 nCandidateCount = 0;
+    while ((nCandidatePosition >= 0) &&
+           (nCandidateCount < SFX_SIGNATURE_CANDIDATE_LIMIT) &&
+           XBinary::isPdStructNotCanceled(pPdStruct)) {
+        ++nCandidateCount;
+        const qint64 nEcdOffset = nSearchOffset + nCandidatePosition;
+        const qint64 nEcdAvailable = nFileSize - nEcdOffset;
+        if (nEcdAvailable >= (qint64)sizeof(XZip::ENDOFCENTRALDIRECTORYRECORD)) {
+            const char *pEcd = baTail.constData() + nCandidatePosition;
+            const quint16 nDisk = XBinary::_read_uint16(
+                const_cast<char *>(pEcd) + offsetof(XZip::ENDOFCENTRALDIRECTORYRECORD, nDiskNumber));
+            const quint16 nCentralDisk = XBinary::_read_uint16(
+                const_cast<char *>(pEcd) + offsetof(XZip::ENDOFCENTRALDIRECTORYRECORD, nStartDisk));
+            const quint16 nDiskRecords = XBinary::_read_uint16(
+                const_cast<char *>(pEcd) + offsetof(XZip::ENDOFCENTRALDIRECTORYRECORD, nDiskNumberOfRecords));
+            const quint16 nRecords = XBinary::_read_uint16(
+                const_cast<char *>(pEcd) + offsetof(XZip::ENDOFCENTRALDIRECTORYRECORD, nTotalNumberOfRecords));
+            const quint32 nCentralSize = XBinary::_read_uint32(
+                const_cast<char *>(pEcd) + offsetof(XZip::ENDOFCENTRALDIRECTORYRECORD, nSizeOfCentralDirectory));
+            const quint32 nStoredCentralOffset = XBinary::_read_uint32(
+                const_cast<char *>(pEcd) + offsetof(XZip::ENDOFCENTRALDIRECTORYRECORD, nOffsetToCentralDirectory));
+            const quint16 nCommentSize = XBinary::_read_uint16(
+                const_cast<char *>(pEcd) + offsetof(XZip::ENDOFCENTRALDIRECTORYRECORD, nCommentLength));
+
+            const qint64 nEcdSize = (qint64)sizeof(XZip::ENDOFCENTRALDIRECTORYRECORD) + nCommentSize;
+            const bool bBasicLayout = (nDisk == 0) && (nCentralDisk == 0) &&
+                (nDiskRecords == nRecords) && (nRecords != 0xffff) &&
+                (nCentralSize != 0xffffffffU) &&
+                (nStoredCentralOffset != 0xffffffffU) &&
+                (nEcdSize <= nEcdAvailable) &&
+                ((qint64)nCentralSize <= nEcdOffset);
+            if (bBasicLayout) {
+                const qint64 nActualCentralOffset = nEcdOffset - nCentralSize;
+                const qint64 nArchiveOffset = nActualCentralOffset -
+                                              (qint64)nStoredCentralOffset;
+                const qint64 nArchiveEnd = nEcdOffset + nEcdSize;
+                const qint64 nArchiveSize = nArchiveEnd - nArchiveOffset;
+                const quint32 nExpectedFirstSignature = (nRecords == 0)
+                    ? XZip::SIGNATURE_ECD : XZip::SIGNATURE_LFD;
+                if ((nArchiveOffset >= 0) && (nArchiveOffset <= nFileSize - 4) &&
+                    (nArchiveSize >= (qint64)sizeof(XZip::ENDOFCENTRALDIRECTORYRECORD)) &&
+                    (pOuter->read_uint32(nArchiveOffset) == nExpectedFirstSignature)) {
+                    SubDevice archiveDevice(pOuter->getDevice(), nArchiveOffset, nArchiveSize);
+                    if (archiveDevice.open(QIODevice::ReadOnly)) {
+                        XZip zip(&archiveDevice);
+                        const qint64 nRelativeEcdOffset = zip.findECDOffset(pPdStruct);
+                        const bool bValid = (nRelativeEcdOffset == nEcdOffset - nArchiveOffset) &&
+                            zip.isValid(pPdStruct) &&
+                            (zip.getFileFormatSize(pPdStruct) == nArchiveSize);
+                        archiveDevice.close();
+                        if (bValid) return nArchiveOffset;
+                    }
+                }
+            }
+        }
+
+        nCandidatePosition = (nCandidatePosition > 0)
+            ? baTail.lastIndexOf(baEcdSignature, nCandidatePosition - 1)
+            : -1;
     }
-    if (nRecords == 0) return nEcdOffset;
 
-    const quint32 nStoredCentralOffset = zip.read_uint32(nEcdOffset + offsetof(XZip::ENDOFCENTRALDIRECTORYRECORD, nOffsetToCentralDirectory));
-    const quint32 nCentralSize = zip.read_uint32(nEcdOffset + offsetof(XZip::ENDOFCENTRALDIRECTORYRECORD, nSizeOfCentralDirectory));
-    if ((nStoredCentralOffset == 0xffffffffU) || (nCentralSize == 0xffffffffU) || (nCentralSize > (quint64)nEcdOffset)) return -1;
-
-    const qint64 nActualCentralOffset = nEcdOffset - nCentralSize;
-    const qint64 nOffsetDelta = nActualCentralOffset - (qint64)nStoredCentralOffset;
-    if (nOffsetDelta < 0) return -1;
-
-    qint64 nCursor = nActualCentralOffset;
-    qint64 nFirstLocalOffset = (std::numeric_limits<qint64>::max)();
-    for (quint32 i = 0; (i < nRecords) && XBinary::isPdStructNotCanceled(pPdStruct); ++i) {
-        if ((nCursor < nActualCentralOffset) || (nCursor > nEcdOffset - (qint64)sizeof(XZip::CENTRALDIRECTORYFILEHEADER))) return -1;
-        const XZip::CENTRALDIRECTORYFILEHEADER header = zip.read_CENTRALDIRECTORYFILEHEADER(nCursor, pPdStruct);
-        if ((header.nSignature != XZip::SIGNATURE_CFD) || (header.nOffsetToLocalFileHeader == 0xffffffffU)) return -1;
-        const qint64 nRecordSize = sizeof(XZip::CENTRALDIRECTORYFILEHEADER) + (qint64)header.nFileNameLength +
-                                   (qint64)header.nExtraFieldLength + (qint64)header.nFileCommentLength;
-        if ((nRecordSize < (qint64)sizeof(XZip::CENTRALDIRECTORYFILEHEADER)) || (nRecordSize > nEcdOffset - nCursor)) return -1;
-        nFirstLocalOffset = qMin(nFirstLocalOffset, (qint64)header.nOffsetToLocalFileHeader + nOffsetDelta);
-        nCursor += nRecordSize;
-    }
-    if (!XBinary::isPdStructNotCanceled(pPdStruct) || (nCursor != nEcdOffset) ||
-        (nFirstLocalOffset < 0) || (nFirstLocalOffset > nFileSize - 4)) return -1;
-    return (zip.read_uint32(nFirstLocalOffset) == XZip::SIGNATURE_LFD) ? nFirstLocalOffset : -1;
+    return -1;
 }
 
 bool checkedExtent(quint64 nOffset, quint64 nSize, qint64 nFileSize, qint64 *pnEnd)
@@ -1368,7 +1421,7 @@ XSFX::XSFX(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress, ARCTYPE requ
 {
     m_pUnpackDeferredCleanup = QSharedPointer<UNPACK_DEFERRED_CLEANUP>::create();
     const QSharedPointer<UNPACK_DEFERRED_CLEANUP> pDeferredCleanup = m_pUnpackDeferredCleanup;
-    m_pUnpackOperationState = QSharedPointer<bool>(new bool(false), [pDeferredCleanup](bool *pValue) { delete pValue; });
+    m_pUnpackOperationState = QSharedPointer<bool>(new bool(false), SFX_OPERATION_STATE_DELETER(pDeferredCleanup));
     m_internalInfo = INTERNAL_INFO();
     setIsArchive(true);
 }
@@ -1430,7 +1483,7 @@ bool XSFX::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
 
-        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const XBinary::_MEMORY_MAP memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
         if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
@@ -2831,186 +2884,257 @@ bool XSFX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
     const qint32 nRequestedIndex = pState->nCurrentIndex;
     const qint64 nOriginalOuterOffset = pState->nCurrentOffset;
     const QString sInitialError = XBinary::getPdStructErrorString(pPdStruct);
-    const auto recordsEqual = [](const ARCHIVERECORD &a, const ARCHIVERECORD &b) {
-        return (a.nStreamOffset == b.nStreamOffset) && (a.nStreamSize == b.nStreamSize) && (a.mapProperties == b.mapProperties);
-    };
-    const auto contextIsCurrent = [&]() {
-        return guardedThis && guardedOutput && guardedSource && m_setUnpackContexts.contains(pContext) && (pState->pContext == pContext) &&
-               (pContext->pOwnerState == pState) && (pContext->pOuterSourceDevice == guardedSource) && (pContext->nOwnerDeviceGeneration == getDeviceGeneration()) &&
-               (pState->nCurrentIndex == nRequestedIndex) && (pState->nCurrentOffset == nOriginalOuterOffset);
-    };
-    const auto destroyDetachedContext = [](UNPACK_CONTEXT *pDetached) {
-        if (!pDetached) return;
-        clearPrivateUnpackCredential(pDetached);
-        if (pDetached->pArchive) {
-            pDetached->pArchive->finishUnpack(&pDetached->innerState, nullptr);
-            delete pDetached->pArchive;
-        }
-        if (pDetached->pSubDevice) {
-            pDetached->pSubDevice->close();
-            delete pDetached->pSubDevice;
-        }
-        delete pDetached;
-    };
+    class SFX_DEFERRED_CANDIDATE_HELPER {
+    public:
+        typedef XArchive *(XSFX::*CREATE_ARCHIVE_METHOD)(XSFX::ARCTYPE, QIODevice *, bool);
 
-    const auto collectManifest = [&](const INTERNAL_INFO &info, QList<ARCHIVERECORD> *pRecords, QMap<FPART_PROP, QVariant> *pProperties,
-                                     XExternalArchive::EXTERNAL_FAILURE *pFailure) {
-        if (pFailure) *pFailure = XExternalArchive::EXTERNAL_FAILURE_INFRASTRUCTURE;
-        if (!pRecords || !pProperties || !guardedThis || !guardedSource) return false;
-        pRecords->clear();
-        pProperties->clear();
-
-        SubDevice *pSubDevice = new (std::nothrow) SubDevice(guardedSource.data(), info.nArchiveOffset, info.nArchiveSize);
-        XArchive *pArchive = nullptr;
-        XExternalArchive *pExternalArchive = nullptr;
-        UNPACK_STATE state = {};
-        bool bResult = pSubDevice && pSubDevice->open(QIODevice::ReadOnly) && guardedThis && guardedSource;
-        if (bResult) {
-            pArchive = _createArchive(info.arcType, pSubDevice, info.bAllowOpaqueZpaq);
-            pExternalArchive = externalArchiveFor(pArchive, info.arcType);
-            if (pExternalArchive) pExternalArchive->setHelperDeadline(helperDeadline);
-            QMap<UNPACK_PROP, QVariant> attemptProperties = privateUnpackProperties(pContext);
-            bResult = pArchive && pExternalArchive && pArchive->initUnpack(&state, attemptProperties, pPdStruct) && guardedThis && guardedSource &&
-                      (state.nNumberOfRecords >= 0);
-            scrubPublicUnpackProperties(&attemptProperties);
-            if (pExternalArchive && pFailure) *pFailure = pExternalArchive->getLastExternalFailure();
+        SFX_DEFERRED_CANDIDATE_HELPER(const QPointer<XSFX> &guardedThis, const QPointer<QIODevice> &guardedOutput,
+                                      const QPointer<QIODevice> &guardedSource, QSet<XSFX::UNPACK_CONTEXT *> *pContexts,
+                                      XSFX::UNPACK_CONTEXT **ppContext, XBinary::UNPACK_STATE *pState, qint32 nRequestedIndex,
+                                      qint64 nOriginalOuterOffset, const QDeadlineTimer &helperDeadline, XBinary::PDSTRUCT *pPdStruct,
+                                      CREATE_ARCHIVE_METHOD pCreateArchiveMethod)
+            : m_guardedThis(guardedThis),
+              m_guardedOutput(guardedOutput),
+              m_guardedSource(guardedSource),
+              m_pContexts(pContexts),
+              m_ppContext(ppContext),
+              m_pState(pState),
+              m_nRequestedIndex(nRequestedIndex),
+              m_nOriginalOuterOffset(nOriginalOuterOffset),
+              m_helperDeadline(helperDeadline),
+              m_pPdStruct(pPdStruct),
+              m_pCreateArchiveMethod(pCreateArchiveMethod)
+        {
         }
-        if (bResult) {
-            *pProperties = state.mapArchiveProperties;
-            pRecords->reserve(state.nNumberOfRecords);
-            for (qint32 i = 0; bResult && (i < state.nNumberOfRecords); ++i) {
-                const ARCHIVERECORD record = pArchive->infoCurrent(&state, pPdStruct);
-                bResult = guardedThis && guardedSource && record.mapProperties.contains(FPART_PROP_ORIGINALNAME) && (state.nCurrentIndex == i);
-                if (bResult) pRecords->append(record);
-                if (bResult && (i + 1 < state.nNumberOfRecords)) {
-                    bResult = pArchive->moveToNext(&state, pPdStruct) && guardedThis && guardedSource;
+
+        bool recordsEqual(const XBinary::ARCHIVERECORD &a, const XBinary::ARCHIVERECORD &b) const
+        {
+            return (a.nStreamOffset == b.nStreamOffset) && (a.nStreamSize == b.nStreamSize) && (a.mapProperties == b.mapProperties);
+        }
+
+        bool contextIsCurrent() const
+        {
+            XSFX::UNPACK_CONTEXT *pContext = currentContext();
+            return m_guardedThis && m_guardedOutput && m_guardedSource && m_pContexts && pContext && m_pContexts->contains(pContext) &&
+                   (m_pState->pContext == pContext) && (pContext->pOwnerState == m_pState) && (pContext->pOuterSourceDevice == m_guardedSource) &&
+                   (pContext->nOwnerDeviceGeneration == m_guardedThis->getDeviceGeneration()) && (m_pState->nCurrentIndex == m_nRequestedIndex) &&
+                   (m_pState->nCurrentOffset == m_nOriginalOuterOffset);
+        }
+
+        void destroyDetachedContext(XSFX::UNPACK_CONTEXT *pDetached) const
+        {
+            if (!pDetached) return;
+            clearPrivateUnpackCredential(pDetached);
+            if (pDetached->pArchive) {
+                pDetached->pArchive->finishUnpack(&pDetached->innerState, nullptr);
+                delete pDetached->pArchive;
+            }
+            if (pDetached->pSubDevice) {
+                pDetached->pSubDevice->close();
+                delete pDetached->pSubDevice;
+            }
+            delete pDetached;
+        }
+
+        bool collectManifest(const XSFX::INTERNAL_INFO &info, QList<XBinary::ARCHIVERECORD> *pRecords,
+                             QMap<XBinary::FPART_PROP, QVariant> *pProperties, XExternalArchive::EXTERNAL_FAILURE *pFailure) const
+        {
+            if (pFailure) *pFailure = XExternalArchive::EXTERNAL_FAILURE_INFRASTRUCTURE;
+            if (!pRecords || !pProperties || !m_guardedThis || !m_guardedSource) return false;
+            pRecords->clear();
+            pProperties->clear();
+
+            SubDevice *pSubDevice = new (std::nothrow) SubDevice(m_guardedSource.data(), info.nArchiveOffset, info.nArchiveSize);
+            XArchive *pArchive = nullptr;
+            XExternalArchive *pExternalArchive = nullptr;
+            XBinary::UNPACK_STATE state = {};
+            bool bResult = pSubDevice && pSubDevice->open(QIODevice::ReadOnly) && m_guardedThis && m_guardedSource;
+            if (bResult) {
+                pArchive = createArchive(info.arcType, pSubDevice, info.bAllowOpaqueZpaq);
+                pExternalArchive = externalArchiveFor(pArchive, info.arcType);
+                if (pExternalArchive) pExternalArchive->setHelperDeadline(m_helperDeadline);
+                QMap<XBinary::UNPACK_PROP, QVariant> attemptProperties = privateUnpackProperties(currentContext());
+                bResult = pArchive && pExternalArchive && pArchive->initUnpack(&state, attemptProperties, m_pPdStruct) && m_guardedThis && m_guardedSource &&
+                          (state.nNumberOfRecords >= 0);
+                scrubPublicUnpackProperties(&attemptProperties);
+                if (pExternalArchive && pFailure) *pFailure = pExternalArchive->getLastExternalFailure();
+            }
+            if (bResult) {
+                *pProperties = state.mapArchiveProperties;
+                pRecords->reserve(state.nNumberOfRecords);
+                for (qint32 i = 0; bResult && (i < state.nNumberOfRecords); ++i) {
+                    const XBinary::ARCHIVERECORD record = pArchive->infoCurrent(&state, m_pPdStruct);
+                    bResult = m_guardedThis && m_guardedSource && record.mapProperties.contains(XBinary::FPART_PROP_ORIGINALNAME) && (state.nCurrentIndex == i);
+                    if (bResult) pRecords->append(record);
+                    if (bResult && (i + 1 < state.nNumberOfRecords)) {
+                        bResult = pArchive->moveToNext(&state, m_pPdStruct) && m_guardedThis && m_guardedSource;
+                    }
+                }
+                if (!bResult && pFailure) {
+                    *pFailure = XBinary::isPdStructNotCanceled(m_pPdStruct) ? XExternalArchive::EXTERNAL_FAILURE_ARCHIVE_REJECTED
+                                                                          : XExternalArchive::EXTERNAL_FAILURE_CANCELED;
                 }
             }
-            if (!bResult && pFailure) {
-                *pFailure = XBinary::isPdStructNotCanceled(pPdStruct) ? XExternalArchive::EXTERNAL_FAILURE_ARCHIVE_REJECTED : XExternalArchive::EXTERNAL_FAILURE_CANCELED;
+            if (pExternalArchive) pExternalArchive->clearHelperDeadline();
+            if (pArchive) {
+                const bool bFinished = pArchive->finishUnpack(&state, nullptr);
+                if (bResult && !bFinished && pFailure) *pFailure = XExternalArchive::EXTERNAL_FAILURE_INFRASTRUCTURE;
+                bResult = bResult && bFinished && m_guardedThis && m_guardedSource;
+                delete pArchive;
             }
+            if (pSubDevice) {
+                pSubDevice->close();
+                delete pSubDevice;
+            }
+            if (bResult && pFailure) *pFailure = XExternalArchive::EXTERNAL_FAILURE_NONE;
+            return bResult && m_guardedThis && m_guardedSource;
         }
-        if (pExternalArchive) pExternalArchive->clearHelperDeadline();
-        if (pArchive) {
-            const bool bFinished = pArchive->finishUnpack(&state, nullptr);
-            if (bResult && !bFinished && pFailure) *pFailure = XExternalArchive::EXTERNAL_FAILURE_INFRASTRUCTURE;
-            bResult = bResult && bFinished && guardedThis && guardedSource;
-            delete pArchive;
+
+        XSFX::UNPACK_CONTEXT *initializeDetachedContext(const XSFX::INTERNAL_INFO &info, XExternalArchive::EXTERNAL_FAILURE *pFailure) const
+        {
+            if (pFailure) *pFailure = XExternalArchive::EXTERNAL_FAILURE_INFRASTRUCTURE;
+            XSFX::UNPACK_CONTEXT *pDetached = new (std::nothrow) XSFX::UNPACK_CONTEXT;
+            if (!pDetached) return nullptr;
+            pDetached->pOuterSourceDevice = m_guardedSource;
+            pDetached->nOwnerDeviceGeneration = m_guardedThis->getDeviceGeneration();
+            pDetached->pOwnerState = nullptr;
+            pDetached->info = info;
+            pDetached->pSubDevice = nullptr;
+            pDetached->pArchive = nullptr;
+            pDetached->innerState = XBinary::UNPACK_STATE();
+            QMap<XBinary::UNPACK_PROP, QVariant> attemptProperties = privateUnpackProperties(currentContext());
+            initializePrivateUnpackProperties(pDetached, attemptProperties, true);
+
+            pDetached->pSubDevice = new (std::nothrow) SubDevice(m_guardedSource.data(), info.nArchiveOffset, info.nArchiveSize);
+            bool bInitialized = pDetached->pSubDevice && pDetached->pSubDevice->open(QIODevice::ReadOnly) && m_guardedThis && m_guardedSource;
+            if (bInitialized) {
+                pDetached->pArchive = createArchive(info.arcType, pDetached->pSubDevice, info.bAllowOpaqueZpaq);
+                XExternalArchive *pExternalArchive = externalArchiveFor(pDetached->pArchive, info.arcType);
+                if (pExternalArchive) pExternalArchive->setHelperDeadline(m_helperDeadline);
+                bInitialized = pDetached->pArchive && pExternalArchive &&
+                               pDetached->pArchive->initUnpack(&pDetached->innerState, attemptProperties, m_pPdStruct) && m_guardedThis && m_guardedSource &&
+                               (pDetached->innerState.nNumberOfRecords == m_pState->nNumberOfRecords);
+                if (pExternalArchive && pFailure) *pFailure = pExternalArchive->getLastExternalFailure();
+                if (!bInitialized && pExternalArchive && pFailure && (*pFailure == XExternalArchive::EXTERNAL_FAILURE_NONE)) {
+                    *pFailure = XBinary::isPdStructNotCanceled(m_pPdStruct) ? XExternalArchive::EXTERNAL_FAILURE_ARCHIVE_REJECTED
+                                                                          : XExternalArchive::EXTERNAL_FAILURE_CANCELED;
+                }
+            }
+            scrubPublicUnpackProperties(&attemptProperties);
+            for (qint32 i = 0; bInitialized && (i < m_nRequestedIndex); ++i) {
+                bInitialized = pDetached->pArchive->moveToNext(&pDetached->innerState, m_pPdStruct) && m_guardedThis && m_guardedSource;
+            }
+            bInitialized = bInitialized && (pDetached->innerState.nCurrentIndex == m_nRequestedIndex) &&
+                           (pDetached->innerState.nCurrentOffset == m_nOriginalOuterOffset);
+            if (!bInitialized) {
+                if (pFailure && (*pFailure == XExternalArchive::EXTERNAL_FAILURE_NONE)) {
+                    *pFailure = XBinary::isPdStructNotCanceled(m_pPdStruct) ? XExternalArchive::EXTERNAL_FAILURE_ARCHIVE_REJECTED
+                                                                          : XExternalArchive::EXTERNAL_FAILURE_CANCELED;
+                }
+                destroyDetachedContext(pDetached);
+                return nullptr;
+            }
+            if (pFailure) *pFailure = XExternalArchive::EXTERNAL_FAILURE_NONE;
+            return pDetached;
         }
-        if (pSubDevice) {
-            pSubDevice->close();
-            delete pSubDevice;
+
+        bool publishStage(QIODevice *pStage, XSFX::UNPACK_CONTEXT *pDecodedContext, const XBinary::ARCHIVERECORD &expectedRecord) const
+        {
+            QPointer<QIODevice> guardedStage(pStage);
+            if (!guardedStage || !pDecodedContext || !pDecodedContext->pArchive || !guardedStage->isOpen() || !guardedStage->isReadable() ||
+                guardedStage->isSequential() || !XBinary::isResizeEnable(m_guardedOutput.data()) ||
+                XBinary::devicesAlias(guardedStage.data(), m_guardedOutput.data()) || XBinary::devicesAlias(m_guardedSource.data(), m_guardedOutput.data()) ||
+                !contextIsCurrent() || !XBinary::isPdStructNotCanceled(m_pPdStruct)) {
+                return false;
+            }
+
+            const qint64 nStageSize = guardedStage->size();
+            const qint64 nOriginalPosition = m_guardedOutput->pos();
+            if (!guardedStage || !m_guardedOutput || (nStageSize < 0) || (nOriginalPosition < 0) || !guardedStage->seek(0)) return false;
+
+            QByteArray baBuffer;
+            baBuffer.resize(0x10000);
+            if (baBuffer.size() != 0x10000) return false;
+            bool bOutputCleared = false;
+
+            if (!m_guardedOutput->seek(0) || !contextIsCurrent()) return false;
+            if (!XBinary::resize(m_guardedOutput.data(), 0)) {
+                if (m_guardedOutput) m_guardedOutput->seek(nOriginalPosition);
+                return false;
+            }
+            bOutputCleared = true;
+            if (!m_guardedOutput || !XBinary::resize(m_guardedOutput.data(), nStageSize) || !contextIsCurrent() || !m_guardedOutput->seek(0)) {
+                return failPublication(bOutputCleared, nOriginalPosition);
+            }
+
+            qint64 nPublished = 0;
+            while (nPublished < nStageSize) {
+                if (!guardedStage || !m_guardedOutput || !contextIsCurrent() || !XBinary::isPdStructNotCanceled(m_pPdStruct) || !guardedStage->seek(nPublished)) {
+                    return failPublication(bOutputCleared, nOriginalPosition);
+                }
+                const qint64 nRequest = qMin<qint64>(baBuffer.size(), nStageSize - nPublished);
+                const qint64 nRead = guardedStage->read(baBuffer.data(), nRequest);
+                if ((nRead <= 0) || (nRead > nRequest) || !contextIsCurrent() ||
+                    (m_guardedThis->safeWriteData(m_guardedOutput.data(), nPublished, baBuffer.constData(), nRead, m_pPdStruct) != nRead) || !contextIsCurrent()) {
+                    return failPublication(bOutputCleared, nOriginalPosition);
+                }
+                nPublished += nRead;
+            }
+
+            if (!m_guardedOutput || !contextIsCurrent() || (m_guardedOutput->size() != nPublished) || !m_guardedOutput->seek(nPublished) ||
+                !contextIsCurrent() || !XBinary::isPdStructNotCanceled(m_pPdStruct)) {
+                return failPublication(bOutputCleared, nOriginalPosition);
+            }
+
+            // Output callbacks run after the helper authenticated the private
+            // stage. Revalidate the inner source once more before success escapes.
+            const XBinary::ARCHIVERECORD currentRecord = pDecodedContext->pArchive->infoCurrent(&pDecodedContext->innerState, m_pPdStruct);
+            if (!contextIsCurrent() || !recordsEqual(currentRecord, expectedRecord)) {
+                return failPublication(bOutputCleared, nOriginalPosition);
+            }
+            return true;
         }
-        if (bResult && pFailure) *pFailure = XExternalArchive::EXTERNAL_FAILURE_NONE;
-        return bResult && guardedThis && guardedSource;
+
+    private:
+        XSFX::UNPACK_CONTEXT *currentContext() const
+        {
+            return m_ppContext ? *m_ppContext : nullptr;
+        }
+
+        XArchive *createArchive(XSFX::ARCTYPE arcType, QIODevice *pDevice, bool bAllowOpaqueZpaq) const
+        {
+            return m_guardedThis ? (m_guardedThis.data()->*m_pCreateArchiveMethod)(arcType, pDevice, bAllowOpaqueZpaq) : nullptr;
+        }
+
+        bool failPublication(bool bOutputCleared, qint64 nOriginalPosition) const
+        {
+            if (m_guardedOutput && bOutputCleared) {
+                XBinary::resize(m_guardedOutput.data(), 0);
+                if (m_guardedOutput) m_guardedOutput->seek(0);
+            } else if (m_guardedOutput && (nOriginalPosition >= 0)) {
+                m_guardedOutput->seek(nOriginalPosition);
+            }
+            return false;
+        }
+
+        QPointer<XSFX> m_guardedThis;
+        QPointer<QIODevice> m_guardedOutput;
+        QPointer<QIODevice> m_guardedSource;
+        QSet<XSFX::UNPACK_CONTEXT *> *m_pContexts;
+        XSFX::UNPACK_CONTEXT **m_ppContext;
+        XBinary::UNPACK_STATE *m_pState;
+        qint32 m_nRequestedIndex;
+        qint64 m_nOriginalOuterOffset;
+        QDeadlineTimer m_helperDeadline;
+        XBinary::PDSTRUCT *m_pPdStruct;
+        CREATE_ARCHIVE_METHOD m_pCreateArchiveMethod;
     };
 
-    const auto initializeDetachedContext = [&](const INTERNAL_INFO &info, XExternalArchive::EXTERNAL_FAILURE *pFailure) {
-        if (pFailure) *pFailure = XExternalArchive::EXTERNAL_FAILURE_INFRASTRUCTURE;
-        UNPACK_CONTEXT *pDetached = new (std::nothrow) UNPACK_CONTEXT;
-        if (!pDetached) return static_cast<UNPACK_CONTEXT *>(nullptr);
-        pDetached->pOuterSourceDevice = guardedSource;
-        pDetached->nOwnerDeviceGeneration = getDeviceGeneration();
-        pDetached->pOwnerState = nullptr;
-        pDetached->info = info;
-        pDetached->pSubDevice = nullptr;
-        pDetached->pArchive = nullptr;
-        pDetached->innerState = UNPACK_STATE();
-        QMap<UNPACK_PROP, QVariant> attemptProperties = privateUnpackProperties(pContext);
-        initializePrivateUnpackProperties(pDetached, attemptProperties, true);
-
-        pDetached->pSubDevice = new (std::nothrow) SubDevice(guardedSource.data(), info.nArchiveOffset, info.nArchiveSize);
-        bool bInitialized = pDetached->pSubDevice && pDetached->pSubDevice->open(QIODevice::ReadOnly) && guardedThis && guardedSource;
-        if (bInitialized) {
-            pDetached->pArchive = _createArchive(info.arcType, pDetached->pSubDevice, info.bAllowOpaqueZpaq);
-            XExternalArchive *pExternalArchive = externalArchiveFor(pDetached->pArchive, info.arcType);
-            if (pExternalArchive) pExternalArchive->setHelperDeadline(helperDeadline);
-            bInitialized = pDetached->pArchive && pExternalArchive && pDetached->pArchive->initUnpack(&pDetached->innerState, attemptProperties, pPdStruct) &&
-                           guardedThis && guardedSource && (pDetached->innerState.nNumberOfRecords == pState->nNumberOfRecords);
-            if (pExternalArchive && pFailure) *pFailure = pExternalArchive->getLastExternalFailure();
-            if (!bInitialized && pExternalArchive && pFailure && (*pFailure == XExternalArchive::EXTERNAL_FAILURE_NONE)) {
-                *pFailure = XBinary::isPdStructNotCanceled(pPdStruct) ? XExternalArchive::EXTERNAL_FAILURE_ARCHIVE_REJECTED : XExternalArchive::EXTERNAL_FAILURE_CANCELED;
-            }
-        }
-        scrubPublicUnpackProperties(&attemptProperties);
-        for (qint32 i = 0; bInitialized && (i < nRequestedIndex); ++i) {
-            bInitialized = pDetached->pArchive->moveToNext(&pDetached->innerState, pPdStruct) && guardedThis && guardedSource;
-        }
-        bInitialized = bInitialized && (pDetached->innerState.nCurrentIndex == nRequestedIndex) && (pDetached->innerState.nCurrentOffset == nOriginalOuterOffset);
-        if (!bInitialized) {
-            if (pFailure && (*pFailure == XExternalArchive::EXTERNAL_FAILURE_NONE)) {
-                *pFailure = XBinary::isPdStructNotCanceled(pPdStruct) ? XExternalArchive::EXTERNAL_FAILURE_ARCHIVE_REJECTED : XExternalArchive::EXTERNAL_FAILURE_CANCELED;
-            }
-            destroyDetachedContext(pDetached);
-            return static_cast<UNPACK_CONTEXT *>(nullptr);
-        }
-        if (pFailure) *pFailure = XExternalArchive::EXTERNAL_FAILURE_NONE;
-        return pDetached;
-    };
-
-    const auto publishStage = [&](QIODevice *pStage, UNPACK_CONTEXT *pDecodedContext, const ARCHIVERECORD &expectedRecord) {
-        QPointer<QIODevice> guardedStage(pStage);
-        if (!guardedStage || !pDecodedContext || !pDecodedContext->pArchive || !guardedStage->isOpen() || !guardedStage->isReadable() || guardedStage->isSequential() ||
-            !XBinary::isResizeEnable(guardedOutput.data()) || XBinary::devicesAlias(guardedStage.data(), guardedOutput.data()) ||
-            XBinary::devicesAlias(guardedSource.data(), guardedOutput.data()) || !contextIsCurrent() || !XBinary::isPdStructNotCanceled(pPdStruct))
-            return false;
-
-        const qint64 nStageSize = guardedStage->size();
-        const qint64 nOriginalPosition = guardedOutput->pos();
-        if (!guardedStage || !guardedOutput || (nStageSize < 0) || (nOriginalPosition < 0) || !guardedStage->seek(0)) return false;
-
-        QByteArray baBuffer;
-        baBuffer.resize(0x10000);
-        if (baBuffer.size() != 0x10000) return false;
-        bool bOutputCleared = false;
-        const auto failPublication = [&]() {
-            if (guardedOutput && bOutputCleared) {
-                XBinary::resize(guardedOutput.data(), 0);
-                if (guardedOutput) guardedOutput->seek(0);
-            } else if (guardedOutput && (nOriginalPosition >= 0)) {
-                guardedOutput->seek(nOriginalPosition);
-            }
-            return false;
-        };
-
-        if (!guardedOutput->seek(0) || !contextIsCurrent()) return false;
-        if (!XBinary::resize(guardedOutput.data(), 0)) {
-            if (guardedOutput) guardedOutput->seek(nOriginalPosition);
-            return false;
-        }
-        bOutputCleared = true;
-        if (!guardedOutput || !XBinary::resize(guardedOutput.data(), nStageSize) || !contextIsCurrent() || !guardedOutput->seek(0)) {
-            return failPublication();
-        }
-
-        qint64 nPublished = 0;
-        while (nPublished < nStageSize) {
-            if (!guardedStage || !guardedOutput || !contextIsCurrent() || !XBinary::isPdStructNotCanceled(pPdStruct) || !guardedStage->seek(nPublished))
-                return failPublication();
-            const qint64 nRequest = qMin<qint64>(baBuffer.size(), nStageSize - nPublished);
-            const qint64 nRead = guardedStage->read(baBuffer.data(), nRequest);
-            if ((nRead <= 0) || (nRead > nRequest) || !contextIsCurrent() ||
-                (safeWriteData(guardedOutput.data(), nPublished, baBuffer.constData(), nRead, pPdStruct) != nRead) || !contextIsCurrent())
-                return failPublication();
-            nPublished += nRead;
-        }
-
-        if (!guardedOutput || !contextIsCurrent() || (guardedOutput->size() != nPublished) || !guardedOutput->seek(nPublished) || !contextIsCurrent() ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
-            return failPublication();
-        }
-
-        // Output callbacks run after the helper authenticated the private
-        // stage. Revalidate the inner source once more before success escapes.
-        const ARCHIVERECORD currentRecord = pDecodedContext->pArchive->infoCurrent(&pDecodedContext->innerState, pPdStruct);
-        if (!contextIsCurrent() || !recordsEqual(currentRecord, expectedRecord)) {
-            return failPublication();
-        }
-        return true;
-    };
+    SFX_DEFERRED_CANDIDATE_HELPER helper(guardedThis, guardedOutput, guardedSource, &m_setUnpackContexts, &pContext, pState, nRequestedIndex,
+                                         nOriginalOuterOffset, helperDeadline, pPdStruct, &XSFX::_createArchive);
 
     const ARCHIVERECORD expectedCurrent = pContext->pArchive->infoCurrent(&pContext->innerState, pPdStruct);
-    if (!contextIsCurrent() || !expectedCurrent.mapProperties.contains(FPART_PROP_ORIGINALNAME)) {
+    if (!helper.contextIsCurrent() || !expectedCurrent.mapProperties.contains(FPART_PROP_ORIGINALNAME)) {
         return false;
     }
 
@@ -3023,11 +3147,11 @@ bool XSFX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
     bool bDecoded = pContext->pArchive->unpackCurrent(&pContext->innerState, &stagedOutput, pPdStruct);
     const XExternalArchive::EXTERNAL_FAILURE decodeFailure = pCurrentExternalArchive->getLastExternalFailure();
     pCurrentExternalArchive->clearHelperDeadline();
-    if (!contextIsCurrent()) return false;
+    if (!helper.contextIsCurrent()) return false;
     if (bDecoded) {
         clearPrivateUnpackCredential(pContext);
-        const bool bPublished = publishStage(&stagedOutput, pContext, expectedCurrent);
-        if (!contextIsCurrent()) return false;
+        const bool bPublished = helper.publishStage(&stagedOutput, pContext, expectedCurrent);
+        if (!helper.contextIsCurrent()) return false;
         if (!bPublished) {
             pContext->innerState.nCurrentOffset = nOriginalOuterOffset;
             return false;
@@ -3051,7 +3175,7 @@ bool XSFX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
     QList<ARCHIVERECORD> listExpectedManifest;
     QMap<FPART_PROP, QVariant> mapExpectedProperties;
     XExternalArchive::EXTERNAL_FAILURE manifestFailure = XExternalArchive::EXTERNAL_FAILURE_INFRASTRUCTURE;
-    if (!collectManifest(pContext->info, &listExpectedManifest, &mapExpectedProperties, &manifestFailure) || !contextIsCurrent()) {
+    if (!helper.collectManifest(pContext->info, &listExpectedManifest, &mapExpectedProperties, &manifestFailure) || !helper.contextIsCurrent()) {
         return false;
     }
 
@@ -3062,10 +3186,10 @@ bool XSFX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
     const ARCTYPE fallbackType = pContext->info.arcType;
     QString sLastDecodeError = sDecodeError;
 
-    for (qint32 nAttempt = 0; (nAttempt < SFX_SIGNATURE_CANDIDATE_LIMIT) && contextIsCurrent() && XBinary::isPdStructNotCanceled(pPdStruct); ++nAttempt) {
+    for (qint32 nAttempt = 0; (nAttempt < SFX_SIGNATURE_CANDIDATE_LIMIT) && helper.contextIsCurrent() && XBinary::isPdStructNotCanceled(pPdStruct); ++nAttempt) {
         XBinary::setPdStructErrorString(pPdStruct, sInitialError);
         const INTERNAL_INFO info = detector._detect(pPdStruct, &zpaqScanCache, &freeArcScanCache, nMinimumArchiveOffset);
-        if (!contextIsCurrent() || !info.bIsValid) break;
+        if (!helper.contextIsCurrent() || !info.bIsValid) break;
         if (info.nArchiveOffset >= (std::numeric_limits<qint64>::max)()) break;
         nMinimumArchiveOffset = info.nArchiveOffset + 1;
         if (info.arcType != fallbackType) continue;
@@ -3073,23 +3197,23 @@ bool XSFX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
         QList<ARCHIVERECORD> listCandidateManifest;
         QMap<FPART_PROP, QVariant> mapCandidateProperties;
         XExternalArchive::EXTERNAL_FAILURE candidateFailure = XExternalArchive::EXTERNAL_FAILURE_INFRASTRUCTURE;
-        if (!collectManifest(info, &listCandidateManifest, &mapCandidateProperties, &candidateFailure)) {
+        if (!helper.collectManifest(info, &listCandidateManifest, &mapCandidateProperties, &candidateFailure)) {
             sLastDecodeError = XBinary::getPdStructErrorString(pPdStruct);
-            if (!contextIsCurrent() || !info.bProvisional || (candidateFailure != XExternalArchive::EXTERNAL_FAILURE_ARCHIVE_REJECTED)) break;
+            if (!helper.contextIsCurrent() || !info.bProvisional || (candidateFailure != XExternalArchive::EXTERNAL_FAILURE_ARCHIVE_REJECTED)) break;
             continue;
         }
         bool bEquivalent = (mapExpectedProperties == mapCandidateProperties) && (listExpectedManifest.size() == listCandidateManifest.size());
         for (qint32 i = 0; bEquivalent && (i < listExpectedManifest.size()); ++i) {
-            bEquivalent = recordsEqual(listExpectedManifest.at(i), listCandidateManifest.at(i));
+            bEquivalent = helper.recordsEqual(listExpectedManifest.at(i), listCandidateManifest.at(i));
         }
         if (!bEquivalent) continue;
 
         candidateFailure = XExternalArchive::EXTERNAL_FAILURE_INFRASTRUCTURE;
-        UNPACK_CONTEXT *pCandidate = initializeDetachedContext(info, &candidateFailure);
-        if (!pCandidate || !contextIsCurrent()) {
-            destroyDetachedContext(pCandidate);
+        UNPACK_CONTEXT *pCandidate = helper.initializeDetachedContext(info, &candidateFailure);
+        if (!pCandidate || !helper.contextIsCurrent()) {
+            helper.destroyDetachedContext(pCandidate);
             sLastDecodeError = XBinary::getPdStructErrorString(pPdStruct);
-            if (!contextIsCurrent() || !info.bProvisional || (candidateFailure != XExternalArchive::EXTERNAL_FAILURE_ARCHIVE_REJECTED)) break;
+            if (!helper.contextIsCurrent() || !info.bProvisional || (candidateFailure != XExternalArchive::EXTERNAL_FAILURE_ARCHIVE_REJECTED)) break;
             continue;
         }
         // XFU-015: the candidate's inner unpackCurrent performs its own
@@ -3100,7 +3224,7 @@ bool XSFX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
         bool bCandidateDecoded = candidateStage.open();
         candidateFailure = XExternalArchive::EXTERNAL_FAILURE_INFRASTRUCTURE;
         if (bCandidateDecoded && pCandidateExternalArchive) {
-            bCandidateDecoded = pCandidate->pArchive->unpackCurrent(&pCandidate->innerState, &candidateStage, pPdStruct) && contextIsCurrent();
+            bCandidateDecoded = pCandidate->pArchive->unpackCurrent(&pCandidate->innerState, &candidateStage, pPdStruct) && helper.contextIsCurrent();
             candidateFailure = pCandidateExternalArchive->getLastExternalFailure();
             pCandidateExternalArchive->clearHelperDeadline();
         } else {
@@ -3109,16 +3233,16 @@ bool XSFX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
         if (!bCandidateDecoded) {
             sLastDecodeError = XBinary::getPdStructErrorString(pPdStruct);
             const bool bMayContinue = info.bProvisional && (candidateFailure == XExternalArchive::EXTERNAL_FAILURE_ARCHIVE_REJECTED);
-            destroyDetachedContext(pCandidate);
+            helper.destroyDetachedContext(pCandidate);
             if (!bMayContinue) break;
             continue;
         }
         clearPrivateUnpackCredential(pCandidate);
 
         const ARCHIVERECORD candidateCurrent = pCandidate->pArchive->infoCurrent(&pCandidate->innerState, pPdStruct);
-        if (!contextIsCurrent() || !recordsEqual(candidateCurrent, expectedCurrent) || !publishStage(&candidateStage, pCandidate, expectedCurrent)) {
+        if (!helper.contextIsCurrent() || !helper.recordsEqual(candidateCurrent, expectedCurrent) || !helper.publishStage(&candidateStage, pCandidate, expectedCurrent)) {
             pCandidate->innerState.nCurrentOffset = nOriginalOuterOffset;
-            destroyDetachedContext(pCandidate);
+            helper.destroyDetachedContext(pCandidate);
             return false;
         }
 
@@ -3130,7 +3254,7 @@ bool XSFX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
         pContext = pCandidate;
         pState->nCurrentOffset = pCandidate->innerState.nCurrentOffset;
         pState->mapArchiveProperties = pCandidate->innerState.mapArchiveProperties;
-        destroyDetachedContext(pOldContext);
+        helper.destroyDetachedContext(pOldContext);
         return guardedThis && guardedOutput && guardedSource && m_setUnpackContexts.contains(pCandidate) && (pState->pContext == pCandidate);
     }
 

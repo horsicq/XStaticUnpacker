@@ -424,9 +424,14 @@ QList<XAUTOIT::RECORD> XAUTOIT::_parseV2(const quint8 *pData, qint64 nSize, qint
     for (char cValue : baPassword) nPasswordSum += static_cast<qint8>(cValue);
     const quint32 nDataSeed = static_cast<quint32>(nPasswordSum + 0x22af);
 
-    const auto contains = [nTrailer](qint64 nOffset, quint64 nLength) -> bool {
-        return (nOffset >= 0) && (nOffset <= nTrailer) && (nLength <= static_cast<quint64>(nTrailer - nOffset));
+    struct RANGE_CONTAINS {
+        qint64 nLimit;
+        bool operator()(qint64 nOffset, quint64 nLength) const
+        {
+            return (nOffset >= 0) && (nOffset <= nLimit) && (nLength <= static_cast<quint64>(nLimit - nOffset));
+        }
     };
+    const RANGE_CONTAINS contains = {nTrailer};
 
     while (isPdStructNotCanceled(pPdStruct) && (nBase < nTrailer)) {
         if (!contains(nBase, 4)) return QList<RECORD>();
@@ -620,9 +625,14 @@ QList<XAUTOIT::RECORD> XAUTOIT::_parseEA06(const quint8 *pData, qint64 nSize, qi
     if (!pData || !pRecordReservation || !pRecordReservation->isActive() || (nSize < 0) || (nBase < 0) || (nBase > nSize - 16)) return listResult;
     nBase += 16;  // header bytes whose checksum is unusable in the original format
 
-    const auto contains = [nSize](qint64 nOffset, quint64 nLength) -> bool {
-        return (nOffset >= 0) && (nOffset <= nSize) && (nLength <= static_cast<quint64>(nSize - nOffset));
+    struct RANGE_CONTAINS {
+        qint64 nLimit;
+        bool operator()(qint64 nOffset, quint64 nLength) const
+        {
+            return (nOffset >= 0) && (nOffset <= nLimit) && (nLength <= static_cast<quint64>(nLimit - nOffset));
+        }
     };
+    const RANGE_CONTAINS contains = {nSize};
 
     while (isPdStructNotCanceled(pPdStruct)) {
         if (!contains(nBase, 4)) break;
@@ -810,7 +820,7 @@ bool XAUTOIT::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
 
-        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const XBinary::_MEMORY_MAP memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
         if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
@@ -871,7 +881,12 @@ bool XAUTOIT::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant>
     qint64 nOutputLimit = -1;
     if (!getUnpackOutputLimit(mapProperties, &nOutputLimit)) return false;
     const PDSTRUCTLIFETIME progressLifetime = pPdStruct ? retainPdStructLifetime(pPdStruct) : PDSTRUCTLIFETIME();
-    const auto isProgressAlive = [&]() -> bool { return !pPdStruct || isPdStructLifetimeAlive(progressLifetime); };
+    struct PROGRESS_ALIVE_PROBE {
+        PDSTRUCT *pPdStruct;
+        const PDSTRUCTLIFETIME *pProgressLifetime;
+        bool operator()() const { return !pPdStruct || XBinary::isPdStructLifetimeAlive(*pProgressLifetime); }
+    };
+    const PROGRESS_ALIVE_PROBE isProgressAlive = {pPdStruct, &progressLifetime};
     if (!isProgressAlive()) return false;
     const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
     if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return false;

@@ -115,7 +115,7 @@ bool XYODA::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
 
-        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const XBinary::_MEMORY_MAP memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
         if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
@@ -336,9 +336,14 @@ XYODA::INTERNAL_INFO XYODA::_detect(PDSTRUCT *pPdStruct)
     const qint64 nFileSize = getSize();
     const qint64 nLastRaw = listSections.at(n - 1).PointerToRawData;
     const qint64 nYcSect = nLastRaw + nOffset;
-    const auto isRangeWithinFile = [nFileSize](qint64 nOffset, qint64 nSize) -> bool {
-        return (nFileSize >= 0) && (nOffset >= 0) && (nSize >= 0) && (nOffset <= nFileSize) && (nSize <= nFileSize - nOffset);
+    struct FILE_RANGE_PROBE {
+        qint64 nFileSize;
+        bool operator()(qint64 nOffset, qint64 nSize) const
+        {
+            return (nFileSize >= 0) && (nOffset >= 0) && (nSize >= 0) && (nOffset <= nFileSize) && (nSize <= nFileSize - nOffset);
+        }
     };
+    const FILE_RANGE_PROBE isRangeWithinFile = {nFileSize};
     // yc.c consumes both regions unconditionally: the first-layer encrypted
     // code and the stored original entry point.  Reject a partial candidate
     // here instead of publishing an output with the packed OEP left intact.
@@ -371,7 +376,12 @@ bool XYODA::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &
     qint64 nOutputLimit = -1;
     if (!getUnpackOutputLimit(mapProperties, &nOutputLimit)) return false;
     const PDSTRUCTLIFETIME progressLifetime = pPdStruct ? retainPdStructLifetime(pPdStruct) : PDSTRUCTLIFETIME();
-    const auto isProgressAlive = [&]() -> bool { return !pPdStruct || isPdStructLifetimeAlive(progressLifetime); };
+    struct PROGRESS_ALIVE_PROBE {
+        PDSTRUCT *pPdStruct;
+        const PDSTRUCTLIFETIME *pProgressLifetime;
+        bool operator()() const { return !pPdStruct || XBinary::isPdStructLifetimeAlive(*pProgressLifetime); }
+    };
+    const PROGRESS_ALIVE_PROBE isProgressAlive = {pPdStruct, &progressLifetime};
     if (!isProgressAlive()) return false;
     const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
     if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return false;

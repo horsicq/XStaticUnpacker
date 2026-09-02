@@ -14,6 +14,23 @@
 // RT_RCDATA resource type id.
 #define IEXPRESS_RT_RCDATA 10
 
+namespace {
+class IEXPRESS_OPERATION_STATE_DELETER {
+public:
+    explicit IEXPRESS_OPERATION_STATE_DELETER(const QSharedPointer<XIExpress::UNPACK_DEFERRED_CLEANUP> &pCleanup) : m_pCleanup(pCleanup)
+    {
+    }
+
+    void operator()(bool *pValue) const
+    {
+        delete pValue;
+    }
+
+private:
+    QSharedPointer<XIExpress::UNPACK_DEFERRED_CLEANUP> m_pCleanup;
+};
+}  // namespace
+
 XIExpress::UNPACK_DEFERRED_CLEANUP::~UNPACK_DEFERRED_CLEANUP()
 {
     const QSet<UNPACK_CONTEXT *> contexts = setContexts;
@@ -35,7 +52,7 @@ XIExpress::XIExpress(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : 
 {
     m_pUnpackDeferredCleanup = QSharedPointer<UNPACK_DEFERRED_CLEANUP>::create();
     const QSharedPointer<UNPACK_DEFERRED_CLEANUP> pDeferredCleanup = m_pUnpackDeferredCleanup;
-    m_pUnpackOperationState = QSharedPointer<bool>(new bool(false), [pDeferredCleanup](bool *pValue) { delete pValue; });
+    m_pUnpackOperationState = QSharedPointer<bool>(new bool(false), IEXPRESS_OPERATION_STATE_DELETER(pDeferredCleanup));
     m_internalInfo = INTERNAL_INFO();
     setIsArchive(true);
 }
@@ -91,7 +108,7 @@ bool XIExpress::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
 
-        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const XBinary::_MEMORY_MAP memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
         if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);

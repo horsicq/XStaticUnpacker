@@ -16,6 +16,21 @@
 #include "../Formats/archives/xzip.h"
 
 namespace {
+class ACTUALINSTALLER_OPERATION_STATE_DELETER {
+public:
+    explicit ACTUALINSTALLER_OPERATION_STATE_DELETER(const QSharedPointer<XActualInstaller::UNPACK_DEFERRED_CLEANUP> &pCleanup) : m_pCleanup(pCleanup)
+    {
+    }
+
+    void operator()(bool *pValue) const
+    {
+        delete pValue;
+    }
+
+private:
+    QSharedPointer<XActualInstaller::UNPACK_DEFERRED_CLEANUP> m_pCleanup;
+};
+
 QString actualNameKey(const QString &sName)
 {
     return sName.toCaseFolded().normalized(QString::NormalizationForm_C);
@@ -71,7 +86,7 @@ XActualInstaller::XActualInstaller(QIODevice *pDevice, bool bIsImage, XADDR nMod
 {
     m_pUnpackDeferredCleanup = QSharedPointer<UNPACK_DEFERRED_CLEANUP>::create();
     const QSharedPointer<UNPACK_DEFERRED_CLEANUP> pDeferredCleanup = m_pUnpackDeferredCleanup;
-    m_pUnpackOperationState = QSharedPointer<bool>(new bool(false), [pDeferredCleanup](bool *pValue) { delete pValue; });
+    m_pUnpackOperationState = QSharedPointer<bool>(new bool(false), ACTUALINSTALLER_OPERATION_STATE_DELETER(pDeferredCleanup));
     m_internalInfo = INTERNAL_INFO();
     setIsArchive(true);
 }
@@ -127,7 +142,7 @@ bool XActualInstaller::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
 
-        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const XBinary::_MEMORY_MAP memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
         if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);

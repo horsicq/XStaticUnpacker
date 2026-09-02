@@ -13,6 +13,21 @@
 
 namespace {
 
+class SEVENZIPSFX_OPERATION_STATE_DELETER {
+public:
+    explicit SEVENZIPSFX_OPERATION_STATE_DELETER(const QSharedPointer<XSevenZipSFX::UNPACK_DEFERRED_CLEANUP> &pCleanup) : m_pCleanup(pCleanup)
+    {
+    }
+
+    void operator()(bool *pValue) const
+    {
+        delete pValue;
+    }
+
+private:
+    QSharedPointer<XSevenZipSFX::UNPACK_DEFERRED_CLEANUP> m_pCleanup;
+};
+
 bool getValidatedSevenZipSize(QIODevice *pDevice, qint64 nOffset, qint64 nAvailableSize, qint64 *pArchiveSize, XBinary::PDSTRUCT *pPdStruct)
 {
     if (!pDevice || !pArchiveSize || (nOffset < 0) || (nAvailableSize < 32) || (nOffset > pDevice->size()) || (nAvailableSize > pDevice->size() - nOffset) ||
@@ -78,7 +93,7 @@ XSevenZipSFX::XSevenZipSFX(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddre
 {
     m_pUnpackDeferredCleanup = QSharedPointer<UNPACK_DEFERRED_CLEANUP>::create();
     const QSharedPointer<UNPACK_DEFERRED_CLEANUP> pDeferredCleanup = m_pUnpackDeferredCleanup;
-    m_pUnpackOperationState = QSharedPointer<bool>(new bool(false), [pDeferredCleanup](bool *pValue) { delete pValue; });
+    m_pUnpackOperationState = QSharedPointer<bool>(new bool(false), SEVENZIPSFX_OPERATION_STATE_DELETER(pDeferredCleanup));
     m_internalInfo = INTERNAL_INFO();
     setIsArchive(true);
 }
@@ -134,7 +149,7 @@ bool XSevenZipSFX::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
 
-        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const XBinary::_MEMORY_MAP memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
         if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);

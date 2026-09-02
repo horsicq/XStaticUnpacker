@@ -21,6 +21,21 @@
 #include "../Formats/xarchive.h"
 
 namespace {
+class ADVANCEDINSTALLER_OPERATION_STATE_DELETER {
+public:
+    explicit ADVANCEDINSTALLER_OPERATION_STATE_DELETER(const QSharedPointer<XAdvancedInstaller::UNPACK_DEFERRED_CLEANUP> &pCleanup) : m_pCleanup(pCleanup)
+    {
+    }
+
+    void operator()(bool *pValue) const
+    {
+        delete pValue;
+    }
+
+private:
+    QSharedPointer<XAdvancedInstaller::UNPACK_DEFERRED_CLEANUP> m_pCleanup;
+};
+
 static bool isSafeAdvancedRecordName(const QString &sName)
 {
     if (sName.isEmpty() || (sName.size() > 255) || (sName == ".") || (sName == "..") || sName.endsWith(' ') || sName.endsWith('.')) {
@@ -110,7 +125,7 @@ XAdvancedInstaller::XAdvancedInstaller(QIODevice *pDevice, bool bIsImage, XADDR 
 {
     m_pUnpackDeferredCleanup = QSharedPointer<UNPACK_DEFERRED_CLEANUP>::create();
     const QSharedPointer<UNPACK_DEFERRED_CLEANUP> pDeferredCleanup = m_pUnpackDeferredCleanup;
-    m_pUnpackOperationState = QSharedPointer<bool>(new bool(false), [pDeferredCleanup](bool *pValue) { delete pValue; });
+    m_pUnpackOperationState = QSharedPointer<bool>(new bool(false), ADVANCEDINSTALLER_OPERATION_STATE_DELETER(pDeferredCleanup));
     setIsArchive(true);
 }
 
@@ -165,7 +180,7 @@ bool XAdvancedInstaller::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
 
-        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const XBinary::_MEMORY_MAP memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
         if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);

@@ -241,6 +241,98 @@ public:
     using XArchive::publishUnpackOutput;
 };
 
+class InnoContextValidator {
+public:
+    InnoContextValidator(const QPointer<XInnoSetup> &pOwner, const QPointer<QIODevice> &pOutput,
+                         const QSharedPointer<XInnoSetup::UNPACK_LIFETIME_STATE> &pLifetime, XInnoSetup::UNPACK_CONTEXT *pContext,
+                         XBinary::UNPACK_STATE *pState)
+        : m_pOwner(pOwner), m_pOutput(pOutput), m_pLifetime(pLifetime), m_pContext(pContext), m_pState(pState)
+    {
+    }
+
+    bool isCurrent() const
+    {
+        return m_pOwner && m_pOutput && m_pLifetime && m_pLifetime->bOwnerAlive && m_pLifetime->setContexts.contains(m_pContext) &&
+               (m_pContext->pOwnerState == m_pState);
+    }
+
+private:
+    QPointer<XInnoSetup> m_pOwner;
+    QPointer<QIODevice> m_pOutput;
+    QSharedPointer<XInnoSetup::UNPACK_LIFETIME_STATE> m_pLifetime;
+    XInnoSetup::UNPACK_CONTEXT *m_pContext;
+    XBinary::UNPACK_STATE *m_pState;
+};
+
+bool innoIsOriginalProgressAlive(XBinary::PDSTRUCT *pPdStruct, const XBinary::PDSTRUCTLIFETIME &progressLifetime)
+{
+    return !pPdStruct || (XBinary::isPdStructLifetimeAlive(progressLifetime) && XBinary::isPdStructNotCanceled(pPdStruct));
+}
+
+bool innoVerifyCRC(const XBinary::ARCHIVERECORD &record, const XBinary::UNPACK_STATE &stageState, QTemporaryFile *pStage,
+                   XBinary::PDSTRUCT *pPdStruct, const XBinary::PDSTRUCTLIFETIME &progressLifetime, XBinary::PDSTRUCT *pCRCProgress)
+{
+    if (!pStage || !pCRCProgress) return false;
+
+    const XBinary::CRC_TYPE crcType =
+        (XBinary::CRC_TYPE)record.mapProperties.value(XBinary::FPART_PROP_CRC_TYPE, XBinary::CRC_TYPE_UNKNOWN).toUInt();
+
+    if (!XBinary::isUnpackCRCEnabled(stageState.mapUnpackProperties, crcType) || (crcType == XBinary::CRC_TYPE_UNKNOWN) ||
+        !record.mapProperties.contains(XBinary::FPART_PROP_RESULTCRC)) {
+        return true;
+    }
+
+    if (!innoIsOriginalProgressAlive(pPdStruct, progressLifetime)) return false;
+
+    if (!pStage->seek(0)) {
+        if (innoIsOriginalProgressAlive(pPdStruct, progressLifetime)) {
+            XBinary::setPdStructErrorString(pPdStruct, XInnoSetup::tr("CRC check requires a readable output device"));
+        }
+        return false;
+    }
+
+    const bool bCRCOk = XBinary::checkCRC(pStage, crcType, record.mapProperties.value(XBinary::FPART_PROP_RESULTCRC), pCRCProgress);
+
+    if (!innoIsOriginalProgressAlive(pPdStruct, progressLifetime)) return false;
+    if (!bCRCOk) XBinary::setPdStructErrorString(pPdStruct, XInnoSetup::tr("Invalid CRC"));
+
+    return bCRCOk;
+}
+
+bool innoVerifyChecksum(const XBinary::ARCHIVERECORD &record, QTemporaryFile *pStage, const InnoContextValidator &contextValidator,
+                        XBinary::PDSTRUCT *pPdStruct)
+{
+    if (!pStage) return false;
+
+    const bool bHasChecksum = record.mapProperties.contains(XBinary::FPART_PROP_CHECKSUM);
+    const bool bHasType = record.mapProperties.contains(XBinary::FPART_PROP_CHECKSUMTYPE);
+    if (!bHasChecksum && !bHasType) return true;
+    if (!bHasChecksum || !bHasType || !pStage->seek(0)) return false;
+
+    const QString sType = record.mapProperties.value(XBinary::FPART_PROP_CHECKSUMTYPE).toString();
+    QCryptographicHash::Algorithm algorithm;
+    if (sType == QLatin1String("MD5")) algorithm = QCryptographicHash::Md5;
+    else if (sType == QLatin1String("SHA1")) algorithm = QCryptographicHash::Sha1;
+    else if (sType == QLatin1String("SHA256")) algorithm = QCryptographicHash::Sha256;
+    else return false;
+
+    QCryptographicHash hash(algorithm);
+    QByteArray baBuffer(65536, '\0');
+
+    while (true) {
+        if (!contextValidator.isCurrent() || !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+        const qint64 nRead = pStage->read(baBuffer.data(), baBuffer.size());
+        if (nRead < 0) return false;
+        if (nRead == 0) break;
+        hash.addData(baBuffer.constData(), nRead);
+    }
+
+    const QByteArray baExpected = record.mapProperties.value(XBinary::FPART_PROP_CHECKSUM).toString().toLatin1().toLower();
+    const bool bOk = (hash.result().toHex() == baExpected);
+    if (!bOk) XBinary::setPdStructErrorString(pPdStruct, XInnoSetup::tr("Invalid checksum"));
+    return bOk;
+}
+
 quint64 innoVersionValue(const XInnoSetup::INNO_VERSION &version)
 {
     return (quint64(version.nMajor) << 48) | (quint64(version.nMinor) << 32) | (quint64(version.nPatch) << 16) | quint64(version.nRevision);
@@ -250,6 +342,330 @@ quint64 innoVersionValue(quint16 nMajor, quint16 nMinor, quint16 nPatch = 0, qui
 {
     return (quint64(nMajor) << 48) | (quint64(nMinor) << 32) | (quint64(nPatch) << 16) | quint64(nRevision);
 }
+
+bool innoSkipBytes(const QByteArray &baData, qint32 nSize, qint32 *pnOffset)
+{
+    if (!pnOffset || (nSize < 0) || (*pnOffset < 0) || (*pnOffset > baData.size()) || (nSize > baData.size() - *pnOffset)) return false;
+    *pnOffset += nSize;
+    return true;
+}
+
+bool innoSkipSerializedString(const QByteArray &baData, qint32 *pnOffset)
+{
+    if (!pnOffset || (*pnOffset < 0) || (*pnOffset > baData.size() - 4)) return false;
+    const quint32 nLength = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baData.constData() + *pnOffset));
+    if ((nLength > 0x10000000U) || (nLength > quint32(baData.size() - *pnOffset - 4))) return false;
+    *pnOffset += 4 + (qint32)nLength;
+    return true;
+}
+
+bool innoSkipSerializedStrings(const QByteArray &baData, qint32 nCount, qint32 *pnOffset)
+{
+    if (nCount < 0) return false;
+    for (qint32 i = 0; i < nCount; i++) {
+        if (!innoSkipSerializedString(baData, pnOffset)) return false;
+    }
+    return true;
+}
+
+bool innoReadWideString(const QByteArray &baData, qint32 *pnOffset, QString *psValue)
+{
+    if (!pnOffset || (*pnOffset < 0) || (*pnOffset > baData.size() - 4)) return false;
+    const quint32 nByteLength = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baData.constData() + *pnOffset));
+    if (((nByteLength & 1U) != 0) || (nByteLength > 0x1000000U) || (nByteLength > quint32(baData.size() - *pnOffset - 4))) return false;
+
+    const qint32 nStringOffset = *pnOffset + 4;
+    const qint32 nCharacterCount = (qint32)(nByteLength / 2);
+    if (psValue) {
+        psValue->resize(nCharacterCount);
+        const uchar *pStringData = reinterpret_cast<const uchar *>(baData.constData() + nStringOffset);
+        for (qint32 i = 0; i < nCharacterCount; i++) {
+            (*psValue)[i] = QChar(qFromLittleEndian<quint16>(pStringData + i * 2));
+        }
+    }
+    *pnOffset = nStringOffset + (qint32)nByteLength;
+    return true;
+}
+
+bool innoReadAnsiBytes(const QByteArray &baData, qint32 *pnOffset, QByteArray *pValue)
+{
+    if (!pnOffset || (*pnOffset < 0) || (*pnOffset > baData.size() - 4)) return false;
+    const quint32 nByteLength = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baData.constData() + *pnOffset));
+    if ((nByteLength > 0x1000000U) || (nByteLength > quint32(baData.size() - *pnOffset - 4))) return false;
+
+    const qint32 nStringOffset = *pnOffset + 4;
+    if (pValue) *pValue = baData.mid(nStringOffset, (qint32)nByteLength);
+    *pnOffset = nStringOffset + (qint32)nByteLength;
+    return true;
+}
+
+bool innoSkipUnicodeEntries(const QByteArray &baData, qint32 nCount, qint32 nWideStrings, qint32 nAnsiStrings, qint32 nFixedSize,
+                            qint32 *pnOffset)
+{
+    if ((nCount < 0) || (nWideStrings < 0) || (nAnsiStrings < 0) || !pnOffset) return false;
+    for (qint32 i = 0; i < nCount; i++) {
+        for (qint32 j = 0; j < nWideStrings; j++) {
+            if (!innoReadWideString(baData, pnOffset, nullptr)) return false;
+        }
+        for (qint32 j = 0; j < nAnsiStrings; j++) {
+            if (!innoReadAnsiBytes(baData, pnOffset, nullptr)) return false;
+        }
+        if (!innoSkipBytes(baData, nFixedSize, pnOffset)) return false;
+    }
+    return true;
+}
+
+bool innoSkipAnsiEntries(const QByteArray &baData, qint32 nCount, qint32 nStringCount, qint32 nFixedSize, qint32 *pnOffset)
+{
+    if ((nCount < 0) || (nStringCount < 0) || !pnOffset) return false;
+    for (qint32 i = 0; i < nCount; i++) {
+        for (qint32 j = 0; j < nStringCount; j++) {
+            if (!innoReadAnsiBytes(baData, pnOffset, nullptr)) return false;
+        }
+        if (!innoSkipBytes(baData, nFixedSize, pnOffset)) return false;
+    }
+    return true;
+}
+
+bool innoReadSizedAnsiRecord(const QByteArray &baData, qint32 nStringCount, qint32 nTailSize, qint32 *pnOffset, QList<QByteArray> *pStrings,
+                             qint32 *pnTailOffset)
+{
+    if ((nStringCount < 0) || (nTailSize < 0) || !pnOffset || (*pnOffset < 0) || (*pnOffset > baData.size() - 4)) return false;
+    const quint32 nRecordSize = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baData.constData() + *pnOffset));
+    const quint32 nMinimumSize = quint32(nStringCount * 4 + nTailSize);
+    if ((nRecordSize < nMinimumSize) || (nRecordSize > quint32(baData.size() - *pnOffset - 4))) return false;
+    const qint32 nRecordEnd = *pnOffset + 4 + (qint32)nRecordSize;
+    *pnOffset += 4;
+    if (pStrings) {
+        pStrings->clear();
+        pStrings->reserve(nStringCount);
+    }
+    for (qint32 i = 0; i < nStringCount; i++) {
+        QByteArray baValue;
+        if (!innoReadAnsiBytes(baData, pnOffset, &baValue) || (*pnOffset > nRecordEnd)) return false;
+        if (pStrings) pStrings->append(baValue);
+    }
+    if ((*pnOffset > nRecordEnd) || (nRecordEnd - *pnOffset != nTailSize)) return false;
+    if (pnTailOffset) *pnTailOffset = *pnOffset;
+    *pnOffset = nRecordEnd;
+    return true;
+}
+
+void innoSelectLanguageCodePage(quint32 nLanguageId, quint32 nStoredCodePage, quint32 *pnCodePage)
+{
+    if (!pnCodePage) return;
+    quint32 nCandidate = nStoredCodePage;
+#ifdef Q_OS_WIN
+    if ((nCandidate == 0) && (nLanguageId != 0)) {
+        wchar_t aCodePage[16] = {};
+        if (GetLocaleInfoW(MAKELCID((LANGID)nLanguageId, SORT_DEFAULT), LOCALE_IDEFAULTANSICODEPAGE, aCodePage,
+                           sizeof(aCodePage) / sizeof(aCodePage[0])) > 1) {
+            bool bOk = false;
+            const uint nValue = QString::fromWCharArray(aCodePage).toUInt(&bOk);
+            if (bOk) nCandidate = nValue;
+        }
+    }
+#else
+    Q_UNUSED(nLanguageId)
+#endif
+    if (nCandidate != 0) *pnCodePage = nCandidate;
+}
+
+bool innoSkipAnsiLanguageEntries(const QByteArray &baData, qint32 nCount, qint32 nStringCount, qint32 nFixedSize, bool bHasStoredCodePage,
+                                 qint32 *pnOffset, quint32 *pnCodePage)
+{
+    if ((nCount < 0) || (nStringCount < 0) || (nFixedSize < 0) || !pnOffset || !pnCodePage) return false;
+    for (qint32 i = 0; i < nCount; i++) {
+        for (qint32 j = 0; j < nStringCount; j++) {
+            if (!innoReadAnsiBytes(baData, pnOffset, nullptr)) return false;
+        }
+        if ((*pnOffset < 0) || (*pnOffset > baData.size() - nFixedSize)) return false;
+        const quint32 nLanguageId = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baData.constData() + *pnOffset));
+        const quint32 nStoredCodePage =
+            bHasStoredCodePage ? qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baData.constData() + *pnOffset + 4)) : 0;
+        if ((i == 0) || (nStoredCodePage == 1252)) innoSelectLanguageCodePage(nLanguageId, nStoredCodePage, pnCodePage);
+        if (!innoSkipBytes(baData, nFixedSize, pnOffset)) return false;
+    }
+    return true;
+}
+
+void innoAddHeaderFlag(bool bPresent, qint32 *pnFlagCount)
+{
+    if (bPresent && pnFlagCount) (*pnFlagCount)++;
+}
+
+class InnoByteSkipper {
+public:
+    explicit InnoByteSkipper(const QByteArray &baData) : m_baData(baData)
+    {
+    }
+    bool operator()(qint32 nSize, qint32 *pnOffset) const
+    {
+        return innoSkipBytes(m_baData, nSize, pnOffset);
+    }
+
+private:
+    const QByteArray &m_baData;
+};
+
+class InnoSerializedStringSkipper {
+public:
+    explicit InnoSerializedStringSkipper(const QByteArray &baData) : m_baData(baData)
+    {
+    }
+    bool operator()(qint32 *pnOffset) const
+    {
+        return innoSkipSerializedString(m_baData, pnOffset);
+    }
+
+private:
+    const QByteArray &m_baData;
+};
+
+class InnoSerializedStringsSkipper {
+public:
+    explicit InnoSerializedStringsSkipper(const QByteArray &baData) : m_baData(baData)
+    {
+    }
+    bool operator()(qint32 nCount, qint32 *pnOffset) const
+    {
+        return innoSkipSerializedStrings(m_baData, nCount, pnOffset);
+    }
+
+private:
+    const QByteArray &m_baData;
+};
+
+class InnoWideStringReader {
+public:
+    explicit InnoWideStringReader(const QByteArray &baData) : m_baData(baData)
+    {
+    }
+    bool operator()(qint32 *pnOffset, QString *psValue) const
+    {
+        return innoReadWideString(m_baData, pnOffset, psValue);
+    }
+
+private:
+    const QByteArray &m_baData;
+};
+
+class InnoAnsiStringReader {
+public:
+    explicit InnoAnsiStringReader(const QByteArray &baData) : m_baData(baData)
+    {
+    }
+    bool operator()(qint32 *pnOffset, QByteArray *pValue) const
+    {
+        return innoReadAnsiBytes(m_baData, pnOffset, pValue);
+    }
+
+private:
+    const QByteArray &m_baData;
+};
+
+class InnoAnsiStringSkipper {
+public:
+    explicit InnoAnsiStringSkipper(const QByteArray &baData) : m_baData(baData)
+    {
+    }
+    bool operator()(qint32 *pnOffset) const
+    {
+        return innoReadAnsiBytes(m_baData, pnOffset, nullptr);
+    }
+
+private:
+    const QByteArray &m_baData;
+};
+
+class InnoUnicodeEntriesSkipper {
+public:
+    explicit InnoUnicodeEntriesSkipper(const QByteArray &baData) : m_baData(baData)
+    {
+    }
+    bool operator()(qint32 nCount, qint32 nWideStrings, qint32 nAnsiStrings, qint32 nFixedSize, qint32 *pnOffset) const
+    {
+        return innoSkipUnicodeEntries(m_baData, nCount, nWideStrings, nAnsiStrings, nFixedSize, pnOffset);
+    }
+
+private:
+    const QByteArray &m_baData;
+};
+
+class InnoAnsiEntriesSkipper {
+public:
+    explicit InnoAnsiEntriesSkipper(const QByteArray &baData) : m_baData(baData)
+    {
+    }
+    bool operator()(qint32 nCount, qint32 nStringCount, qint32 nFixedSize, qint32 *pnOffset) const
+    {
+        return innoSkipAnsiEntries(m_baData, nCount, nStringCount, nFixedSize, pnOffset);
+    }
+
+private:
+    const QByteArray &m_baData;
+};
+
+class InnoSizedAnsiRecordReader {
+public:
+    InnoSizedAnsiRecordReader(const QByteArray &baData, qint32 *pnOffset) : m_baData(baData), m_pnOffset(pnOffset)
+    {
+    }
+    bool operator()(qint32 nStringCount, qint32 nTailSize, QList<QByteArray> *pStrings, qint32 *pnTailOffset) const
+    {
+        return innoReadSizedAnsiRecord(m_baData, nStringCount, nTailSize, m_pnOffset, pStrings, pnTailOffset);
+    }
+
+private:
+    const QByteArray &m_baData;
+    qint32 *m_pnOffset;
+};
+
+class InnoAnsiBlobSkipper {
+public:
+    InnoAnsiBlobSkipper(const QByteArray &baData, qint32 *pnOffset) : m_baData(baData), m_pnOffset(pnOffset)
+    {
+    }
+    bool operator()() const
+    {
+        return innoReadAnsiBytes(m_baData, m_pnOffset, nullptr);
+    }
+
+private:
+    const QByteArray &m_baData;
+    qint32 *m_pnOffset;
+};
+
+class InnoAnsiLanguageEntriesSkipper {
+public:
+    InnoAnsiLanguageEntriesSkipper(const QByteArray &baData, qint32 *pnOffset, quint32 *pnCodePage)
+        : m_baData(baData), m_pnOffset(pnOffset), m_pnCodePage(pnCodePage)
+    {
+    }
+    bool operator()(qint32 nCount, qint32 nStringCount, qint32 nFixedSize, bool bHasStoredCodePage) const
+    {
+        return innoSkipAnsiLanguageEntries(m_baData, nCount, nStringCount, nFixedSize, bHasStoredCodePage, m_pnOffset, m_pnCodePage);
+    }
+
+private:
+    const QByteArray &m_baData;
+    qint32 *m_pnOffset;
+    quint32 *m_pnCodePage;
+};
+
+class InnoHeaderFlagCounter {
+public:
+    explicit InnoHeaderFlagCounter(qint32 *pnFlagCount) : m_pnFlagCount(pnFlagCount)
+    {
+    }
+    void operator()(bool bPresent) const
+    {
+        innoAddHeaderFlag(bPresent, m_pnFlagCount);
+    }
+
+private:
+    qint32 *m_pnFlagCount;
+};
 
 XBinary::HANDLE_METHOD innoCompressionToHandleMethod(XInnoSetup::INNO_COMPRESSION compression)
 {
@@ -696,7 +1112,7 @@ bool XInnoSetup::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
 
-        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const XBinary::_MEMORY_MAP memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
         if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
@@ -1208,75 +1624,15 @@ bool XInnoSetup::unpackCurrent(XBinary::UNPACK_STATE *pState, QIODevice *pDevice
     const XADDR nOuterModuleAddress = getModuleAddress();
     XInnoSetup decoder(pContext->pOuterSourceDevice.data(), bOuterIsImage, nOuterModuleAddress);
 
-    auto isContextCurrent = [&]() -> bool {
-        return guardedThis && guardedOutput && pLifetime->bOwnerAlive && pLifetime->setContexts.contains(pContext) && (pContext->pOwnerState == pState);
-    };
-
-    auto verifyCRC = [&]() -> bool {
-        CRC_TYPE crcType = (CRC_TYPE)record.mapProperties.value(FPART_PROP_CRC_TYPE, CRC_TYPE_UNKNOWN).toUInt();
-
-        if (!XBinary::isUnpackCRCEnabled(stageState.mapUnpackProperties, crcType) || (crcType == CRC_TYPE_UNKNOWN) ||
-            !record.mapProperties.contains(FPART_PROP_RESULTCRC)) {
-            return true;
-        }
-
-        const auto isOriginalProgressAlive = [&]() -> bool {
-            return !pPdStruct || (XBinary::isPdStructLifetimeAlive(progressLifetime) && XBinary::isPdStructNotCanceled(pPdStruct));
-        };
-        if (!isOriginalProgressAlive()) return false;
-
-        if (!stage.seek(0)) {
-            if (isOriginalProgressAlive()) {
-                XBinary::setPdStructErrorString(pPdStruct, tr("CRC check requires a readable output device"));
-            }
-            return false;
-        }
-
-        const bool bCRCOk = XBinary::checkCRC(&stage, crcType, record.mapProperties.value(FPART_PROP_RESULTCRC), &crcProgress);
-
-        if (!isOriginalProgressAlive()) return false;
-        if (!bCRCOk) {
-            XBinary::setPdStructErrorString(pPdStruct, tr("Invalid CRC"));
-        }
-
-        return bCRCOk;
-    };
-
-    auto verifyChecksum = [&]() -> bool {
-        const bool bHasChecksum = record.mapProperties.contains(FPART_PROP_CHECKSUM);
-        const bool bHasType = record.mapProperties.contains(FPART_PROP_CHECKSUMTYPE);
-        if (!bHasChecksum && !bHasType) return true;
-        if (!bHasChecksum || !bHasType || !stage.seek(0)) return false;
-
-        const QString sType = record.mapProperties.value(FPART_PROP_CHECKSUMTYPE).toString();
-        QCryptographicHash::Algorithm algorithm;
-        if (sType == QLatin1String("MD5")) algorithm = QCryptographicHash::Md5;
-        else if (sType == QLatin1String("SHA1")) algorithm = QCryptographicHash::Sha1;
-        else if (sType == QLatin1String("SHA256")) algorithm = QCryptographicHash::Sha256;
-        else return false;
-
-        QCryptographicHash hash(algorithm);
-        QByteArray baBuffer(65536, '\0');
-
-        while (true) {
-            if (!isContextCurrent() || !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
-            const qint64 nRead = stage.read(baBuffer.data(), baBuffer.size());
-            if (nRead < 0) return false;
-            if (nRead == 0) break;
-            hash.addData(baBuffer.constData(), nRead);
-        }
-
-        const QByteArray baExpected = record.mapProperties.value(FPART_PROP_CHECKSUM).toString().toLatin1().toLower();
-        const bool bOk = (hash.result().toHex() == baExpected);
-        if (!bOk) XBinary::setPdStructErrorString(pPdStruct, tr("Invalid checksum"));
-        return bOk;
-    };
+    const InnoContextValidator contextValidator(guardedThis, guardedOutput, pLifetime, pContext, pState);
 
     qint64 nUncompressedSize = record.mapProperties.value(FPART_PROP_UNCOMPRESSEDSIZE).toLongLong();
 
     // Empty file — nothing to write
     if (nUncompressedSize == 0) {
-        if (!verifyChecksum() || !verifyCRC() || !isContextCurrent()) return false;
+        if (!innoVerifyChecksum(record, &stage, contextValidator, pPdStruct) ||
+            !innoVerifyCRC(record, stageState, &stage, pPdStruct, progressLifetime, &crcProgress) || !contextValidator.isCurrent())
+            return false;
     }
 
     if (nUncompressedSize < 0) return false;
@@ -1334,7 +1690,7 @@ bool XInnoSetup::unpackCurrent(XBinary::UNPACK_STATE *pState, QIODevice *pDevice
             }
             QByteArray baDecompressed = decoder._decompressDataChunk(pContext, targetEntry, nChunkOutputLimit, stageState.mapUnpackProperties, pPdStruct);
 
-            if (!isContextCurrent() || baDecompressed.isEmpty()) {
+            if (!contextValidator.isCurrent() || baDecompressed.isEmpty()) {
                 pContext->chunkCache.memoryReservation.release();
                 qWarning() << "[InnoSetup] Failed to decompress data chunk at offset" << targetEntry.nChunkStartOffset;
                 return false;
@@ -1366,12 +1722,14 @@ bool XInnoSetup::unpackCurrent(XBinary::UNPACK_STATE *pState, QIODevice *pDevice
             QByteArray baFileData = baChunk.mid((qint32)nDecompressedOffset, (qint32)nUncompressedSize);
             if (baFileData.size() != nUncompressedSize) return false;
             innoDecodeExeFilter(&baFileData, pContext->version);
-            if (!XBinary::writeUnpackData(&stageState, &stage, baFileData.constData(), baFileData.size(), pPdStruct) || !isContextCurrent()) return false;
+            if (!XBinary::writeUnpackData(&stageState, &stage, baFileData.constData(), baFileData.size(), pPdStruct) || !contextValidator.isCurrent()) return false;
         } else if (!XBinary::writeUnpackData(&stageState, &stage, baChunk.constData() + (qint32)nDecompressedOffset, nUncompressedSize, pPdStruct) ||
-                   !isContextCurrent()) {
+                   !contextValidator.isCurrent()) {
             return false;
         }
-        if (!verifyChecksum() || !verifyCRC() || !isContextCurrent()) return false;
+        if (!innoVerifyChecksum(record, &stage, contextValidator, pPdStruct) ||
+            !innoVerifyCRC(record, stageState, &stage, pPdStruct, progressLifetime, &crcProgress) || !contextValidator.isCurrent())
+            return false;
     } else if (nUncompressedSize > 0) {
         // Synthetic ISDF: stored data — direct copy using XStoreDecoder
         qint64 nStreamOffset = record.mapProperties.value(FPART_PROP_STREAMOFFSET).toLongLong();
@@ -1383,7 +1741,7 @@ bool XInnoSetup::unpackCurrent(XBinary::UNPACK_STATE *pState, QIODevice *pDevice
 
         // Clamp to file size
         qint64 nFileSize = decoder.getSize();
-        if (!isContextCurrent()) return false;
+        if (!contextValidator.isCurrent()) return false;
 
         if ((nStreamOffset < 0) || (nStreamSize < 0) || (nStreamOffset > nFileSize)) {
             return false;
@@ -1409,12 +1767,14 @@ bool XInnoSetup::unpackCurrent(XBinary::UNPACK_STATE *pState, QIODevice *pDevice
         decompressState.nProcessedLimit = -1;
 
         if (!XStoreDecoder::decompress(&decompressState, pPdStruct) || (decompressState.nCountInput != nStreamSize) || (decompressState.nCountOutput != nStreamSize) ||
-            !isContextCurrent()) {
+            !contextValidator.isCurrent()) {
             return false;
         }
 
         stageState.nCurrentOffset = decompressState.nCountOutput;
-        if (!verifyChecksum() || !verifyCRC() || !isContextCurrent()) return false;
+        if (!innoVerifyChecksum(record, &stage, contextValidator, pPdStruct) ||
+            !innoVerifyCRC(record, stageState, &stage, pPdStruct, progressLifetime, &crcProgress) || !contextValidator.isCurrent())
+            return false;
     }
 
     if (!guardedThis || !guardedOutput || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||
@@ -1425,7 +1785,7 @@ bool XInnoSetup::unpackCurrent(XBinary::UNPACK_STATE *pState, QIODevice *pDevice
     UNPACK_STATE publicationState = {};
     if (!publisher.bindUnpackSource(&publicationState, pPdStruct) || !publisher.validateAndFinalizeUnpackSource(&publicationState, pPdStruct) || !guardedThis ||
         !guardedOutput || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||
-        !publisher.publishUnpackOutput(&stage, guardedOutput.data(), &publicationState, pPdStruct) || !isContextCurrent())
+        !publisher.publishUnpackOutput(&stage, guardedOutput.data(), &publicationState, pPdStruct) || !contextValidator.isCurrent())
         return false;
     pState->nCurrentOffset = stage.size();
     return true;
@@ -2355,24 +2715,9 @@ XInnoSetup::HEADER_INFO XInnoSetup::_parseHeaderInfo(const QByteArray &baBlock1,
     const quint64 nVersion = innoVersionValue(version);
 
     qint32 nOffset = 0;
-    const auto skipBytes = [&](qint32 nSize, qint32 *pnOffset) -> bool {
-        if (!pnOffset || (nSize < 0) || (*pnOffset < 0) || (*pnOffset > baBlock1.size()) || (nSize > baBlock1.size() - *pnOffset)) return false;
-        *pnOffset += nSize;
-        return true;
-    };
-    const auto skipString = [&](qint32 *pnOffset) -> bool {
-        if (!pnOffset || (*pnOffset < 0) || (*pnOffset > baBlock1.size() - 4)) return false;
-        const quint32 nLength = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baBlock1.constData() + *pnOffset));
-        if ((nLength > 0x10000000U) || (nLength > quint32(baBlock1.size() - *pnOffset - 4))) return false;
-        *pnOffset += 4 + (qint32)nLength;
-        return true;
-    };
-    const auto skipStrings = [&](qint32 nCount, qint32 *pnOffset) -> bool {
-        for (qint32 i = 0; i < nCount; i++) {
-            if (!skipString(pnOffset)) return false;
-        }
-        return true;
-    };
+    const InnoByteSkipper skipBytes(baBlock1);
+    const InnoSerializedStringSkipper skipString(baBlock1);
+    const InnoSerializedStringsSkipper skipStrings(baBlock1);
 
     if (nVersion == innoVersionValue(1, 2, 10)) {
         // Both native-width compilers prefix pointer-bearing records with a
@@ -2525,9 +2870,7 @@ XInnoSetup::HEADER_INFO XInnoSetup::_parseHeaderInfo(const QByteArray &baBlock1,
         qint32 nFlagCount = 0;
         qint32 nBzipFlag = -1;
         qint32 nEncryptionUsedFlag = -1;
-        const auto addHeaderFlag = [&](bool bPresent) {
-            if (bPresent) nFlagCount++;
-        };
+        const InnoHeaderFlagCounter addHeaderFlag(&nFlagCount);
         addHeaderFlag(true);  // DisableStartupPrompt
         addHeaderFlag(true);  // Uninstallable
         addHeaderFlag(true);  // CreateAppDir
@@ -3053,41 +3396,10 @@ QList<XInnoSetup::FILE_ENTRY> XInnoSetup::_parseFileEntries(const QByteArray &ba
     if ((!bLegacySchema && !bModernSchema) || (bLegacySchema && (headerInfo.nCountCount != 16)) || (bModernSchema && (headerInfo.nCountCount != 17))) return listResult;
 
     qint32 nOffset = headerInfo.nHeaderEndOffset;
-    const auto skipBytes = [&](qint32 nSize, qint32 *pnOffset) -> bool {
-        if (!pnOffset || (nSize < 0) || (*pnOffset < 0) || (*pnOffset > baBlock1.size()) || (nSize > baBlock1.size() - *pnOffset)) return false;
-        *pnOffset += nSize;
-        return true;
-    };
-    const auto readWide = [&](qint32 *pnOffset, QString *psValue) -> bool {
-        if (!pnOffset) return false;
-        qint32 nNewOffset = *pnOffset;
-        const QString sValue = _readWideString(baBlock1, *pnOffset, &nNewOffset);
-        if (nNewOffset <= *pnOffset) return false;
-        *pnOffset = nNewOffset;
-        if (psValue) *psValue = sValue;
-        return true;
-    };
-    const auto readAnsi = [&](qint32 *pnOffset) -> bool {
-        if (!pnOffset) return false;
-        qint32 nNewOffset = *pnOffset;
-        _readAnsiString(baBlock1, *pnOffset, &nNewOffset);
-        if (nNewOffset <= *pnOffset) return false;
-        *pnOffset = nNewOffset;
-        return true;
-    };
-    const auto skipEntryArray = [&](qint32 nCount, qint32 nWideStrings, qint32 nAnsiStrings, qint32 nFixedSize, qint32 *pnOffset) -> bool {
-        if ((nCount < 0) || !pnOffset) return false;
-        for (qint32 i = 0; i < nCount; i++) {
-            for (qint32 j = 0; j < nWideStrings; j++) {
-                if (!readWide(pnOffset, nullptr)) return false;
-            }
-            for (qint32 j = 0; j < nAnsiStrings; j++) {
-                if (!readAnsi(pnOffset)) return false;
-            }
-            if (!skipBytes(nFixedSize, pnOffset)) return false;
-        }
-        return true;
-    };
+    const InnoByteSkipper skipBytes(baBlock1);
+    const InnoWideStringReader readWide(baBlock1);
+    const InnoAnsiStringSkipper readAnsi(baBlock1);
+    const InnoUnicodeEntriesSkipper skipEntryArray(baBlock1);
 
     qint32 nFileWideStrings = 0;
     qint32 nFileAnsiStrings = 0;
@@ -3202,30 +3514,9 @@ QList<XInnoSetup::FILE_ENTRY> XInnoSetup::_parseFileEntriesAnsi(const QByteArray
     qint32 nOffset = headerInfo.nHeaderEndOffset;
     const quint64 nVersion = innoVersionValue(version);
 
-    const auto skipBytes = [&](qint32 nSize, qint32 *pnOffset) -> bool {
-        if (!pnOffset || (nSize < 0) || (*pnOffset < 0) || (*pnOffset > baBlock1.size()) || (nSize > baBlock1.size() - *pnOffset)) return false;
-        *pnOffset += nSize;
-        return true;
-    };
-    const auto readString = [&](qint32 *pnOffset, QByteArray *pValue) -> bool {
-        if (!pnOffset) return false;
-        qint32 nNewOffset = *pnOffset;
-        const QByteArray baValue = _readAnsiBytes(baBlock1, *pnOffset, &nNewOffset);
-        if (nNewOffset <= *pnOffset) return false;
-        *pnOffset = nNewOffset;
-        if (pValue) *pValue = baValue;
-        return true;
-    };
-    const auto skipEntryArray = [&](qint32 nCount, qint32 nStringCount, qint32 nFixedSize, qint32 *pnOffset) -> bool {
-        if ((nCount < 0) || !pnOffset) return false;
-        for (qint32 i = 0; i < nCount; i++) {
-            for (qint32 j = 0; j < nStringCount; j++) {
-                if (!readString(pnOffset, nullptr)) return false;
-            }
-            if (!skipBytes(nFixedSize, pnOffset)) return false;
-        }
-        return true;
-    };
+    const InnoByteSkipper skipBytes(baBlock1);
+    const InnoAnsiStringReader readString(baBlock1);
+    const InnoAnsiEntriesSkipper skipEntryArray(baBlock1);
 
     if (version.nMajor < 5) {
         if (nVersion == innoVersionValue(1, 2, 10)) {
@@ -3234,31 +3525,7 @@ QList<XInnoSetup::FILE_ENTRY> XInnoSetup::_parseFileEntriesAnsi(const QByteArray
             // SetupEnt serializes each native-width pointer record as Longint
             // TotalSize, length-prefixed strings, then its pointer-free tail.
             // Keep every string inside that boundary and consume all arrays.
-            const auto readSizedRecord = [&](qint32 nStringCount, qint32 nTailSize, QList<QByteArray> *pStrings, qint32 *pnTailOffset) -> bool {
-                if ((nStringCount < 0) || (nTailSize < 0) || (nOffset < 0) || (nOffset > baBlock1.size() - 4)) return false;
-                const quint32 nRecordSize = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baBlock1.constData() + nOffset));
-                const quint32 nMinimumSize = quint32(nStringCount * 4 + nTailSize);
-                if ((nRecordSize < nMinimumSize) || (nRecordSize > quint32(baBlock1.size() - nOffset - 4))) return false;
-                const qint32 nRecordEnd = nOffset + 4 + (qint32)nRecordSize;
-                nOffset += 4;
-                if (pStrings) {
-                    pStrings->clear();
-                    pStrings->reserve(nStringCount);
-                }
-                for (qint32 i = 0; i < nStringCount; i++) {
-                    QByteArray baValue;
-                    if (!readString(&nOffset, &baValue) || (nOffset > nRecordEnd)) {
-                        return false;
-                    }
-                    if (pStrings) pStrings->append(baValue);
-                }
-                if ((nOffset > nRecordEnd) || (nRecordEnd - nOffset != nTailSize)) {
-                    return false;
-                }
-                if (pnTailOffset) *pnTailOffset = nOffset;
-                nOffset = nRecordEnd;
-                return true;
-            };
+            const InnoSizedAnsiRecordReader readSizedRecord(baBlock1, &nOffset);
 
             for (qint32 i = 0; i < headerInfo.anCounts[0]; i++) {
                 qint32 nTailOffset = -1;
@@ -3353,41 +3620,8 @@ QList<XInnoSetup::FILE_ENTRY> XInnoSetup::_parseFileEntriesAnsi(const QByteArray
         }
 
         quint32 nCodePage = 1252;
-        const auto selectLanguageCodePage = [&](quint32 nLanguageId, quint32 nStoredCodePage) {
-            quint32 nCandidate = nStoredCodePage;
-#ifdef Q_OS_WIN
-            if ((nCandidate == 0) && (nLanguageId != 0)) {
-                wchar_t aCodePage[16] = {};
-                if (GetLocaleInfoW(MAKELCID((LANGID)nLanguageId, SORT_DEFAULT), LOCALE_IDEFAULTANSICODEPAGE, aCodePage, sizeof(aCodePage) / sizeof(aCodePage[0])) > 1) {
-                    bool bOk = false;
-                    const uint nValue = QString::fromWCharArray(aCodePage).toUInt(&bOk);
-                    if (bOk) nCandidate = nValue;
-                }
-            }
-#else
-            Q_UNUSED(nLanguageId)
-#endif
-            if (nCandidate != 0) nCodePage = nCandidate;
-        };
-
-        const auto skipBlob = [&]() -> bool { return readString(&nOffset, nullptr); };
-        const auto skipLanguage = [&](qint32 nCount, qint32 nStringCount, qint32 nFixedSize, bool bHasStoredCodePage) -> bool {
-            for (qint32 i = 0; i < nCount; i++) {
-                for (qint32 j = 0; j < nStringCount; j++) {
-                    if (!readString(&nOffset, nullptr)) return false;
-                }
-                if ((nOffset < 0) || (nOffset > baBlock1.size() - nFixedSize)) {
-                    return false;
-                }
-                const quint32 nLanguageId = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baBlock1.constData() + nOffset));
-                const quint32 nStoredCodePage = bHasStoredCodePage ? qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(baBlock1.constData() + nOffset + 4)) : 0;
-                if ((i == 0) || (nStoredCodePage == 1252)) {
-                    selectLanguageCodePage(nLanguageId, nStoredCodePage);
-                }
-                if (!skipBytes(nFixedSize, &nOffset)) return false;
-            }
-            return true;
-        };
+        const InnoAnsiBlobSkipper skipBlob(baBlock1, &nOffset);
+        const InnoAnsiLanguageEntriesSkipper skipLanguage(baBlock1, &nOffset, &nCodePage);
 
         // Header counts are serialized in field-introduction order. Derive
         // their indices so every standard 1.3-4.2 schema follows one bounded
@@ -4356,15 +4590,6 @@ bool XInnoSetup::_parseRealInnoSetup(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStru
                 return false;
             }
             QList<QByteArray> listPasswordCandidates;
-            const auto appendPasswordCandidate = [&](quint32 nCodePage) {
-                if (nCodePage == 0) return;
-                bool bEncoded = false;
-                QByteArray baCandidate = _encodeLegacyPassword(pContext->sPassword, false, nCodePage, &bEncoded);
-                if (bEncoded && !listPasswordCandidates.contains(baCandidate)) {
-                    listPasswordCandidates.append(baCandidate);
-                }
-                innoSecureClear(&baCandidate);
-            };
 
             if (pContext->bHasPasswordBytes) {
                 listPasswordCandidates.append(pContext->baPasswordBytes);
@@ -4373,15 +4598,25 @@ bool XInnoSetup::_parseRealInnoSetup(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStru
                 QByteArray baCandidate = _encodeLegacyPassword(pContext->sPassword, true, 0, &bEncoded);
                 if (bEncoded) listPasswordCandidates.append(baCandidate);
                 innoSecureClear(&baCandidate);
-            } else if (pContext->nAnsiCodePageOverride != 0) {
-                appendPasswordCandidate(pContext->nAnsiCodePageOverride);
             } else {
-                appendPasswordCandidate(pContext->nAnsiCodePage);
+                QList<quint32> listCandidateCodePages;
+                if (pContext->nAnsiCodePageOverride != 0) {
+                    listCandidateCodePages.append(pContext->nAnsiCodePageOverride);
+                } else {
+                    listCandidateCodePages.append(pContext->nAnsiCodePage);
+                }
                 static const quint32 anCandidateCodePages[] = {
                     1252U, 874U, 1250U, 1251U, 1253U, 1254U, 1255U, 1256U, 1257U, 1258U, 932U, 936U, 949U, 950U, 1361U, 65001U,
                 };
-                for (quint32 nCodePage : anCandidateCodePages) {
-                    appendPasswordCandidate(nCodePage);
+                if (pContext->nAnsiCodePageOverride == 0) {
+                    for (quint32 nCodePage : anCandidateCodePages) listCandidateCodePages.append(nCodePage);
+                }
+                for (quint32 nCodePage : listCandidateCodePages) {
+                    if (nCodePage == 0) continue;
+                    bool bEncoded = false;
+                    QByteArray baCandidate = _encodeLegacyPassword(pContext->sPassword, false, nCodePage, &bEncoded);
+                    if (bEncoded && !listPasswordCandidates.contains(baCandidate)) listPasswordCandidates.append(baCandidate);
+                    innoSecureClear(&baCandidate);
                 }
             }
 

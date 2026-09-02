@@ -27,6 +27,21 @@
 namespace {
 const qint64 MSI_MAX_TABLE_STREAM_SIZE = 256 * 1024 * 1024;
 
+class MSI_OPERATION_STATE_DELETER {
+public:
+    explicit MSI_OPERATION_STATE_DELETER(const QSharedPointer<XMSI::UNPACK_DEFERRED_CLEANUP> &pCleanup) : m_pCleanup(pCleanup)
+    {
+    }
+
+    void operator()(bool *pValue) const
+    {
+        delete pValue;
+    }
+
+private:
+    QSharedPointer<XMSI::UNPACK_DEFERRED_CLEANUP> m_pCleanup;
+};
+
 struct MSI_STRING_POOL {
     QList<QString> listStrings;
     QList<bool> listPresent;
@@ -1563,6 +1578,16 @@ static bool failExternalOutput(bool bSeekableOutput, QIODevice *pOutputDevice, q
     return false;
 }
 
+static bool failGuardedExternalOutput(const QPointer<QIODevice> &guardedOutput, qint64 *pnWritten)
+{
+    if (guardedOutput) {
+        XBinary::resize(guardedOutput.data(), 0);
+        if (guardedOutput) guardedOutput->seek(0);
+        *pnWritten = 0;
+    }
+    return false;
+}
+
 static bool unpackExternalPayloadFile(const XMSI::PAYLOAD_ENTRY &entry, QIODevice *pOutputDevice, qint64 *pnWritten, XBinary::PDSTRUCT *pPdStruct)
 {
     QPointer<QIODevice> guardedOutput(pOutputDevice);
@@ -1586,15 +1611,6 @@ static bool unpackExternalPayloadFile(const XMSI::PAYLOAD_ENTRY &entry, QIODevic
     QTemporaryFile stage;
     if (!stage.open()) return false;
 
-    auto failOutput = [&guardedOutput, pnWritten]() -> bool {
-        if (guardedOutput) {
-            XBinary::resize(guardedOutput.data(), 0);
-            if (guardedOutput) guardedOutput->seek(0);
-            *pnWritten = 0;
-        }
-        return false;
-    };
-
     QByteArray baBuffer;
     baBuffer.resize((qint32)qMin<qint64>(1 << 20, qMax<qint64>(1, entry.nSize)));
     QCryptographicHash sourceHash(QCryptographicHash::Sha256);
@@ -1606,7 +1622,7 @@ static bool unpackExternalPayloadFile(const XMSI::PAYLOAD_ENTRY &entry, QIODevic
         while (nRead < nToRead) {
             const qint64 nResult = file.read(baBuffer.data() + nRead, nToRead - nRead);
             if (nResult <= 0) {
-                return failOutput();
+                return failGuardedExternalOutput(guardedOutput, pnWritten);
             }
             nRead += nResult;
         }
@@ -1633,28 +1649,28 @@ static bool unpackExternalPayloadFile(const XMSI::PAYLOAD_ENTRY &entry, QIODevic
 
     *pnWritten = 0;
     if (!guardedOutput->seek(0) || !guardedOutput || !XBinary::resize(guardedOutput.data(), 0) || !guardedOutput || !guardedOutput->seek(0)) {
-        return failOutput();
+        return failGuardedExternalOutput(guardedOutput, pnWritten);
     }
 
     while (*pnWritten < entry.nSize) {
-        if (!guardedOutput || !XBinary::isPdStructNotCanceled(pPdStruct)) return failOutput();
+        if (!guardedOutput || !XBinary::isPdStructNotCanceled(pPdStruct)) return failGuardedExternalOutput(guardedOutput, pnWritten);
         const qint64 nToRead = qMin<qint64>(baBuffer.size(), entry.nSize - *pnWritten);
         const qint64 nRead = stage.read(baBuffer.data(), nToRead);
-        if ((nRead <= 0) || (nRead > nToRead)) return failOutput();
+        if ((nRead <= 0) || (nRead > nToRead)) return failGuardedExternalOutput(guardedOutput, pnWritten);
 
         qint64 nPublished = 0;
         while (nPublished < nRead) {
             if (!guardedOutput) return false;
             const qint64 nToWrite = nRead - nPublished;
             const qint64 nResult = guardedOutput->write(baBuffer.constData() + nPublished, nToWrite);
-            if ((nResult <= 0) || (nResult > nToWrite)) return failOutput();
+            if ((nResult <= 0) || (nResult > nToWrite)) return failGuardedExternalOutput(guardedOutput, pnWritten);
             nPublished += nResult;
             *pnWritten += nResult;
         }
     }
 
     if (!guardedOutput || (guardedOutput->size() != entry.nSize) || !guardedOutput->seek(entry.nSize) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
-        return failOutput();
+        return failGuardedExternalOutput(guardedOutput, pnWritten);
     }
     return true;
 }
@@ -1686,7 +1702,7 @@ XMSI::XMSI(QIODevice *pDevice, bool bIsImage, XADDR nModuleAddress) : XBinary(pD
 {
     m_pUnpackDeferredCleanup = QSharedPointer<UNPACK_DEFERRED_CLEANUP>::create();
     const QSharedPointer<UNPACK_DEFERRED_CLEANUP> pDeferredCleanup = m_pUnpackDeferredCleanup;
-    m_pUnpackOperationState = QSharedPointer<bool>(new bool(false), [pDeferredCleanup](bool *pValue) { delete pValue; });
+    m_pUnpackOperationState = QSharedPointer<bool>(new bool(false), MSI_OPERATION_STATE_DELETER(pDeferredCleanup));
     setIsArchive(true);
 }
 
@@ -1740,7 +1756,7 @@ bool XMSI::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
 
-        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const XBinary::_MEMORY_MAP memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
         if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);

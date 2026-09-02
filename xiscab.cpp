@@ -462,6 +462,49 @@ bool writeAll(QIODevice *pDevice, const char *pData, qint64 nSize)
     return true;
 }
 
+class ISCabChunkPublisher {
+public:
+    ISCabChunkPublisher(QIODevice *pStageDevice, XBinary::UNPACK_STATE *pState, XBinary::PDSTRUCT *pPdStruct, quint64 nExpandedSize,
+                        QCryptographicHash *pHash, quint64 *pnWritten, const QString &sBudgetError)
+        : m_pStageDevice(pStageDevice),
+          m_pState(pState),
+          m_pPdStruct(pPdStruct),
+          m_nExpandedSize(nExpandedSize),
+          m_pHash(pHash),
+          m_pnWritten(pnWritten),
+          m_sBudgetError(sBudgetError)
+    {
+    }
+
+    bool publish(QByteArray *pChunk) const
+    {
+        if (!pChunk || !m_pState || !m_pHash || !m_pnWritten || !XBinary::isPdStructNotCanceled(m_pPdStruct) || (*m_pnWritten > m_nExpandedSize) ||
+            (static_cast<quint64>(pChunk->size()) > (m_nExpandedSize - *m_pnWritten))) {
+            return false;
+        }
+        if (m_pState->spOutputBudget && !m_pState->spOutputBudget->debit(pChunk->size())) {
+            if (m_pState->spOutputBudget->isEnforcing()) {
+                XBinary::setPdStructErrorString(m_pPdStruct, m_sBudgetError);
+                return false;
+            }
+            XBinary::OUTPUT_BUDGET::noteShadowRefusal(m_pState->spOutputBudget.data());
+        }
+        if (!writeAll(m_pStageDevice, pChunk->constData(), pChunk->size())) return false;
+        m_pHash->addData(*pChunk);
+        *m_pnWritten += static_cast<quint64>(pChunk->size());
+        return true;
+    }
+
+private:
+    QIODevice *m_pStageDevice;
+    XBinary::UNPACK_STATE *m_pState;
+    XBinary::PDSTRUCT *m_pPdStruct;
+    quint64 m_nExpandedSize;
+    QCryptographicHash *m_pHash;
+    quint64 *m_pnWritten;
+    QString m_sBudgetError;
+};
+
 bool inflateInstallShieldBlock(const QByteArray &baInput, QByteArray *pOutput)
 {
     if (!pOutput || baInput.isEmpty()) return false;
@@ -1105,24 +1148,8 @@ bool XISCab::_extractEntry(const UNPACK_CONTEXT *pContext, qint32 nEntryIndex, Q
     quint64 nSeed = 0;
     quint64 nWritten = 0;
     QCryptographicHash hash(QCryptographicHash::Md5);
-
-    const auto publishChunk = [&](QByteArray *pChunk) -> bool {
-        if (!pChunk || !XBinary::isPdStructNotCanceled(pPdStruct) || (nWritten > entry.nExpandedSize) ||
-            (static_cast<quint64>(pChunk->size()) > (entry.nExpandedSize - nWritten))) {
-            return false;
-        }
-        if (pState->spOutputBudget && !pState->spOutputBudget->debit(pChunk->size())) {
-            if (pState->spOutputBudget->isEnforcing()) {
-                XBinary::setPdStructErrorString(pPdStruct, tr("Unpacked output exceeds the configured limit"));
-                return false;
-            }
-            XBinary::OUTPUT_BUDGET::noteShadowRefusal(pState->spOutputBudget.data());
-        }
-        if (!writeAll(pStageDevice, pChunk->constData(), pChunk->size())) return false;
-        hash.addData(*pChunk);
-        nWritten += static_cast<quint64>(pChunk->size());
-        return true;
-    };
+    const ISCabChunkPublisher chunkPublisher(pStageDevice, pState, pPdStruct, entry.nExpandedSize, &hash, &nWritten,
+                                             tr("Unpacked output exceeds the configured limit"));
 
     // The version-5 descriptor flag 0x2 is not the byte cipher: corpus media
     // with that bit set decode as plain streams, and the cipher was introduced
@@ -1140,7 +1167,7 @@ bool XISCab::_extractEntry(const UNPACK_CONTEXT *pContext, qint32 nEntryIndex, Q
                 if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
                 const qint32 nChunk = qMin<qint32>(64 * 1024, baExternal.size() - nOffset);
                 QByteArray baOutput = baExternal.mid(nOffset, nChunk);
-                if (!publishChunk(&baOutput)) return false;
+                if (!chunkPublisher.publish(&baOutput)) return false;
                 nOffset += nChunk;
             }
         } else {
@@ -1151,7 +1178,7 @@ bool XISCab::_extractEntry(const UNPACK_CONTEXT *pContext, qint32 nEntryIndex, Q
                 if (!reader.readExact(baBuffer.data(), nChunk)) return false;
                 if (bApplyCipher) deobfuscate(baBuffer.data(), nChunk, &nSeed);
                 QByteArray baOutput = baBuffer.left(static_cast<qint32>(nChunk));
-                if (!publishChunk(&baOutput)) return false;
+                if (!chunkPublisher.publish(&baOutput)) return false;
                 nRemaining -= static_cast<quint64>(nChunk);
             }
         }
@@ -1184,7 +1211,7 @@ bool XISCab::_extractEntry(const UNPACK_CONTEXT *pContext, qint32 nEntryIndex, Q
                 if (bApplyCipher) deobfuscate(baBlock.data(), nBlockSize, &nSeed);
                 nRemaining -= nBlockSize;
                 QByteArray baOutput;
-                if (!inflateInstallShieldBlock(baBlock, &baOutput) || !publishChunk(&baOutput)) {
+                if (!inflateInstallShieldBlock(baBlock, &baOutput) || !chunkPublisher.publish(&baOutput)) {
                     XBinary::setPdStructErrorString(pPdStruct, tr("InstallShield cabinet deflate block is invalid"));
                     return false;
                 }
@@ -1222,7 +1249,7 @@ bool XISCab::_extractEntry(const UNPACK_CONTEXT *pContext, qint32 nEntryIndex, Q
                 const QByteArray baBlock = baCompressed.mid(static_cast<qint32>(nOffset), nBlockSize);
                 nOffset += nBlockSize;
                 QByteArray baOutput;
-                if (!inflateInstallShieldBlock(baBlock, &baOutput) || !publishChunk(&baOutput)) {
+                if (!inflateInstallShieldBlock(baBlock, &baOutput) || !chunkPublisher.publish(&baOutput)) {
                     XBinary::setPdStructErrorString(pPdStruct, tr("InstallShield cabinet deflate block is invalid"));
                     return false;
                 }
@@ -1266,7 +1293,7 @@ bool XISCab::_extractEntry(const UNPACK_CONTEXT *pContext, qint32 nEntryIndex, Q
                         continue;
                     }
                     QByteArray baOutput;
-                    if (!inflateInstallShieldOldChunk(baCompressed.constData() + nChunkStart, nChunkSize, &baOutput) || !publishChunk(&baOutput)) {
+                    if (!inflateInstallShieldOldChunk(baCompressed.constData() + nChunkStart, nChunkSize, &baOutput) || !chunkPublisher.publish(&baOutput)) {
                         XBinary::setPdStructErrorString(pPdStruct, tr("InstallShield cabinet deflate chunk is invalid"));
                         return false;
                     }

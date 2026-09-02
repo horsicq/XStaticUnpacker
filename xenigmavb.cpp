@@ -110,7 +110,7 @@ bool XEnigmaVB::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
 
-        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const XBinary::_MEMORY_MAP memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
         if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
@@ -336,51 +336,80 @@ static bool evbAplibDepack(const quint8 *pSrc, qint64 nSrcLen, qint64 nExpectedO
     quint8 nTag = 0;
     qint32 nBitCount = 0;
 
-    auto getBit = [&]() -> qint32 {
-        if (!XBinary::isPdStructNotCanceled(pPdStruct)) return -1;
-        if (nBitCount == 0) {
-            if (nPos >= nSrcLen) return -1;
-            nTag = pSrc[nPos++];
-            nBitCount = 8;
+    struct GET_BIT {
+        const quint8 *pSource;
+        qint64 nSourceLength;
+        qint64 *pPosition;
+        quint8 *pTag;
+        qint32 *pBitCount;
+        XBinary::PDSTRUCT *pPdStruct;
+        qint32 operator()() const
+        {
+            if (!XBinary::isPdStructNotCanceled(pPdStruct)) return -1;
+            if (*pBitCount == 0) {
+                if (*pPosition >= nSourceLength) return -1;
+                *pTag = pSource[(*pPosition)++];
+                *pBitCount = 8;
+            }
+            const qint32 nBit = (*pTag >> 7) & 1;
+            *pTag = static_cast<quint8>(*pTag << 1);
+            --(*pBitCount);
+            return nBit;
         }
-        const qint32 nBit = (nTag >> 7) & 1;
-        nTag = (quint8)(nTag << 1);
-        nBitCount--;
-        return nBit;
     };
+    const GET_BIT getBit = {pSrc, nSrcLen, &nPos, &nTag, &nBitCount, pPdStruct};
 
-    auto getGamma = [&](quint64 *pnValue) -> bool {
-        if (!pnValue) return false;
-        quint64 nValue = 1;
-        for (;;) {
-            const qint32 nBit = getBit();
-            if (nBit < 0) return false;
-            if (nValue > ((quint64)EVB_MAX_FILE_SIZE - (quint64)nBit) / 2) return false;
-            nValue = nValue * 2 + (quint64)nBit;
-            const qint32 nContinue = getBit();
-            if (nContinue < 0) return false;
-            if (!nContinue) break;
+    struct GET_GAMMA {
+        const GET_BIT *pGetBit;
+        bool operator()(quint64 *pnValue) const
+        {
+            if (!pnValue) return false;
+            quint64 nValue = 1;
+            for (;;) {
+                const qint32 nBit = (*pGetBit)();
+                if (nBit < 0) return false;
+                if (nValue > (static_cast<quint64>(EVB_MAX_FILE_SIZE) - static_cast<quint64>(nBit)) / 2) return false;
+                nValue = nValue * 2 + static_cast<quint64>(nBit);
+                const qint32 nContinue = (*pGetBit)();
+                if (nContinue < 0) return false;
+                if (!nContinue) break;
+            }
+            *pnValue = nValue;
+            return true;
         }
-        *pnValue = nValue;
-        return true;
     };
+    const GET_GAMMA getGamma = {&getBit};
 
-    auto appendByte = [&](quint8 nByte) -> bool {
-        if ((qint64)pOut->size() >= nExpectedOutput) return false;
-        pOut->append((char)nByte);
-        return true;
+    struct APPEND_BYTE {
+        QByteArray *pOutput;
+        qint64 nExpectedOutput;
+        bool operator()(quint8 nByte) const
+        {
+            if (static_cast<qint64>(pOutput->size()) >= nExpectedOutput) return false;
+            pOutput->append(static_cast<char>(nByte));
+            return true;
+        }
     };
+    const APPEND_BYTE appendByte = {pOut, nExpectedOutput};
 
-    auto copyMatch = [&](quint64 nOffset, quint64 nLength) -> bool {
-        if ((nOffset == 0) || (nOffset > (quint64)pOut->size()) || (nLength > (quint64)(nExpectedOutput - pOut->size()))) {
-            return false;
+    struct COPY_MATCH {
+        QByteArray *pOutput;
+        qint64 nExpectedOutput;
+        XBinary::PDSTRUCT *pPdStruct;
+        bool operator()(quint64 nOffset, quint64 nLength) const
+        {
+            if ((nOffset == 0) || (nOffset > static_cast<quint64>(pOutput->size())) ||
+                (nLength > static_cast<quint64>(nExpectedOutput - pOutput->size()))) {
+                return false;
+            }
+            for (quint64 i = 0; i < nLength; i++) {
+                if (((i & 0x3FFFU) == 0) && !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+                pOutput->append(pOutput->at(pOutput->size() - static_cast<int>(nOffset)));
+            }
+            return true;
         }
-        for (quint64 i = 0; i < nLength; i++) {
-            if (((i & 0x3FFFU) == 0) && !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
-            pOut->append(pOut->at(pOut->size() - (int)nOffset));
-        }
-        return true;
     };
+    const COPY_MATCH copyMatch = {pOut, nExpectedOutput, pPdStruct};
 
     if (!appendByte(pSrc[nPos++])) return false;
 
@@ -460,7 +489,12 @@ bool XEnigmaVB::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
 {
     if (!pState) return false;
     const PDSTRUCTLIFETIME progressLifetime = pPdStruct ? retainPdStructLifetime(pPdStruct) : PDSTRUCTLIFETIME();
-    const auto isProgressAlive = [&]() -> bool { return !pPdStruct || isPdStructLifetimeAlive(progressLifetime); };
+    struct PROGRESS_ALIVE_PROBE {
+        PDSTRUCT *pPdStruct;
+        const PDSTRUCTLIFETIME *pProgressLifetime;
+        bool operator()() const { return !pPdStruct || XBinary::isPdStructLifetimeAlive(*pProgressLifetime); }
+    };
+    const PROGRESS_ALIVE_PROBE isProgressAlive = {pPdStruct, &progressLifetime};
     if (!isProgressAlive()) return false;
     const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
     if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return false;
@@ -762,14 +796,23 @@ bool XEnigmaVB::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT
     if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !guardedOutput || !isPdStructNotCanceled(pPdStruct)) return false;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     const qint32 nIndex = pState->nCurrentIndex;
-    const auto isAuthenticated = [&]() -> bool {
-        return guardedThis && pLifetimeState->bOwnerAlive && pLifetimeState->setContexts.contains(pContext) && (pState->pContext == pContext) &&
-               (pContext->pOwnerState == pState) && (pState->baUnpackSourceToken == pContext->baToken) &&
-               (pContext->nDeviceGeneration == guardedThis->getDeviceGeneration()) && (pContext->pSourceDevice.data() == guardedThis->getDevice()) &&
-               (pState->nCurrentIndex == pContext->nCurrentIndex) && (pState->nCurrentOffset == pContext->nCurrentOffset) &&
-               (pState->nNumberOfRecords == pContext->listEntries.size()) && (pState->nTotalSize == pContext->nSourceSize) && (nIndex >= 0) &&
-               (nIndex < pContext->listEntries.size());
+    struct AUTHENTICATION_PROBE {
+        const QPointer<XEnigmaVB> *pGuardedThis;
+        const QSharedPointer<LIFETIME_STATE> *pLifetimeState;
+        UNPACK_STATE *pState;
+        UNPACK_CONTEXT *pContext;
+        qint32 nIndex;
+        bool operator()() const
+        {
+            return *pGuardedThis && (*pLifetimeState)->bOwnerAlive && (*pLifetimeState)->setContexts.contains(pContext) &&
+                   (pState->pContext == pContext) && (pContext->pOwnerState == pState) && (pState->baUnpackSourceToken == pContext->baToken) &&
+                   (pContext->nDeviceGeneration == (*pGuardedThis)->getDeviceGeneration()) &&
+                   (pContext->pSourceDevice.data() == (*pGuardedThis)->getDevice()) && (pState->nCurrentIndex == pContext->nCurrentIndex) &&
+                   (pState->nCurrentOffset == pContext->nCurrentOffset) && (pState->nNumberOfRecords == pContext->listEntries.size()) &&
+                   (pState->nTotalSize == pContext->nSourceSize) && (nIndex >= 0) && (nIndex < pContext->listEntries.size());
+        }
     };
+    const AUTHENTICATION_PROBE isAuthenticated = {&guardedThis, &pLifetimeState, pState, pContext, nIndex};
     if (!isAuthenticated()) return false;
     const bool bOpen = guardedOutput->isOpen();
     if (!isAuthenticated() || !guardedOutput || !bOpen) return false;

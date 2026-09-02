@@ -63,6 +63,29 @@ public:
     }
     using XArchive::publishUnpackOutput;
 };
+
+class NsisContextValidator {
+public:
+    NsisContextValidator(const QPointer<XNSIS> &pOwner, const QPointer<QIODevice> &pOutput,
+                         const QSharedPointer<XNSIS::UNPACK_LIFETIME_STATE> &pLifetime, XNSIS::UNPACK_CONTEXT *pContext,
+                         XBinary::UNPACK_STATE *pState)
+        : m_pOwner(pOwner), m_pOutput(pOutput), m_pLifetime(pLifetime), m_pContext(pContext), m_pState(pState)
+    {
+    }
+
+    bool isCurrent() const
+    {
+        return m_pOwner && m_pOutput && m_pLifetime && m_pLifetime->bOwnerAlive && m_pLifetime->setContexts.contains(m_pContext) &&
+               (m_pContext->pOwnerState == m_pState) && (m_pState->pContext == m_pContext);
+    }
+
+private:
+    QPointer<XNSIS> m_pOwner;
+    QPointer<QIODevice> m_pOutput;
+    QSharedPointer<XNSIS::UNPACK_LIFETIME_STATE> m_pLifetime;
+    XNSIS::UNPACK_CONTEXT *m_pContext;
+    XBinary::UNPACK_STATE *m_pState;
+};
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -416,7 +439,7 @@ bool XNSIS::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
 
-        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const XBinary::_MEMORY_MAP memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
         if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
@@ -1961,10 +1984,7 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
     const XADDR nOuterModuleAddress = getModuleAddress();
     XNSIS decoder(pContext->pOuterSourceDevice.data(), bOuterIsImage, nOuterModuleAddress);
 
-    auto isContextCurrent = [&]() -> bool {
-        return guardedThis && guardedOutput && pLifetime->bOwnerAlive && pLifetime->setContexts.contains(pContext) && (pContext->pOwnerState == pState) &&
-               (pState->pContext == pContext);
-    };
+    const NsisContextValidator contextValidator(guardedThis, guardedOutput, pLifetime, pContext, pState);
 
     // Obtain the item's raw (uncompressed) data.
     QByteArray baData;
@@ -1973,7 +1993,7 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
     if (entry.bIsEmptyFile) {
         baData.clear();
     } else if (pContext->bIsSolid) {
-        if (!decoder._decodeSolidStream(pContext, pPdStruct) || !isContextCurrent()) {
+        if (!decoder._decodeSolidStream(pContext, pPdStruct) || !contextValidator.isCurrent()) {
             return false;
         }
         const qint64 nSolidSize = pContext->baSolid.size();
@@ -2006,7 +2026,7 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
     } else {
         // non-solid: [4-byte size|flag][block]
         const qint64 nFileSize = decoder.getSize();
-        if (!isContextCurrent()) return false;
+        if (!contextValidator.isCurrent()) return false;
         if ((pContext->nDataStreamOffset < 0) || (pContext->nDataSize < 0) || (nFileSize < 0)) return false;
 
         const quint64 nDataStart = (quint64)pContext->nDataStreamOffset;
@@ -2022,42 +2042,39 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
         if (nItemRelative > (std::numeric_limits<quint64>::max)() - nDataStart) return false;
         const quint64 nItemPos = nDataStart + nItemRelative;
 
-        auto decodeNonSolidBlock = [&](quint64 nBlockPos, QByteArray *pOutput, quint64 *pNextBlockPos) -> bool {
-            if (!pOutput || (nBlockPos > nDataEnd) || ((nDataEnd - nBlockPos) < 4) || (nBlockPos > (quint64)(std::numeric_limits<qint64>::max)())) return false;
+        // A patched non-solid uninstaller has a second independently framed
+        // block immediately after its patch block. Decode the one or two
+        // consecutive blocks with the same bounded framing walk.
+        const bool bHasSecondBlock = entry.bIsUninstaller && (entry.nPatchSize != 0);
+        const qint32 nBlockCount = bHasSecondBlock ? 2 : 1;
+        quint64 nBlockPos = nItemPos;
+        for (qint32 nBlockIndex = 0; nBlockIndex < nBlockCount; nBlockIndex++) {
+            QByteArray *pOutput = (nBlockIndex == 0) ? &baData : &baSolidTail;
+            if ((nBlockPos > nDataEnd) || ((nDataEnd - nBlockPos) < 4) || (nBlockPos > (quint64)(std::numeric_limits<qint64>::max)())) return false;
 
             const quint32 nSizeField = decoder.read_uint32((qint64)nBlockPos, false);
-            if (!isContextCurrent()) return false;
+            if (!contextValidator.isCurrent()) return false;
             const bool bIsCompressed = (nSizeField & kMask_IsCompressed) != 0;
             const quint32 nSize = nSizeField & ~kMask_IsCompressed;
             const quint64 nPayloadPos = nBlockPos + 4;
             if ((nSize > (quint32)kNsisMaxPackedBlock) || ((quint64)nSize > nDataEnd - nPayloadPos)) return false;
 
             QByteArray baBlock = decoder.read_array_process((qint64)nPayloadPos, nSize, pPdStruct);
-            if (!isContextCurrent() || ((quint32)baBlock.size() != nSize)) return false;
+            if (!contextValidator.isCurrent() || ((quint32)baBlock.size() != nSize)) return false;
 
             if (!bIsCompressed) {
                 *pOutput = baBlock;
             } else if (!decoder._decodeBlock(pContext->method, pContext->bFilterFlag, (const quint8 *)baBlock.constData(), baBlock.size(), 0, false,
                                              kNsisMaxMemberDecoded, pOutput, pPdStruct) ||
-                       !isContextCurrent()) {
+                       !contextValidator.isCurrent()) {
                 return false;
             }
 
-            if (pNextBlockPos) *pNextBlockPos = nPayloadPos + nSize;
-            return true;
-        };
-
-        quint64 nNextBlockPos = 0;
-        if (!decodeNonSolidBlock(nItemPos, &baData, &nNextBlockPos)) return false;
-        if (entry.bSizeDefined && (entry.nSize != (quint64)baData.size())) return false;
-
-        // A patched non-solid uninstaller has a second independently framed
-        // block immediately after its patch block. It contains the
-        // uninstaller's own NSIS archive and must be appended after patching
-        // the executable stub (the same two-decode sequence used by 7-Zip).
-        if (entry.bIsUninstaller && (entry.nPatchSize != 0)) {
-            if ((quint64)baData.size() != entry.nPatchSize) return false;
-            if (!decodeNonSolidBlock(nNextBlockPos, &baSolidTail, nullptr)) return false;
+            nBlockPos = nPayloadPos + nSize;
+            if (nBlockIndex == 0) {
+                if (entry.bSizeDefined && (entry.nSize != (quint64)baData.size())) return false;
+                if (bHasSecondBlock && ((quint64)baData.size() != entry.nPatchSize)) return false;
+            }
         }
     }
 
@@ -2070,7 +2087,7 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
     if (entry.bIsUninstaller && (entry.nPatchSize != 0)) {
         if ((pContext->nFirstHeaderOffset <= 0) || (pContext->nFirstHeaderOffset > kNsisMaxMemberDecoded)) return false;
         QByteArray baStub = decoder.read_array_process(0, pContext->nFirstHeaderOffset, pPdStruct);
-        if (!isContextCurrent()) return false;
+        if (!contextValidator.isCurrent()) return false;
         if ((baStub.size() != pContext->nFirstHeaderOffset) || ((qint64)baStub.size() > kNsisMaxMemberDecoded - (qint64)baSolidTail.size())) return false;
 
         QByteArray baPatched = baStub;
@@ -2092,7 +2109,7 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
         }
     }
 
-    if (!writeUnpackData(&stageState, &stage, baData, pPdStruct) || !isContextCurrent()) return false;
+    if (!writeUnpackData(&stageState, &stage, baData, pPdStruct) || !contextValidator.isCurrent()) return false;
     if (!guardedThis || !guardedOutput || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||
         !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !guardedOutput || !pLifetime->bOwnerAlive ||
         !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
@@ -2101,7 +2118,7 @@ bool XNSIS::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pP
     UNPACK_STATE publicationState = {};
     if (!publisher.bindUnpackSource(&publicationState, pPdStruct) || !publisher.validateAndFinalizeUnpackSource(&publicationState, pPdStruct) || !guardedThis ||
         !guardedOutput || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||
-        !publisher.publishUnpackOutput(&stage, guardedOutput.data(), &publicationState, pPdStruct) || !isContextCurrent())
+        !publisher.publishUnpackOutput(&stage, guardedOutput.data(), &publicationState, pPdStruct) || !contextValidator.isCurrent())
         return false;
     pState->nCurrentOffset = stage.size();
     return true;

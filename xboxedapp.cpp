@@ -93,7 +93,7 @@ bool XBoxedApp::handleInternalInfo(PDSTRUCT *pPdStruct)
             return false;
         }
 
-        const auto memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        const XBinary::_MEMORY_MAP memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
         if (!guardedThis) return false;
         if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
             guardedThis->rollbackInternalInfoTransaction(nTransaction);
@@ -466,27 +466,53 @@ bool XBoxedApp::_scanRecords(const QByteArray &baRegion, const QSet<QString> &se
     return XBinary::isPdStructNotCanceled(pPdStruct);
 }
 
-static bool baReadRegion(XBoxedApp *pBinary, qint64 nOffset, qint64 nSize, QByteArray *pRegion, XBinary::PDSTRUCT *pPdStruct)
+struct BA_READ_CONTEXT {
+    QPointer<XBoxedApp> guardedBinary;
+    QPointer<QIODevice> guardedSource;
+    quint64 nGeneration;
+    qint64 nSourceSize;
+
+    bool isCurrent() const
+    {
+        return guardedBinary && guardedSource && (guardedBinary->getDeviceGeneration() == nGeneration) &&
+               (guardedBinary->getDevice() == guardedSource.data());
+    }
+};
+
+static bool baReadRegion(const BA_READ_CONTEXT *pReadContext, qint64 nOffset, qint64 nSize, QByteArray *pRegion,
+                         XBinary::PDSTRUCT *pPdStruct)
 {
-    if (!pRegion || (nOffset < 0) || (nSize <= 0) || (nSize > BA_MAX_CONTAINER_SIZE) || (nOffset > pBinary->getSize()) || (nSize > pBinary->getSize() - nOffset) ||
+    if (!pReadContext || !pRegion || (nOffset < 0) || (nSize <= 0) || (nSize > BA_MAX_CONTAINER_SIZE) ||
+        (nOffset > pReadContext->nSourceSize) || (nSize > pReadContext->nSourceSize - nOffset) || !pReadContext->isCurrent() ||
         !XBinary::isPdStructNotCanceled(pPdStruct)) {
         return false;
     }
-    *pRegion = pBinary->read_array_process(nOffset, nSize, pPdStruct);
-    return (pRegion->size() == nSize) && XBinary::isPdStructNotCanceled(pPdStruct);
+
+    const QByteArray baRegion = pReadContext->guardedBinary->read_array_process(nOffset, nSize, pPdStruct);
+    if (!pReadContext->isCurrent() || (baRegion.size() != nSize) || !XBinary::isPdStructNotCanceled(pPdStruct)) return false;
+
+    *pRegion = baRegion;
+    return true;
 }
 
-static bool baCollectRegion(XBoxedApp *pBinary, QSet<QString> *pSetDeclaredNames, qint32 *pnDeclaredRecords, qint64 nOffset, qint64 nSize, XBinary::PDSTRUCT *pPdStruct)
+static bool baCollectRegion(const BA_READ_CONTEXT *pReadContext, QSet<QString> *pSetDeclaredNames, qint32 *pnDeclaredRecords, qint64 nOffset,
+                            qint64 nSize, XBinary::PDSTRUCT *pPdStruct)
 {
     QByteArray baRegion;
-    return baReadRegion(pBinary, nOffset, nSize, &baRegion, pPdStruct) && baCollectDeclaredNames(baRegion, pSetDeclaredNames, pnDeclaredRecords, pPdStruct);
+    return baReadRegion(pReadContext, nOffset, nSize, &baRegion, pPdStruct) &&
+           baCollectDeclaredNames(baRegion, pSetDeclaredNames, pnDeclaredRecords, pPdStruct);
 }
 
 bool XBoxedApp::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState) return false;
     const PDSTRUCTLIFETIME progressLifetime = pPdStruct ? retainPdStructLifetime(pPdStruct) : PDSTRUCTLIFETIME();
-    const auto isProgressAlive = [&]() -> bool { return !pPdStruct || isPdStructLifetimeAlive(progressLifetime); };
+    struct PROGRESS_ALIVE_PROBE {
+        PDSTRUCT *pPdStruct;
+        const PDSTRUCTLIFETIME *pProgressLifetime;
+        bool operator()() const { return !pPdStruct || XBinary::isPdStructLifetimeAlive(*pProgressLifetime); }
+    };
+    const PROGRESS_ALIVE_PROBE isProgressAlive = {pPdStruct, &progressLifetime};
     if (!isProgressAlive()) return false;
     const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
     if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return false;
@@ -514,6 +540,7 @@ bool XBoxedApp::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
     const qint64 nSourceSize = guardedSource->size();
     if (!isProgressAlive() || !guardedThis || !guardedSource || (nSourceSize < 0) || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
         return false;
+    const BA_READ_CONTEXT readContext = {guardedThis, guardedSource, nGeneration, nSourceSize};
     QScopedPointer<XMaterializedUnpackGuard> pSourceGuard(XMaterializedUnpackGuard::bind(guardedSource.data(), pPdStruct));
     if (!isProgressAlive() || !pSourceGuard || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
         return false;
@@ -575,64 +602,33 @@ bool XBoxedApp::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
 
     UNPACK_CONTEXT *pContext = new (std::nothrow) UNPACK_CONTEXT;
     if (!pContext) return false;
-    auto readRegion = [guardedThis, guardedSource, nGeneration, pPdStruct, &isProgressAlive](qint64 nOffset, qint64 nSize, QByteArray *pRegion) -> bool {
-        if (!isProgressAlive() || !guardedThis || !guardedSource || !pRegion || (guardedThis->getDeviceGeneration() != nGeneration) ||
-            (guardedThis->getDevice() != guardedSource.data()) || (nOffset < 0) || (nSize <= 0) || (nSize > BA_MAX_CONTAINER_SIZE) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
-            return false;
-        }
-        const qint64 nCurrentSize = guardedThis->getSize();
-        if (!isProgressAlive() || !guardedThis || !guardedSource || (guardedThis->getDeviceGeneration() != nGeneration) ||
-            (guardedThis->getDevice() != guardedSource.data()) || (nOffset > nCurrentSize) || (nSize > nCurrentSize - nOffset))
-            return false;
-        *pRegion = guardedThis->read_array_process(nOffset, nSize, pPdStruct);
-        return isProgressAlive() && guardedThis && guardedSource && (guardedThis->getDeviceGeneration() == nGeneration) &&
-               (guardedThis->getDevice() == guardedSource.data()) && (pRegion->size() == nSize) && XBinary::isPdStructNotCanceled(pPdStruct);
-    };
     QSet<QString> setDeclaredNames;
     qint32 nDeclaredRecords = 0;
-    auto collectRegion = [&readRegion, &setDeclaredNames, &nDeclaredRecords, pPdStruct, &isProgressAlive](qint64 nOffset, qint64 nSize) -> bool {
-        QByteArray baRegion;
-        if (!readRegion(nOffset, nSize, &baRegion) || !isProgressAlive()) return false;
-        const bool bCollected = baCollectDeclaredNames(baRegion, &setDeclaredNames, &nDeclaredRecords, pPdStruct);
-        return isProgressAlive() && bCollected;
-    };
-    auto scanRegion = [guardedThis, guardedSource, nGeneration, &readRegion, &setDeclaredNames, pContext, pPdStruct, &isProgressAlive](qint64 nOffset,
-                                                                                                                                       qint64 nSize) -> bool {
-        if (!isProgressAlive() || !guardedThis || !guardedSource || (guardedThis->getDeviceGeneration() != nGeneration) ||
-            (guardedThis->getDevice() != guardedSource.data()) || (nOffset < 0) || (nSize <= 0) || (nSize > BA_MAX_CONTAINER_SIZE) ||
-            !XBinary::isPdStructNotCanceled(pPdStruct)) {
-            return false;
-        }
-
-        QByteArray baRegion;
-        if (!readRegion(nOffset, nSize, &baRegion) || !isProgressAlive() || !guardedThis || !guardedSource) return false;
-        const bool bScanned = guardedThis->_scanRecords(baRegion, setDeclaredNames, pContext, pPdStruct);
-        return isProgressAlive() && guardedThis && guardedSource && bScanned;
-    };
 
     if ((info.nBxpckOffset >= 0) && (info.nBxpckSize > 0)) {
-        if (!baCollectRegion(this, &setDeclaredNames, &nDeclaredRecords, info.nBxpckOffset, info.nBxpckSize, pPdStruct)) {
+        if (!baCollectRegion(&readContext, &setDeclaredNames, &nDeclaredRecords, info.nBxpckOffset, info.nBxpckSize, pPdStruct)) {
             delete pContext;
             return false;
         }
     }
     if ((info.nMainOffset >= 0) && (info.nMainSize > 0)) {
-        if (!baCollectRegion(this, &setDeclaredNames, &nDeclaredRecords, info.nMainOffset, info.nMainSize, pPdStruct)) {
+        if (!baCollectRegion(&readContext, &setDeclaredNames, &nDeclaredRecords, info.nMainOffset, info.nMainSize, pPdStruct)) {
             delete pContext;
             return false;
         }
     }
     if ((info.nBxpckOffset >= 0) && (info.nBxpckSize > 0)) {
         QByteArray baRegion;
-        if (!baReadRegion(this, info.nBxpckOffset, info.nBxpckSize, &baRegion, pPdStruct) || !_scanRecords(baRegion, setDeclaredNames, pContext, pPdStruct)) {
+        if (!baReadRegion(&readContext, info.nBxpckOffset, info.nBxpckSize, &baRegion, pPdStruct) ||
+            !_scanRecords(baRegion, setDeclaredNames, pContext, pPdStruct)) {
             delete pContext;
             return false;
         }
     }
     if ((info.nMainOffset >= 0) && (info.nMainSize > 0)) {
         QByteArray baRegion;
-        if (!baReadRegion(this, info.nMainOffset, info.nMainSize, &baRegion, pPdStruct) || !_scanRecords(baRegion, setDeclaredNames, pContext, pPdStruct)) {
+        if (!baReadRegion(&readContext, info.nMainOffset, info.nMainSize, &baRegion, pPdStruct) ||
+            !_scanRecords(baRegion, setDeclaredNames, pContext, pPdStruct)) {
             delete pContext;
             return false;
         }
@@ -715,14 +711,24 @@ bool XBoxedApp::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT
     if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !guardedOutput || !isPdStructNotCanceled(pPdStruct)) return false;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     const qint32 nIndex = pState->nCurrentIndex;
-    const auto isAuthenticated = [&]() -> bool {
-        return guardedThis && pLifetimeState->bOwnerAlive && pLifetimeState->setContexts.contains(pContext) && (pState->pContext == pContext) &&
-               (pContext->pOwnerState == pState) && (pState->baUnpackSourceToken == pContext->baToken) &&
-               (pContext->nDeviceGeneration == guardedThis->getDeviceGeneration()) && (pContext->pSourceDevice.data() == guardedThis->getDevice()) &&
-               (pState->nCurrentIndex == pContext->nCurrentIndex) && (pState->nCurrentOffset == pContext->nCurrentOffset) &&
-               (pState->nNumberOfRecords == pContext->listEntries.size()) && (pState->nTotalSize == pContext->nSourceSize) && (nIndex >= 0) &&
-               (nIndex < pContext->listEntries.size());
+    struct AUTHENTICATION_PROBE {
+        QPointer<XBoxedApp> guardedThis;
+        QSharedPointer<LIFETIME_STATE> pLifetimeState;
+        UNPACK_CONTEXT *pContext;
+        UNPACK_STATE *pState;
+        qint32 nIndex;
+
+        bool operator()() const
+        {
+            return guardedThis && pLifetimeState->bOwnerAlive && pLifetimeState->setContexts.contains(pContext) && (pState->pContext == pContext) &&
+                   (pContext->pOwnerState == pState) && (pState->baUnpackSourceToken == pContext->baToken) &&
+                   (pContext->nDeviceGeneration == guardedThis->getDeviceGeneration()) && (pContext->pSourceDevice.data() == guardedThis->getDevice()) &&
+                   (pState->nCurrentIndex == pContext->nCurrentIndex) && (pState->nCurrentOffset == pContext->nCurrentOffset) &&
+                   (pState->nNumberOfRecords == pContext->listEntries.size()) && (pState->nTotalSize == pContext->nSourceSize) && (nIndex >= 0) &&
+                   (nIndex < pContext->listEntries.size());
+        }
     };
+    const AUTHENTICATION_PROBE isAuthenticated = {guardedThis, pLifetimeState, pContext, pState, nIndex};
     if (!isAuthenticated()) return false;
     const bool bOpen = guardedOutput->isOpen();
     if (!isAuthenticated() || !guardedOutput || !bOpen) return false;
