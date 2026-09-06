@@ -39,6 +39,7 @@
 #include "../XArchive/xarq.h"
 #include "../XArchive/xsqz.h"
 #include "../XArchive/xrtpatch.h"
+#include "../XArchive/xbzip2.h"
 
 // A modeled ZPAQ segment can legitimately be much larger than the overlay
 // signature window, so validation must be allowed to stream to EOF.  Keep the
@@ -1555,6 +1556,7 @@ XBinary::FT XSFX::getFileType()
             case ARC_ARJ: return FT_ARJSFX;
             case ARC_LHA: return FT_LHASFX;
             case ARC_GZIP: return FT_GZIPSFX;
+            case ARC_BZIP2: return FT_BZIP2SFX;
             case ARC_KWAJ: return FT_KWAJSFX;
             case ARC_SZDD: return FT_SZDDSFX;
             case ARC_PYINSTALLER: return FT_PYINSTALLER_SFX;
@@ -1578,6 +1580,7 @@ XBinary::FT XSFX::getFileType()
             case ARC_ARJ: return FT_ARJSFX;
             case ARC_LHA: return FT_LHASFX;
             case ARC_GZIP: return FT_GZIPSFX;
+            case ARC_BZIP2: return FT_BZIP2SFX;
             case ARC_KWAJ: return FT_KWAJSFX;
             case ARC_SZDD: return FT_SZDDSFX;
             case ARC_PYINSTALLER: return FT_PYINSTALLER_SFX;
@@ -1598,6 +1601,7 @@ XBinary::FT XSFX::getFileType()
         case ARC_ARJ: return FT_ARJSFX;
         case ARC_LHA: return FT_LHASFX;
         case ARC_GZIP: return FT_GZIPSFX;
+        case ARC_BZIP2: return FT_BZIP2SFX;
         case ARC_KWAJ: return FT_KWAJSFX;
         case ARC_SZDD: return FT_SZDDSFX;
         case ARC_PYINSTALLER: return FT_PYINSTALLER_SFX;
@@ -1689,6 +1693,11 @@ bool XSFX::_matchArchiveAt(qint64 nOffset, qint64 nSize, ARCTYPE *pType, qint64 
         candidate = ARC_LHA;
     } else if ((baMagic.size() >= 10) && (p[0] == 0x1F) && (p[1] == 0x8B) && (p[2] == 0x08)) {
         candidate = ARC_GZIP;
+    } else if ((baMagic.size() >= 10) && (p[0] == 'B') && (p[1] == 'Z') && (p[2] == 'h') && (p[3] >= '1') && (p[3] <= '9') &&
+               ((memcmp(p + 4, "1AY&SY", 6) == 0) || (memcmp(p + 4, "\x17\x72\x45\x38\x50\x90", 6) == 0))) {
+        // U3 SFX109 / archive17 share probe004330b0: BZh1..9 plus
+        // the data-block or empty-stream marker. The payload is never run.
+        candidate = ARC_BZIP2;
     } else if ((baMagic.size() >= 8) && (p[0] == 0x4B) && (p[1] == 0x57) && (p[2] == 0x41) && (p[3] == 0x4A) && (p[4] == 0x88) &&
                (p[5] == 0xF0) && (p[6] == 0x27) && (p[7] == 0xD1)) {
         candidate = ARC_KWAJ;
@@ -2447,7 +2456,8 @@ XSFX::INTERNAL_INFO XSFX::_detectScan(PDSTRUCT *pPdStruct, XSFX_ZPAQ_SCAN_CACHE 
                                     "5A444488F0273A41",                  // legacy SZDD mode B
                                     "01CA436F70797269676874",            // NeoSoft GX Library
                                     "67570402",                          // Crusher ARQ
-                                    "484C53515A"};                        // HLSQZ
+                                    "484C53515A",                        // HLSQZ
+                                    "425A68"};                           // BZIP2; full gate above
     const qint32 anCandidateAdjustments[] = {0, 0, 0, 0, 0, 0, 0, 0,  // 7z through ZPAQ
                                              0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // ARC methods 1 through 11
                                              0,                                // ARJ
@@ -2456,11 +2466,11 @@ XSFX::INTERNAL_INFO XSFX::_detectScan(PDSTRUCT *pPdStruct, XSFX_ZPAQ_SCAN_CACHE 
                                              0,                                // KWAJ
                                              0, 0, 0, 0,                       // SZDD signatures
                                              0,                                // GX Library
-                                             0, 0};                            // ARQ, SQZ
+                                             0, 0, 0};                         // ARQ, SQZ, BZIP2
     const ARCTYPE anSignatureTypes[] = {ARC_7Z, ARC_ZIP, ARC_ZIP, ARC_RAR, ARC_RAR, ARC_CAB, ARC_FREEARC, ARC_ZPAQ,
                                         ARC_ARC, ARC_ARC, ARC_ARC, ARC_ARC, ARC_ARC, ARC_ARC, ARC_ARC, ARC_ARC, ARC_ARC, ARC_ARC, ARC_ARC,
                                         ARC_ARJ, ARC_LHA, ARC_LHA, ARC_LHA, ARC_GZIP, ARC_KWAJ, ARC_SZDD, ARC_SZDD, ARC_SZDD, ARC_SZDD,
-                                        ARC_DEARK_LEGACY, ARC_ARQ, ARC_SQZ};
+                                        ARC_DEARK_LEGACY, ARC_ARQ, ARC_SQZ, ARC_BZIP2};
     static_assert((sizeof(apszSignatures) / sizeof(apszSignatures[0])) == (sizeof(anCandidateAdjustments) / sizeof(anCandidateAdjustments[0])),
                    "SFX signature and adjustment tables must stay aligned");
     static_assert((sizeof(apszSignatures) / sizeof(apszSignatures[0])) == (sizeof(anSignatureTypes) / sizeof(anSignatureTypes[0])),
@@ -2602,8 +2612,29 @@ XArchive *XSFX::_createArchive(ARCTYPE arcType, QIODevice *pDevice, bool bAllowO
         // EXEC-format Atari self-extractors as well as ordinary LHA members.
         // The native XLHA reader remains the bare-archive implementation, but
         // the bounded SFX view benefits from Deark's wider header dialects.
-        case ARC_LHA: return new XDearkArchive(pDevice);
+        case ARC_LHA: {
+            // PMA uses the native PMarc decoders, including U3 archive104's
+            // exact pms envelope. Other LHA SFX dialects retain Deark above.
+            QPointer<XSFX> guardedThis(this);
+            QPointer<QIODevice> guardedDevice(pDevice);
+            if (!guardedDevice) return nullptr;
+            const qint64 savedPos = guardedDevice->pos();
+            if (!guardedThis || !guardedDevice) return nullptr;
+            XBinary binary(guardedDevice.data());
+            const QByteArray prefix = binary.read_array(0, 7);
+            if (guardedDevice && savedPos >= 0) guardedDevice->seek(savedPos);
+            if (!guardedThis || !guardedDevice) return nullptr;
+            const QByteArray method = prefix.mid(2, 5);
+            if (prefix.size() == 7 && (method == "-pm0-" || method == "-pm1-" || method == "-pm2-" ||
+                                      (method == "-pms-" && quint8(prefix.at(0)) == 0x18))) {
+                // initUnpack/isValid still validate the complete header and
+                // declared suffix before this backend can expose records.
+                return new XLHA(guardedDevice.data());
+            }
+            return new XDearkArchive(guardedDevice.data());
+        }
         case ARC_GZIP: return new XGzip(pDevice);
+        case ARC_BZIP2: return new XBZIP2(pDevice);
         case ARC_KWAJ: return new XKWAJ(pDevice);
         case ARC_SZDD: return new XSZDD(pDevice);
         case ARC_PYINSTALLER: return new XPyInstallerCArchive(pDevice);
@@ -2835,6 +2866,27 @@ XBinary::ARCHIVERECORD XSFX::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStru
 
     result = pContext->pArchive->infoCurrent(&pContext->innerState, pPdStruct);
     if (!guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return ARCHIVERECORD();
+    if (pContext->info.arcType == ARC_BZIP2 && result.mapProperties.contains(FPART_PROP_ORIGINALNAME)) {
+        // U3 00432770 removes only the last extension of the outer basename;
+        // the inner SubDevice deliberately carries no filename properties.
+        QString name = QFileInfo(XBinary::getDeviceFileName(pContext->pOuterSourceDevice.data())).fileName();
+        if (!guardedThis || !m_setUnpackContexts.contains(pContext) || (pState->pContext != pContext)) return ARCHIVERECORD();
+        const qsizetype dot = name.lastIndexOf('.');
+        if (dot > 0) name.truncate(dot);
+        // U3 00424220 / 00423900: normalize one filename component.
+        if (name.endsWith('\r')) name.chop(1);
+        while (name.endsWith(' ') || name.endsWith('.')) name.chop(1);
+        name = name.left(255);
+        if (name.isEmpty()) name = QStringLiteral("_");
+        const QString forbidden = QStringLiteral("\"*/:<>?\\|");
+        for (qint32 i = 0; i < name.size(); ++i) {
+            if (name.at(i).unicode() < 32 || forbidden.contains(name.at(i))) name[i] = QLatin1Char('_');
+        }
+        const QString stem = name.section('.', 0, 0).toUpper();
+        if (stem == "AUX" || stem == "CON" || stem == "NUL" || stem == "PRN" || stem == "CLOCK$" ||
+            (stem.size() == 4 && (stem.startsWith("COM") || stem.startsWith("LPT")) && stem.at(3) >= '1' && stem.at(3) <= '9')) name.prepend('_');
+        result.mapProperties.insert(FPART_PROP_ORIGINALNAME, name);
+    }
     return result;
 }
 

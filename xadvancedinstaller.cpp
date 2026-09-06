@@ -5,11 +5,11 @@
 
 #include "xadvancedinstaller.h"
 
+#include <memory>
 #include <QBuffer>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QScopedPointer>
 #include <QScopedValueRollback>
 #include <QSet>
 
@@ -751,7 +751,7 @@ bool XAdvancedInstaller::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP
 
     QPointer<QIODevice> guardedSource(getDevice());
     if (!guardedSource) return false;
-    QScopedPointer<XArchive> initialSourceValidator(new XArchive(guardedSource.data()));
+    std::unique_ptr<XArchive> initialSourceValidator(new XArchive(guardedSource.data()));
     UNPACK_STATE initialSourceState = {};
     if (!initialSourceValidator->bindUnpackSource(&initialSourceState, pPdStruct) || !guardedThis || !guardedSource) return false;
     XAdvancedInstaller detector(guardedSource.data(), isImage(), getModuleAddress());
@@ -773,7 +773,7 @@ bool XAdvancedInstaller::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP
 
     if (info.subType == SUBTYPE_MSI) {
         if (!initialSourceValidator->isUnpackSourceCurrent(&initialSourceState, pPdStruct) || !guardedThis || !guardedSource) return false;
-        return _initMSIDelegate(pState, guardedSource.data(), nullptr, initialSourceValidator.take(), &initialSourceState, QMap<QString, QByteArray>(), mapProperties,
+        return _initMSIDelegate(pState, guardedSource.data(), nullptr, initialSourceValidator.release(), &initialSourceState, QMap<QString, QByteArray>(), mapProperties,
                                 pPdStruct);
     }
     if (info.subType != SUBTYPE_EXE) return false;
@@ -816,7 +816,7 @@ bool XAdvancedInstaller::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP
             return false;
         }
 
-        return _initMSIDelegate(pState, pExternalMSI, pExternalMSI, initialSourceValidator.take(), &initialSourceState, QMap<QString, QByteArray>(), mapProperties,
+        return _initMSIDelegate(pState, pExternalMSI, pExternalMSI, initialSourceValidator.release(), &initialSourceState, QMap<QString, QByteArray>(), mapProperties,
                                 pPdStruct);
     }
 
@@ -872,7 +872,7 @@ bool XAdvancedInstaller::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP
         return false;
     }
 
-    return _initMSIDelegate(pState, pMSIBuffer, pMSIBuffer, initialSourceValidator.take(), &initialSourceState, mapExternalCabinets, mapProperties, pPdStruct);
+    return _initMSIDelegate(pState, pMSIBuffer, pMSIBuffer, initialSourceValidator.release(), &initialSourceState, mapExternalCabinets, mapProperties, pPdStruct);
 }
 
 XBinary::ARCHIVERECORD XAdvancedInstaller::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)

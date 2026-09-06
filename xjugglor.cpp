@@ -9,6 +9,7 @@
 #include <QUuid>
 
 #include <limits>
+#include <memory>
 #include <new>
 #include <zlib.h>
 
@@ -356,8 +357,7 @@ bool XJugglor::_parse(QList<FILE_ENTRY> *pEntries, qint64 *pSourceSize,
             // Jugglor writes a local wall-clock value into a FILETIME-shaped
             // integer. Reinterpret its fields as local instead of applying a
             // second timezone conversion (U3's historical DST bug).
-            mtDateTime = QDateTime(dtEncoded.date(), dtEncoded.time(),
-                                   Qt::LocalTime);
+            mtDateTime = QDateTime(dtEncoded.date(), dtEncoded.time());
         }
 
         FILE_ENTRY entry;
@@ -488,7 +488,7 @@ bool XJugglor::initUnpack(
         return false;
     }
 
-    QScopedPointer<UNPACK_CONTEXT> pContext(
+    std::unique_ptr<UNPACK_CONTEXT> pContext(
         new (std::nothrow) UNPACK_CONTEXT);
     if (!pContext) return false;
     pContext->listEntries = entries;
@@ -502,9 +502,9 @@ bool XJugglor::initUnpack(
     pState->nTotalSize = nSourceSize;
     pState->nNumberOfRecords = entries.size();
     pState->mapUnpackProperties = mapProperties;
-    pState->pContext = pContext.data();
+    pState->pContext = pContext.get();
     pState->baUnpackSourceToken = pContext->baToken;
-    m_setContexts.insert(pContext.take());
+    m_setContexts.insert(pContext.release());
     return true;
 }
 

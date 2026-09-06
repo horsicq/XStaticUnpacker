@@ -64,6 +64,7 @@ HEADERS += \
     $$PWD/xfreearcsfx.h \
     $$PWD/xzpaqsfx.h \
     $$PWD/xgzipsfx.h \
+    $$PWD/xbzip2sfx.h \
     $$PWD/xkwajsfx.h \
     $$PWD/xszddsfx.h \
     $$PWD/xarcsfx.h \
@@ -123,6 +124,7 @@ SOURCES += \
     $$PWD/xfreearcsfx.cpp \
     $$PWD/xzpaqsfx.cpp \
     $$PWD/xgzipsfx.cpp \
+    $$PWD/xbzip2sfx.cpp \
     $$PWD/xkwajsfx.cpp \
     $$PWD/xszddsfx.cpp \
     $$PWD/xarcsfx.cpp \

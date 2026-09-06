@@ -32,7 +32,8 @@
  * stream by aCaB. Distributed under the bzip2 license (see
  * XArchive/Algos/licenses/bzip2/LICENSE). The only local changes are: dropping
  * the ClamAV build-config/runtime includes (clamav-config.h / clamav.h /
- * others.h) and replacing cli_max_malloc() with the C runtime malloc().
+ * others.h), replacing cli_max_malloc() with the C runtime malloc(), and
+ * prefixing the NSIS API macros to avoid ordinary libbzip2 header collisions.
  */
 #include <stdlib.h>
 #include "nsis_bzip2_private.h"
@@ -1014,7 +1015,7 @@ void default_bzfree ( void* opaque, void* addr )
 }
 
 /*---------------------------------------------------*/
-int BZ_API(nsis_BZ2_bzDecompressInit)
+int NSIS_BZ_API(nsis_BZ2_bzDecompressInit)
                      ( nsis_bzstream* strm,
                        int        verbosity,
                        int        small )
@@ -1053,7 +1054,7 @@ int BZ_API(nsis_BZ2_bzDecompressInit)
 }
 
 /*---------------------------------------------------*/
-int BZ_API(nsis_BZ2_bzDecompress) ( nsis_bzstream *strm )
+int NSIS_BZ_API(nsis_BZ2_bzDecompress) ( nsis_bzstream *strm )
 {
    Bool    corrupt;
    DState* s;
@@ -1110,7 +1111,7 @@ int BZ_API(nsis_BZ2_bzDecompress) ( nsis_bzstream *strm )
 
 
 /*---------------------------------------------------*/
-int BZ_API(nsis_BZ2_bzDecompressEnd)  ( nsis_bzstream *strm )
+int NSIS_BZ_API(nsis_BZ2_bzDecompressEnd)  ( nsis_bzstream *strm )
 {
    DState* s;
    if (strm == NULL) return BZ_PARAM_ERROR;

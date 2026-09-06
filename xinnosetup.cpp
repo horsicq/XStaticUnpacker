@@ -324,7 +324,7 @@ bool innoVerifyChecksum(const XBinary::ARCHIVERECORD &record, QTemporaryFile *pS
         const qint64 nRead = pStage->read(baBuffer.data(), baBuffer.size());
         if (nRead < 0) return false;
         if (nRead == 0) break;
-        hash.addData(baBuffer.constData(), nRead);
+        hash.addData(QByteArray::fromRawData(baBuffer.constData(), nRead));
     }
 
     const QByteArray baExpected = record.mapProperties.value(XBinary::FPART_PROP_CHECKSUM).toString().toLatin1().toLower();
@@ -4625,7 +4625,7 @@ bool XInnoSetup::_parseRealInnoSetup(UNPACK_CONTEXT *pContext, PDSTRUCT *pPdStru
             QByteArray baMatchedPassword;
             for (const QByteArray &baCandidate : listPasswordCandidates) {
                 QCryptographicHash passwordHash(headerInfo.encryption == INNO_ENCRYPTION_ARC4_SHA1 ? QCryptographicHash::Sha1 : QCryptographicHash::Md5);
-                passwordHash.addData("PasswordCheckHash", 17);
+                passwordHash.addData(QByteArray::fromRawData("PasswordCheckHash", 17));
                 passwordHash.addData(headerInfo.baPasswordSalt);
                 passwordHash.addData(baCandidate);
                 QByteArray baActualTest = passwordHash.result();

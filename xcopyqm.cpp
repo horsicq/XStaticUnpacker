@@ -20,10 +20,10 @@
  */
 #include "xcopyqm.h"
 
-#include <QScopedPointer>
 #include <QUuid>
 
 #include <limits>
+#include <memory>
 #include <new>
 
 namespace {
@@ -318,7 +318,7 @@ bool XCopyQM::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant>
     qint64 sourceSize = 0;
     if (!_parse(&entries, &sourceSize, pPdStruct) || entries.isEmpty()) return false;
 
-    QScopedPointer<UNPACK_CONTEXT> pContext(new (std::nothrow) UNPACK_CONTEXT);
+    std::unique_ptr<UNPACK_CONTEXT> pContext(new (std::nothrow) UNPACK_CONTEXT);
     if (!pContext) return false;
     pContext->listEntries = entries;
     pContext->pSourceDevice = getDevice();
@@ -331,9 +331,9 @@ bool XCopyQM::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant>
     pState->nTotalSize = sourceSize;
     pState->nNumberOfRecords = entries.size();
     pState->mapUnpackProperties = mapProperties;
-    pState->pContext = pContext.data();
+    pState->pContext = pContext.get();
     pState->baUnpackSourceToken = pContext->baToken;
-    m_setContexts.insert(pContext.take());
+    m_setContexts.insert(pContext.release());
     return true;
 }
 

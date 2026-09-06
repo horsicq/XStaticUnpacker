@@ -8,6 +8,7 @@
 
 #ifdef USE_XEMULATOR
 
+#include <memory>
 #include <new>
 
 #include <QBuffer>
@@ -548,7 +549,7 @@ bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
     const qint64 nSourceSize = guardedSource->size();
     if (!isProgressAlive() || !guardedThis || !guardedSource || (nSourceSize < 0) || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
         return false;
-    QScopedPointer<XMaterializedUnpackGuard> pSourceGuard(XMaterializedUnpackGuard::bind(guardedSource.data(), pPdStruct));
+    std::unique_ptr<XMaterializedUnpackGuard> pSourceGuard(XMaterializedUnpackGuard::bind(guardedSource.data(), pPdStruct));
     if (!isProgressAlive() || !pSourceGuard || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
         return false;
     if (!m_bTrustedSnapshot) {
@@ -566,7 +567,7 @@ bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
             return false;
         UNPACK_CONTEXT *pMaterializedContext = static_cast<UNPACK_CONTEXT *>(materializedState.pContext);
         if (!pMaterializedContext) return false;
-        QScopedPointer<UNPACK_CONTEXT> pContext(new (std::nothrow) UNPACK_CONTEXT);
+        std::unique_ptr<UNPACK_CONTEXT> pContext(new (std::nothrow) UNPACK_CONTEXT);
         if (!pContext) return false;
         pContext->listEntries = pMaterializedContext->listEntries;
         if (!worker.finishUnpack(&materializedState, nullptr) || !isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
@@ -582,13 +583,13 @@ bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
         if (!isProgressAlive() || !bSourceFinal || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
             !isPdStructNotCanceled(pPdStruct))
             return false;
-        pContext->pSourceGuard = pSourceGuard.take();
+        pContext->pSourceGuard = pSourceGuard.release();
         pState->nTotalSize = nSourceSize;
         pState->nNumberOfRecords = pContext->listEntries.size();
         pState->mapUnpackProperties = mapProperties;
-        pState->pContext = pContext.data();
+        pState->pContext = pContext.get();
         pState->baUnpackSourceToken = pContext->baToken;
-        pLifetimeState->setContexts.insert(pContext.take());
+        pLifetimeState->setContexts.insert(pContext.release());
         return guardedThis && pLifetimeState->bOwnerAlive;
     }
     pState->nTotalSize = nSourceSize;
@@ -709,7 +710,7 @@ bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
         delete pContext;
         return false;
     }
-    pContext->pSourceGuard = pSourceGuard.take();
+    pContext->pSourceGuard = pSourceGuard.release();
     pState->nNumberOfRecords = pContext->listEntries.size();
     pState->pContext = pContext;
     pState->baUnpackSourceToken = pContext->baToken;

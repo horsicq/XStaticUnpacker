@@ -14,6 +14,7 @@
 #include <climits>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <new>
 
 namespace {
@@ -916,10 +917,10 @@ bool XAUTOIT::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant>
     if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) || (nSourceSize < 0))
         return false;
 
-    QScopedPointer<UNPACK_CONTEXT> pContext(new (std::nothrow) UNPACK_CONTEXT);
+    std::unique_ptr<UNPACK_CONTEXT> pContext(new (std::nothrow) UNPACK_CONTEXT);
     if (!pContext || !pContext->memoryReservation.acquire(mapProperties, 0)) return false;
 
-    QScopedPointer<XMaterializedUnpackGuard> pSourceGuard(XMaterializedUnpackGuard::bind(guardedSource.data(), pPdStruct));
+    std::unique_ptr<XMaterializedUnpackGuard> pSourceGuard(XMaterializedUnpackGuard::bind(guardedSource.data(), pPdStruct));
     if (!isProgressAlive() || !pSourceGuard || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
         return false;
 
@@ -972,16 +973,16 @@ bool XAUTOIT::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant>
     if (!isProgressAlive() || !bSourceFinal || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
         !isPdStructNotCanceled(pPdStruct))
         return false;
-    pContext->pSourceGuard = pSourceGuard.take();
+    pContext->pSourceGuard = pSourceGuard.release();
 
     pState->nCurrentOffset = 0;
     pState->nTotalSize = nSourceSize;
     pState->nCurrentIndex = 0;
     pState->nNumberOfRecords = listRecords.size();
     pState->mapUnpackProperties = mapProperties;
-    pState->pContext = pContext.data();
+    pState->pContext = pContext.get();
     pState->baUnpackSourceToken = pContext->baToken;
-    pOwnerLifetimeState->setContexts.insert(pContext.take());
+    pOwnerLifetimeState->setContexts.insert(pContext.release());
     if (!guardedThis || !pOwnerLifetimeState->bOwnerAlive) return false;
     return true;
 }

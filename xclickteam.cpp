@@ -492,7 +492,7 @@ static bool ctReadSeparateVolume(QIODevice *pDevice, qint64 nDeclaredRegionSize,
     qint64 nVolumeSize = volumeInfo.size();
     if ((nVolumeSize != nDeclaredRegionSize + 4) || (nVolumeSize < 5) || (nVolumeSize > CT_MAX_CONTAINER_SIZE)) return false;
 
-    QScopedPointer<XMaterializedUnpackGuard> pVolumeGuard(XMaterializedUnpackGuard::openFile(sCanonicalVolume, pPdStruct));
+    std::unique_ptr<XMaterializedUnpackGuard> pVolumeGuard(XMaterializedUnpackGuard::openFile(sCanonicalVolume, pPdStruct));
     QPointer<QIODevice> guardedVolumeDevice(pVolumeGuard ? pVolumeGuard->device() : nullptr);
     QFile *pVolumeFile = guardedVolumeDevice ? dynamic_cast<QFile *>(guardedVolumeDevice.data()) : nullptr;
     QPointer<QFile> guardedVolumeFile(pVolumeFile);
@@ -548,8 +548,8 @@ static bool ctReadSeparateVolume(QIODevice *pDevice, qint64 nDeclaredRegionSize,
     pContext->listCompanionGuards.reserve(pContext->listCompanionGuards.size() + 1);
     // Keep ownership until QList has accepted the pointer.  append() can
     // allocate while detaching/growing and must not leak the open guard.
-    pContext->listCompanionGuards.append(pVolumeGuard.data());
-    pVolumeGuard.take();
+    pContext->listCompanionGuards.append(pVolumeGuard.get());
+    pVolumeGuard.release();
     return true;
 }
 
@@ -710,7 +710,7 @@ bool XClickteam::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVaria
     const qint64 nSourceSize = guardedSource->size();
     if (!isProgressAlive() || !guardedThis || !guardedSource || (nSourceSize < 0) || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
         return false;
-    QScopedPointer<XMaterializedUnpackGuard> pSourceGuard(XMaterializedUnpackGuard::bind(guardedSource.data(), pPdStruct));
+    std::unique_ptr<XMaterializedUnpackGuard> pSourceGuard(XMaterializedUnpackGuard::bind(guardedSource.data(), pPdStruct));
     if (!isProgressAlive() || !pSourceGuard || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
         return false;
     if (!m_bTrustedSnapshot) {
@@ -732,7 +732,7 @@ bool XClickteam::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVaria
             return false;
         UNPACK_CONTEXT *pMaterializedContext = static_cast<UNPACK_CONTEXT *>(materializedState.pContext);
         if (!pMaterializedContext) return false;
-        QScopedPointer<UNPACK_CONTEXT> pContext(new (std::nothrow) UNPACK_CONTEXT);
+        std::unique_ptr<UNPACK_CONTEXT> pContext(new (std::nothrow) UNPACK_CONTEXT);
         if (!pContext) return false;
         pContext->listEntries = pMaterializedContext->listEntries;
         pContext->nTotalOutput = pMaterializedContext->nTotalOutput;
@@ -747,17 +747,17 @@ bool XClickteam::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVaria
         pContext->nSourceSize = nSourceSize;
         if (pContext->baToken.isEmpty()) return false;
         const bool bSourceFinal = pSourceGuard->validateAndFinalize(pPdStruct);
-        const bool bCompanionsCurrent = isProgressAlive() && XMaterializedUnpackGuard::areCurrent(pSourceGuard.data(), pContext->listCompanionGuards, pPdStruct);
+        const bool bCompanionsCurrent = isProgressAlive() && XMaterializedUnpackGuard::areCurrent(pSourceGuard.get(), pContext->listCompanionGuards, pPdStruct);
         if (!isProgressAlive() || !bSourceFinal || !bCompanionsCurrent || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
             (getDevice() != guardedSource.data()) || !isPdStructNotCanceled(pPdStruct))
             return false;
-        pContext->pSourceGuard = pSourceGuard.take();
+        pContext->pSourceGuard = pSourceGuard.release();
         pState->nTotalSize = nSourceSize;
         pState->nNumberOfRecords = pContext->listEntries.size();
         pState->mapUnpackProperties = mapProperties;
-        pState->pContext = pContext.data();
+        pState->pContext = pContext.get();
         pState->baUnpackSourceToken = pContext->baToken;
-        pLifetimeState->setContexts.insert(pContext.take());
+        pLifetimeState->setContexts.insert(pContext.release());
         return guardedThis && pLifetimeState->bOwnerAlive;
     }
     pState->nTotalSize = nSourceSize;
@@ -784,13 +784,13 @@ bool XClickteam::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVaria
         return false;
     }
     const bool bSourceFinal = pSourceGuard->validateAndFinalize(pPdStruct);
-    const bool bCompanionsCurrent = isProgressAlive() && XMaterializedUnpackGuard::areCurrent(pSourceGuard.data(), pContext->listCompanionGuards, pPdStruct);
+    const bool bCompanionsCurrent = isProgressAlive() && XMaterializedUnpackGuard::areCurrent(pSourceGuard.get(), pContext->listCompanionGuards, pPdStruct);
     if (!isProgressAlive() || !bSourceFinal || !bCompanionsCurrent || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) ||
         (getDevice() != guardedSource.data()) || !isPdStructNotCanceled(pPdStruct)) {
         delete pContext;
         return false;
     }
-    pContext->pSourceGuard = pSourceGuard.take();
+    pContext->pSourceGuard = pSourceGuard.release();
     pState->nNumberOfRecords = pContext->listEntries.size();
     pState->pContext = pContext;
     pState->baUnpackSourceToken = pContext->baToken;

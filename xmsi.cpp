@@ -1011,7 +1011,7 @@ static QByteArray fingerprintExternalFile(const QString &sFileName, qint64 nExpe
         const qint64 nRequest = qMin<qint64>(baBuffer.size(), nExpectedSize - nReadTotal);
         const qint64 nRead = file.read(baBuffer.data(), nRequest);
         if ((nRead <= 0) || (nRead > nRequest)) return QByteArray();
-        hash.addData(baBuffer.constData(), nRead);
+        hash.addData(QByteArray::fromRawData(baBuffer.constData(), nRead));
         nReadTotal += nRead;
     }
 
@@ -1626,7 +1626,7 @@ static bool unpackExternalPayloadFile(const XMSI::PAYLOAD_ENTRY &entry, QIODevic
             }
             nRead += nResult;
         }
-        sourceHash.addData(baBuffer.constData(), nRead);
+        sourceHash.addData(QByteArray::fromRawData(baBuffer.constData(), nRead));
 
         qint64 nStaged = 0;
         while (nStaged < nRead) {

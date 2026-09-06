@@ -23,10 +23,10 @@
 #include "Algos/xdcldecoder.h"
 
 #include <QDateTime>
-#include <QScopedPointer>
 #include <QUuid>
 
 #include <cstring>
+#include <memory>
 #include <new>
 
 namespace {
@@ -447,7 +447,7 @@ bool XSetupFactory::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVa
     QList<FILE_ENTRY> entries;
     qint64 sourceSize = 0;
     if (!_buildEntries(&entries, &sourceSize, pPdStruct) || entries.isEmpty()) return false;
-    QScopedPointer<UNPACK_CONTEXT> context(new (std::nothrow) UNPACK_CONTEXT);
+    std::unique_ptr<UNPACK_CONTEXT> context(new (std::nothrow) UNPACK_CONTEXT);
     if (!context) return false;
     context->listEntries = entries;
     context->pSourceDevice = getDevice();
@@ -459,9 +459,9 @@ bool XSetupFactory::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVa
     pState->nTotalSize = sourceSize;
     pState->nNumberOfRecords = entries.size();
     pState->mapUnpackProperties = mapProperties;
-    pState->pContext = context.data();
+    pState->pContext = context.get();
     pState->baUnpackSourceToken = context->baToken;
-    m_setContexts.insert(context.take());
+    m_setContexts.insert(context.release());
     return true;
 }
 

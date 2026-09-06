@@ -39,7 +39,8 @@ public:
         ARC_DEARK_LEGACY,
         ARC_ARQ,
         ARC_SQZ,
-        ARC_RTPATCH
+        ARC_RTPATCH,
+        ARC_BZIP2
     };
 
     struct INTERNAL_INFO : public XBinary::INTERNAL_INFO {

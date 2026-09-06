@@ -90,6 +90,8 @@ set(XSTATICUNPACKER_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/xzpaqsfx.h
     ${CMAKE_CURRENT_LIST_DIR}/xgzipsfx.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xgzipsfx.h
+    ${CMAKE_CURRENT_LIST_DIR}/xbzip2sfx.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/xbzip2sfx.h
     ${CMAKE_CURRENT_LIST_DIR}/xkwajsfx.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xkwajsfx.h
     ${CMAKE_CURRENT_LIST_DIR}/xszddsfx.cpp

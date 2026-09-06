@@ -5,12 +5,12 @@
 #ifndef XMATERIALIZEDUNPACKGUARD_H
 #define XMATERIALIZEDUNPACKGUARD_H
 
+#include <memory>
 #include <new>
 
 #include <QFile>
 #include <QList>
 #include <QPointer>
-#include <QScopedPointer>
 
 #include "../Formats/xarchive.h"
 
@@ -26,12 +26,12 @@ public:
         if (!pDevice) return nullptr;
         // Establish the lifetime guard before XArchive's constructor or
         // source binding can invoke caller-controlled QIODevice callbacks.
-        // A QScopedPointer would retain a dangling address if such a callback
+        // A scoped smart pointer would retain a dangling address if such a callback
         // destroys an owned device and would delete it a second time while
         // unwinding the failed bind.
         QPointer<QIODevice> guardedDevice(pDevice);
         QPointer<QIODevice> guardedOwnedDevice(bOwnDevice ? pDevice : nullptr);
-        QScopedPointer<XMaterializedUnpackGuard> pResult;
+        std::unique_ptr<XMaterializedUnpackGuard> pResult;
         try {
             pResult.reset(new XMaterializedUnpackGuard(guardedDevice.data()));
         } catch (const std::bad_alloc &) {
@@ -45,14 +45,14 @@ public:
             return nullptr;
         }
         pResult->m_bBound = true;
-        return pResult.take();
+        return pResult.release();
     }
 
     static XMaterializedUnpackGuard *openFile(const QString &sFileName, XBinary::PDSTRUCT *pPdStruct = nullptr)
     {
-        QScopedPointer<QFile> pFile(new (std::nothrow) QFile(sFileName));
+        std::unique_ptr<QFile> pFile(new (std::nothrow) QFile(sFileName));
         if (!pFile || !pFile->open(QIODevice::ReadOnly)) return nullptr;
-        return bind(pFile.take(), pPdStruct, true);
+        return bind(pFile.release(), pPdStruct, true);
     }
 
     ~XMaterializedUnpackGuard()

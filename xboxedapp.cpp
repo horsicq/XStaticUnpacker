@@ -541,7 +541,7 @@ bool XBoxedApp::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
     if (!isProgressAlive() || !guardedThis || !guardedSource || (nSourceSize < 0) || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
         return false;
     const BA_READ_CONTEXT readContext = {guardedThis, guardedSource, nGeneration, nSourceSize};
-    QScopedPointer<XMaterializedUnpackGuard> pSourceGuard(XMaterializedUnpackGuard::bind(guardedSource.data(), pPdStruct));
+    std::unique_ptr<XMaterializedUnpackGuard> pSourceGuard(XMaterializedUnpackGuard::bind(guardedSource.data(), pPdStruct));
     if (!isProgressAlive() || !pSourceGuard || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
         return false;
 
@@ -561,7 +561,7 @@ bool XBoxedApp::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
             return false;
         UNPACK_CONTEXT *pMaterializedContext = static_cast<UNPACK_CONTEXT *>(materializedState.pContext);
         if (!pMaterializedContext) return false;
-        QScopedPointer<UNPACK_CONTEXT> pContext(new (std::nothrow) UNPACK_CONTEXT);
+        std::unique_ptr<UNPACK_CONTEXT> pContext(new (std::nothrow) UNPACK_CONTEXT);
         if (!pContext) return false;
         pContext->listEntries = pMaterializedContext->listEntries;
         pContext->setNames = pMaterializedContext->setNames;
@@ -582,15 +582,15 @@ bool XBoxedApp::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
         if (!isProgressAlive() || !bSourceFinal || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
             !isPdStructNotCanceled(pPdStruct))
             return false;
-        pContext->pSourceGuard = pSourceGuard.take();
+        pContext->pSourceGuard = pSourceGuard.release();
         pState->nCurrentOffset = 0;
         pState->nTotalSize = nSourceSize;
         pState->nCurrentIndex = 0;
         pState->nNumberOfRecords = pContext->listEntries.size();
         pState->mapUnpackProperties = mapProperties;
-        pState->pContext = pContext.data();
+        pState->pContext = pContext.get();
         pState->baUnpackSourceToken = pContext->baToken;
-        pLifetimeState->setContexts.insert(pContext.take());
+        pLifetimeState->setContexts.insert(pContext.release());
         return guardedThis && pLifetimeState->bOwnerAlive;
     }
 
@@ -655,7 +655,7 @@ bool XBoxedApp::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVarian
         delete pContext;
         return false;
     }
-    pContext->pSourceGuard = pSourceGuard.take();
+    pContext->pSourceGuard = pSourceGuard.release();
     pState->nNumberOfRecords = pContext->listEntries.size();
     pState->pContext = pContext;
     pState->baUnpackSourceToken = pContext->baToken;

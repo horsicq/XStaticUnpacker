@@ -221,7 +221,7 @@ static bool burnHashDevice(QIODevice *pDevice, QCryptographicHash::Algorithm alg
         const qint64 nRequest = qMin<qint64>(baBuffer.size(), nSize - nReadTotal);
         const qint64 nRead = pDevice->read(baBuffer.data(), nRequest);
         if ((nRead <= 0) || (nRead > nRequest)) return false;
-        hash.addData(baBuffer.constData(), (int)nRead);
+        hash.addData(QByteArray::fromRawData(baBuffer.constData(), (int)nRead));
         nReadTotal += nRead;
     }
 
