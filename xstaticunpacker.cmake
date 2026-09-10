@@ -1,13 +1,5 @@
 include_directories(${CMAKE_CURRENT_LIST_DIR})
 
-set(XSTATICUNPACKER_NSIS_BZIP2_SOURCE "${CMAKE_CURRENT_LIST_DIR}/nsis_bzip2/nsis_bzip2.cpp")
-if(NOT EXISTS "${XSTATICUNPACKER_NSIS_BZIP2_SOURCE}")
-    set(XSTATICUNPACKER_NSIS_BZIP2_SOURCE "${CMAKE_CURRENT_LIST_DIR}/nsis_bzip2/nsis_bzip2.c")
-endif()
-if(NOT EXISTS "${XSTATICUNPACKER_NSIS_BZIP2_SOURCE}")
-    message(FATAL_ERROR "Cannot find nsis_bzip2 source file in ${CMAKE_CURRENT_LIST_DIR}/nsis_bzip2")
-endif()
-
 # Signals to lower layers (e.g. XFormats) that the XStaticUnpacker classes are
 # compiled into this target, so they may reference them (packer/installer
 # FT_PE32_*/FT_CFBF_* handle-method file types).
@@ -49,59 +41,8 @@ endif()
 set(XSTATICUNPACKER_SOURCES
     ${XSTATICUNPACKER_SOURCES}
     ${XINSTALLSIMPLE_XEMULATOR_SOURCES}
-    ${CMAKE_CURRENT_LIST_DIR}/xinnosetup.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xinnosetup.h
-    ${CMAKE_CURRENT_LIST_DIR}/xnsis.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xnsis.h
-    ${XSTATICUNPACKER_NSIS_BZIP2_SOURCE}
-    ${CMAKE_CURRENT_LIST_DIR}/nsis_bzip2/nsis_bzip2.h
-    ${CMAKE_CURRENT_LIST_DIR}/nsis_bzip2/nsis_bzip2_private.h
     ${CMAKE_CURRENT_LIST_DIR}/xupx.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xupx.h
-    ${CMAKE_CURRENT_LIST_DIR}/xsfx.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xsfx.h
-    ${CMAKE_CURRENT_LIST_DIR}/xzipsfx.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xzipsfx.h
-    ${CMAKE_CURRENT_LIST_DIR}/xrarsfx.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xrarsfx.h
-    ${CMAKE_CURRENT_LIST_DIR}/xcabsfx.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xcabsfx.h
-    ${CMAKE_CURRENT_LIST_DIR}/xiscab.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xiscab.h
-    ${CMAKE_CURRENT_LIST_DIR}/xinstallshield.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xinstallshield.h
-    ${CMAKE_CURRENT_LIST_DIR}/xrib.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xrib.h
-    ${CMAKE_CURRENT_LIST_DIR}/xspis.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xspis.h
-    ${CMAKE_CURRENT_LIST_DIR}/xspissfx.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xspissfx.h
-    ${CMAKE_CURRENT_LIST_DIR}/xarqsfx.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xarqsfx.h
-    ${CMAKE_CURRENT_LIST_DIR}/xsqzsfx.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xsqzsfx.h
-    ${CMAKE_CURRENT_LIST_DIR}/xrtpatchsfx.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xrtpatchsfx.h
-    ${CMAKE_CURRENT_LIST_DIR}/xfpak.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xfpak.h
-    ${CMAKE_CURRENT_LIST_DIR}/xfreearcsfx.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xfreearcsfx.h
-    ${CMAKE_CURRENT_LIST_DIR}/xzpaqsfx.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xzpaqsfx.h
-    ${CMAKE_CURRENT_LIST_DIR}/xgzipsfx.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xgzipsfx.h
-    ${CMAKE_CURRENT_LIST_DIR}/xbzip2sfx.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xbzip2sfx.h
-    ${CMAKE_CURRENT_LIST_DIR}/xkwajsfx.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xkwajsfx.h
-    ${CMAKE_CURRENT_LIST_DIR}/xszddsfx.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xszddsfx.h
-    ${CMAKE_CURRENT_LIST_DIR}/xarcsfx.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xarcsfx.h
-    ${CMAKE_CURRENT_LIST_DIR}/xarjsfx.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xarjsfx.h
-    ${CMAKE_CURRENT_LIST_DIR}/xlhasfx.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xlhasfx.h
     ${CMAKE_CURRENT_LIST_DIR}/xfsg.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xfsg.h
     ${CMAKE_CURRENT_LIST_DIR}/xyoda.cpp
@@ -116,40 +57,8 @@ set(XSTATICUNPACKER_SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/xmew.h
     ${CMAKE_CURRENT_LIST_DIR}/xautoit.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xautoit.h
-    ${CMAKE_CURRENT_LIST_DIR}/xsevenzipsfx.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xsevenzipsfx.h
-    ${CMAKE_CURRENT_LIST_DIR}/xiexpress.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xiexpress.h
-    ${CMAKE_CURRENT_LIST_DIR}/xpftw.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xpftw.h
-    ${CMAKE_CURRENT_LIST_DIR}/xmsi.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xmsi.h
-    ${CMAKE_CURRENT_LIST_DIR}/xwix.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xwix.h
-    ${CMAKE_CURRENT_LIST_DIR}/xburn.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xburn.h
-    ${CMAKE_CURRENT_LIST_DIR}/xadvancedinstaller.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xadvancedinstaller.h
-    ${CMAKE_CURRENT_LIST_DIR}/xactualinstaller.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xactualinstaller.h
-    ${CMAKE_CURRENT_LIST_DIR}/xclickteam.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xclickteam.h
-    ${CMAKE_CURRENT_LIST_DIR}/xcopyqm.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xcopyqm.h
-    ${CMAKE_CURRENT_LIST_DIR}/xcreateinstall.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xcreateinstall.h
     ${CMAKE_CURRENT_LIST_DIR}/xenigmavb.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xenigmavb.h
     ${CMAKE_CURRENT_LIST_DIR}/xboxedapp.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xboxedapp.h
-    ${CMAKE_CURRENT_LIST_DIR}/xinstallforge.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xinstallforge.h
-    ${CMAKE_CURRENT_LIST_DIR}/xjugglor.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xjugglor.h
-    ${CMAKE_CURRENT_LIST_DIR}/xsmartinstall.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xsmartinstall.h
-    ${CMAKE_CURRENT_LIST_DIR}/xsetupfactory.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xsetupfactory.h
-    ${CMAKE_CURRENT_LIST_DIR}/xtarma.cpp
-    ${CMAKE_CURRENT_LIST_DIR}/xtarma.h
 )

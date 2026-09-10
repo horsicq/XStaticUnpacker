@@ -1371,6 +1371,33 @@ QMap<XBinary::UNPACK_PROP, QVariant> XUPX::getDefaultUnpackProperties()
     return result;
 }
 
+// upx never produces a file that is not smaller than the one it was made from:
+// the image is compressed, and everything the packer copies verbatim - the
+// overlay above all - is counted in BOTH the packed file and the recorded
+// original size, so it cancels out of the comparison.  A packed size that is
+// not smaller therefore means bytes were appended AFTER packing, which is what
+// an SFX builder does when it glues its payload onto an already packed stub.
+// Those bytes are not part of u_file_size, but _unpackPE and _runUPXDecompress
+// copy them into their output, so _unpackToFile's own contract - the rebuilt
+// file must be exactly u_file_size bytes - can never be met.  The Mach-O
+// detector already refuses on this exact test (upxValidateMachDataOffset); the
+// PE and DOS paths did not, so such a file was claimed as an archive, listed as
+// one member with a ratio far above 100% - 3011.9% on the "SFX IFAH" samples -
+// and then extracted nothing at all.  Refuse the claim instead of publishing a
+// record this class has already made impossible to deliver.
+static bool upxIsDeclaredOriginalSizeSane(qint64 nPackedSize, const XUPX::INTERNAL_INFO &info)
+{
+    const qint64 nOriginalSize = (qint64)(info.u_file_size ? info.u_file_size : info.u_len);
+
+    // A header that records no original size at all is a different condition,
+    // already handled by the callers; do not turn it into a refusal here.
+    if ((nPackedSize <= 0) || (nOriginalSize <= 0)) {
+        return true;
+    }
+
+    return (nOriginalSize > nPackedSize);
+}
+
 bool XUPX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &mapProperties, PDSTRUCT *pPdStruct)
 {
     if (!pState || !pState->baUnpackSourceToken.isEmpty()) return false;
@@ -1406,7 +1433,7 @@ bool XUPX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     XUPX detector(guardedSource.data(), isImage(), getModuleAddress());
     const qint64 nTotalSize = guardedSource->size();
     INTERNAL_INFO info = detector._getInternalInfo(pPdStruct);
-    if (!guardedThis || !guardedSource || (nTotalSize < 0) || !info.bIsValid ||
+    if (!guardedThis || !guardedSource || (nTotalSize < 0) || !info.bIsValid || !upxIsDeclaredOriginalSizeSane(nTotalSize, info) ||
         !isUnpackOutputSizeAllowed(mapProperties, (qint64)(info.u_file_size ? info.u_file_size : info.u_len)) ||
         !pSourceValidator->isUnpackSourceCurrent(&sourceValidationState, pPdStruct) || !guardedThis || !guardedSource) {
         pSourceValidator->releaseUnpackSource(&sourceValidationState);
