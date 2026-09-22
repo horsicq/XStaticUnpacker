@@ -57,17 +57,11 @@ XMEW::LIFETIME_STATE::~LIFETIME_STATE()
     for (UNPACK_CONTEXT *pContext : setContextsCopy) delete pContext;
 }
 
-bool XMEW::isDeviceReplacementAllowed() const
-{
-    const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
-    return pLifetimeState && pLifetimeState->bOwnerAlive && !pLifetimeState->bOperationInProgress && pLifetimeState->setContexts.isEmpty();
-}
 
 bool XMEW::isValid(PDSTRUCT *pPdStruct)
 {
-    QPointer<XMEW> guardedThis(this);
-    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
-    return guardedThis && pInfo && pInfo->bIsValid;
+    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(getInternalInfo(pPdStruct));
+    return pInfo && pInfo->bIsValid;
 }
 
 bool XMEW::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
@@ -94,39 +88,35 @@ XMEW::INTERNAL_INFO XMEW::_getInternalInfo(PDSTRUCT *pPdStruct)
 // Cache format-specific parsing together with the XBinary memory map.
 bool XMEW::handleInternalInfo(PDSTRUCT *pPdStruct)
 {
-    QPointer<XMEW> guardedThis(this);
-    const bool bAlreadyHandled = guardedThis->isInternalInfoHandled();
-    if (!guardedThis) return false;
+    const bool bAlreadyHandled = isInternalInfoHandled();
 
     if (!bAlreadyHandled) {
-        const quint64 nTransaction = guardedThis->beginInternalInfoTransaction();
+        const quint64 nTransaction = beginInternalInfoTransaction();
         if (!nTransaction) return false;
 
         // The transaction supplies the recursion sentinel. Keep every
         // source-derived value local until the same binding is revalidated.
-        guardedThis->m_internalInfo = INTERNAL_INFO();
-        INTERNAL_INFO info = guardedThis->_getInternalInfo(pPdStruct);
-        if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
-            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+        m_internalInfo = INTERNAL_INFO();
+        INTERNAL_INFO info = _getInternalInfo(pPdStruct);
+        if (!isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
+            rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
 
-        const XBinary::_MEMORY_MAP memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
-        if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
-            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+        const XBinary::_MEMORY_MAP memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        if (!isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
+            rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
         info.memoryMap = memoryMap;
 
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction)) {
-            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+        if (!isInternalInfoTransactionCurrent(nTransaction)) {
+            rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
-        guardedThis->m_internalInfo = info;
-        if (!guardedThis->commitInternalInfoTransaction(nTransaction, static_cast<XBinary::INTERNAL_INFO *>(&guardedThis->m_internalInfo))) {
-            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+        m_internalInfo = info;
+        if (!commitInternalInfoTransaction(nTransaction, static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo))) {
+            rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
     }
@@ -136,11 +126,10 @@ bool XMEW::handleInternalInfo(PDSTRUCT *pPdStruct)
 
 void *XMEW::getInternalInfo(PDSTRUCT *pPdStruct)
 {
-    QPointer<XMEW> guardedThis(this);
-    const bool bHandled = guardedThis->handleInternalInfo(pPdStruct);
-    if (!guardedThis || !bHandled) return nullptr;
+    const bool bHandled = handleInternalInfo(pPdStruct);
+    if (!bHandled) return nullptr;
 
-    return &guardedThis->m_internalInfo;
+    return &m_internalInfo;
 }
 
 void XMEW::setInternalInfo(void *pInternalInfo)
@@ -628,7 +617,6 @@ bool XMEW::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
     if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return false;
     QScopedValueRollback<bool> operationGuard(pLifetimeState->bOperationInProgress, true);
-    QPointer<XMEW> guardedThis(this);
 
     if (pState->pContext || !pState->baUnpackSourceToken.isEmpty()) {
         UNPACK_CONTEXT *pOldContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
@@ -641,36 +629,36 @@ bool XMEW::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     } else {
         *pState = UNPACK_STATE();
     }
-    if (!isProgressAlive() || !guardedThis || !isPdStructNotCanceled(pPdStruct)) return false;
+    if (!isProgressAlive() || !isPdStructNotCanceled(pPdStruct)) return false;
     const QSharedPointer<LIFETIME_STATE> pOwnerLifetimeState = pLifetimeState;
 
-    QPointer<QIODevice> guardedSource(getDevice());
+    QIODevice *guardedSource = getDevice();
     const quint64 nGeneration = getDeviceGeneration();
     const bool bIsImage = isImage();
     const XADDR nModuleAddress = getModuleAddress();
     if (!guardedSource) return false;
-    const QString sFileName = getUnpackedFileName(guardedSource.data());
-    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data())) return false;
+    const QString sFileName = getUnpackedFileName(guardedSource);
+    if (!isProgressAlive() || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource)) return false;
     const qint64 nSourceSize = guardedSource->size();
-    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) || (nSourceSize < 0))
+    if (!isProgressAlive() || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource) || (nSourceSize < 0))
         return false;
-    std::unique_ptr<XMaterializedUnpackGuard> pSourceGuard(XMaterializedUnpackGuard::bind(guardedSource.data(), pPdStruct));
-    if (!isProgressAlive() || !pSourceGuard || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+    std::unique_ptr<XMaterializedUnpackGuard> pSourceGuard(XMaterializedUnpackGuard::bind(guardedSource, pPdStruct));
+    if (!isProgressAlive() || !pSourceGuard || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource))
         return false;
 
     QScopedPointer<QIODevice> pSnapshot(createFileBuffer(nSourceSize, pPdStruct));
-    if (!isProgressAlive() || !guardedThis || !guardedSource || !pSnapshot || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()))
+    if (!isProgressAlive() || !guardedSource || !pSnapshot || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource))
         return false;
-    const bool bCopied = copyDeviceMemory(guardedSource.data(), 0, pSnapshot.data(), 0, nSourceSize, pPdStruct);
-    if (!isProgressAlive() || !bCopied || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data())) return false;
+    const bool bCopied = copyDeviceMemory(guardedSource, 0, pSnapshot.data(), 0, nSourceSize, pPdStruct);
+    if (!isProgressAlive() || !bCopied || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource)) return false;
 
     XMEW worker(pSnapshot.data(), bIsImage, nModuleAddress);
     const INTERNAL_INFO info = worker._getInternalInfo(pPdStruct);
-    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) || !info.bIsValid)
+    if (!isProgressAlive() || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource) || !info.bIsValid)
         return false;
     QByteArray baData;
     const bool bUnpacked = worker._unpackToBuffer(baData, nOutputLimit, pPdStruct);
-    if (!isProgressAlive() || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) || !bUnpacked ||
+    if (!isProgressAlive() || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource) || !bUnpacked ||
         baData.isEmpty() || !isPdStructNotCanceled(pPdStruct))
         return false;
 
@@ -687,7 +675,7 @@ bool XMEW::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     pContext->nCurrentIndex = 0;
     if (pContext->baToken.isEmpty()) return false;
     const bool bSourceFinal = pSourceGuard->validateAndFinalize(pPdStruct);
-    if (!isProgressAlive() || !bSourceFinal || !guardedThis || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource.data()) ||
+    if (!isProgressAlive() || !bSourceFinal || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource) ||
         !isPdStructNotCanceled(pPdStruct))
         return false;
     pContext->pSourceGuard = pSourceGuard.release();
@@ -700,7 +688,7 @@ bool XMEW::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     pState->pContext = pContext.get();
     pState->baUnpackSourceToken = pContext->baToken;
     pOwnerLifetimeState->setContexts.insert(pContext.release());
-    if (!guardedThis || !pOwnerLifetimeState->bOwnerAlive) return false;
+    if (!pOwnerLifetimeState->bOwnerAlive) return false;
     return true;
 }
 
@@ -710,15 +698,14 @@ XBinary::ARCHIVERECORD XMEW::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStru
     const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
     if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return result;
     QScopedValueRollback<bool> operationGuard(pLifetimeState->bOperationInProgress, true);
-    QPointer<XMEW> guardedThis(this);
     if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !isPdStructNotCanceled(pPdStruct)) return result;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) || (pState->nCurrentIndex != pContext->nCurrentIndex) ||
+        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice != getDevice()) || (pState->nCurrentIndex != pContext->nCurrentIndex) ||
         (pState->nCurrentOffset != pContext->nCurrentOffset) || (pState->nCurrentIndex != 0) || (pState->nNumberOfRecords != 1) ||
         (pState->nTotalSize != pContext->nSourceSize))
         return result;
-    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis || !pLifetimeState->bOwnerAlive ||
+    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !pLifetimeState->bOwnerAlive ||
         !pLifetimeState->setContexts.contains(pContext) || (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
         (pContext->baToken != pState->baUnpackSourceToken))
         return result;
@@ -732,7 +719,7 @@ XBinary::ARCHIVERECORD XMEW::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStru
     result.mapProperties.insert(FPART_PROP_ISFOLDER, false);
     result.mapProperties.insert(FPART_PROP_INFO, pContext->sInfo);
 
-    return guardedThis ? result : ARCHIVERECORD();
+    return result;
 }
 
 bool XMEW::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
@@ -743,7 +730,7 @@ bool XMEW::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !isPdStructNotCanceled(pPdStruct)) return false;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) || (pState->nCurrentIndex != pContext->nCurrentIndex) ||
+        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice != getDevice()) || (pState->nCurrentIndex != pContext->nCurrentIndex) ||
         (pState->nCurrentOffset != pContext->nCurrentOffset) || (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= 1) || (pState->nNumberOfRecords != 1) ||
         (pState->nTotalSize != pContext->nSourceSize))
         return false;
@@ -776,28 +763,27 @@ bool XMEW::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
     const QSharedPointer<LIFETIME_STATE> pLifetimeState = m_pUnpackLifetimeState;
     if (!pLifetimeState || !pLifetimeState->bOwnerAlive || pLifetimeState->bOperationInProgress) return false;
     QScopedValueRollback<bool> operationGuard(pLifetimeState->bOperationInProgress, true);
-    QPointer<XMEW> guardedThis(this);
-    QPointer<QIODevice> guardedOutput(pDevice);
+    QIODevice *guardedOutput = pDevice;
     if (!pState || !pState->pContext || pState->baUnpackSourceToken.isEmpty() || !guardedOutput || !isPdStructNotCanceled(pPdStruct)) return false;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice.data() != getDevice()) || (pState->nCurrentIndex != pContext->nCurrentIndex) ||
+        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice != getDevice()) || (pState->nCurrentIndex != pContext->nCurrentIndex) ||
         (pState->nCurrentOffset != pContext->nCurrentOffset) || (pState->nCurrentIndex != 0) || (pState->nNumberOfRecords != 1) ||
         (pState->nTotalSize != pContext->nSourceSize))
         return false;
 
     const bool bOpen = guardedOutput->isOpen();
-    if (!guardedThis || !guardedOutput || !bOpen) return false;
+    if (!guardedOutput || !bOpen) return false;
     const bool bWritable = guardedOutput->isWritable();
-    if (!guardedThis || !guardedOutput || !bWritable) return false;
+    if (!guardedOutput || !bWritable) return false;
     const bool bSequential = guardedOutput->isSequential();
-    if (!guardedThis || !guardedOutput || bSequential) return false;
+    if (!guardedOutput || bSequential) return false;
     const QIODevice::OpenMode openMode = guardedOutput->openMode();
-    if (!guardedThis || !guardedOutput || (openMode & (QIODevice::Append | QIODevice::Text)) || !isResizeEnable(guardedOutput.data())) return false;
-    QPointer<QIODevice> guardedSource(pContext->pSourceDevice);
-    if (guardedSource && devicesAlias(guardedSource.data(), guardedOutput.data())) return false;
-    if (!guardedThis || !guardedOutput) return false;
-    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedThis || !guardedOutput || !pLifetimeState->bOwnerAlive ||
+    if (!guardedOutput || (openMode & (QIODevice::Append | QIODevice::Text)) || !isResizeEnable(guardedOutput)) return false;
+    QIODevice *guardedSource = pContext->pSourceDevice;
+    if (guardedSource && devicesAlias(guardedSource, guardedOutput)) return false;
+    if (!guardedOutput) return false;
+    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !guardedOutput || !pLifetimeState->bOwnerAlive ||
         !pLifetimeState->setContexts.contains(pContext) || (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
         (pContext->baToken != pState->baUnpackSourceToken))
         return false;
@@ -817,15 +803,15 @@ bool XMEW::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
     UNPACK_STATE writeState = *pState;
     writeState.pContext = nullptr;
     writeState.baUnpackSourceToken.clear();
-    const bool bResult = writeUnpackData(&writeState, guardedOutput.data(), pContext->baData, pPdStruct);
+    const bool bResult = writeUnpackData(&writeState, guardedOutput, pContext->baData, pPdStruct);
     const bool bSourceCurrent = bResult && pContext->pSourceGuard && pContext->pSourceGuard->isCurrent(pPdStruct);
-    const bool bAuthenticated = bSourceCurrent && guardedThis && guardedOutput && pLifetimeState->bOwnerAlive && pLifetimeState->setContexts.contains(pContext) &&
+    const bool bAuthenticated = bSourceCurrent && guardedOutput && pLifetimeState->bOwnerAlive && pLifetimeState->setContexts.contains(pContext) &&
                                 (pState->pContext == pContext) && (pContext->pOwnerState == pState) && (pState->baUnpackSourceToken == pContext->baToken) &&
                                 (pState->nCurrentIndex == pContext->nCurrentIndex) && (pState->nCurrentOffset == pContext->nCurrentOffset) &&
                                 (pState->nNumberOfRecords == 1) && (pState->nTotalSize == pContext->nSourceSize);
     if (!bResult || !bAuthenticated) {
         if (bResult && guardedOutput) {
-            resize(guardedOutput.data(), 0);
+            resize(guardedOutput, 0);
             if (guardedOutput) guardedOutput->seek(0);
         }
         return false;

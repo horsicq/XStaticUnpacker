@@ -49,7 +49,7 @@ public:
         // their process-wide reservation is released (reverse member order).
         UNPACK_MEMORY_RESERVATION memoryReservation;
         QList<RECORD> listRecords;
-        QPointer<QIODevice> pSourceDevice;
+        QIODevice *pSourceDevice = nullptr;
         UNPACK_STATE *pOwnerState;
         QByteArray baToken;
         quint64 nDeviceGeneration;
@@ -77,9 +77,6 @@ public:
     virtual bool unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
-
-protected:
-    bool isDeviceReplacementAllowed() const override;
 
 private:
     struct LIFETIME_STATE {

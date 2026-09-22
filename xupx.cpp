@@ -410,9 +410,8 @@ quint32 XUPX::ftStringToStructID(const QString &sFtString)
 
 bool XUPX::isValid(PDSTRUCT *pPdStruct)
 {
-    QPointer<XUPX> guardedThis(this);
-    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
-    return guardedThis && pInfo && pInfo->bIsValid;
+    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(getInternalInfo(pPdStruct));
+    return pInfo && pInfo->bIsValid;
 }
 
 bool XUPX::isValid(QIODevice *pDevice, PDSTRUCT *pPdStruct)
@@ -920,39 +919,35 @@ XUPX::INTERNAL_INFO XUPX::_getInternalInfo(PDSTRUCT *pPdStruct)
 // Cache format-specific parsing together with the XBinary memory map.
 bool XUPX::handleInternalInfo(PDSTRUCT *pPdStruct)
 {
-    QPointer<XUPX> guardedThis(this);
-    const bool bAlreadyHandled = guardedThis->isInternalInfoHandled();
-    if (!guardedThis) return false;
+    const bool bAlreadyHandled = isInternalInfoHandled();
 
     if (!bAlreadyHandled) {
-        const quint64 nTransaction = guardedThis->beginInternalInfoTransaction();
+        const quint64 nTransaction = beginInternalInfoTransaction();
         if (!nTransaction) return false;
 
         // The transaction supplies the recursion sentinel. Keep every
         // source-derived value local until the same binding is revalidated.
-        guardedThis->m_internalInfo = INTERNAL_INFO();
-        INTERNAL_INFO info = guardedThis->_getInternalInfo(pPdStruct);
-        if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
-            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+        m_internalInfo = INTERNAL_INFO();
+        INTERNAL_INFO info = _getInternalInfo(pPdStruct);
+        if (!isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
+            rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
 
-        const XBinary::_MEMORY_MAP memoryMap = guardedThis->getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
-        if (!guardedThis) return false;
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
-            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+        const XBinary::_MEMORY_MAP memoryMap = getMemoryMap(MAPMODE_UNKNOWN, pPdStruct);
+        if (!isInternalInfoTransactionCurrent(nTransaction) || !XBinary::isPdStructNotCanceled(pPdStruct)) {
+            rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
         info.memoryMap = memoryMap;
 
-        if (!guardedThis->isInternalInfoTransactionCurrent(nTransaction)) {
-            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+        if (!isInternalInfoTransactionCurrent(nTransaction)) {
+            rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
-        guardedThis->m_internalInfo = info;
-        if (!guardedThis->commitInternalInfoTransaction(nTransaction, static_cast<XBinary::INTERNAL_INFO *>(&guardedThis->m_internalInfo))) {
-            guardedThis->rollbackInternalInfoTransaction(nTransaction);
+        m_internalInfo = info;
+        if (!commitInternalInfoTransaction(nTransaction, static_cast<XBinary::INTERNAL_INFO *>(&m_internalInfo))) {
+            rollbackInternalInfoTransaction(nTransaction);
             return false;
         }
     }
@@ -962,11 +957,10 @@ bool XUPX::handleInternalInfo(PDSTRUCT *pPdStruct)
 
 void *XUPX::getInternalInfo(PDSTRUCT *pPdStruct)
 {
-    QPointer<XUPX> guardedThis(this);
-    const bool bHandled = guardedThis->handleInternalInfo(pPdStruct);
-    if (!guardedThis || !bHandled) return nullptr;
+    const bool bHandled = handleInternalInfo(pPdStruct);
+    if (!bHandled) return nullptr;
 
-    return &guardedThis->m_internalInfo;
+    return &m_internalInfo;
 }
 
 void XUPX::setInternalInfo(void *pInternalInfo)
@@ -1008,9 +1002,8 @@ QString XUPX::getArch()
 {
     QString sResult;
 
-    QPointer<XUPX> guardedThis(this);
-    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo());
-    if (!guardedThis || !pInfo) return sResult;
+    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(getInternalInfo());
+    if (!pInfo) return sResult;
     const INTERNAL_INFO info = *pInfo;
 
     if (info.bIsValid) {
@@ -1076,9 +1069,8 @@ qint64 XUPX::getFileFormatSize(PDSTRUCT *pPdStruct)
 
 QString XUPX::getVersion()
 {
-    QPointer<XUPX> guardedThis(this);
-    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo());
-    if (!guardedThis || !pInfo) return QString();
+    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(getInternalInfo());
+    if (!pInfo) return QString();
     const INTERNAL_INFO info = *pInfo;
     if (info.bIsValid) {
         return QString::number(info.version);
@@ -1242,26 +1234,25 @@ bool XUPX::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
     QSharedPointer<UNPACK_LIFETIME_STATE> pLifetime = m_pUnpackLifetimeState;
     UpxOperationGuard operationGuard(pLifetime);
     if (!operationGuard.isAcquired()) return false;
-    QPointer<XUPX> guardedThis(this);
-    QPointer<QIODevice> guardedSource(getDevice());
-    QPointer<QIODevice> guardedOutput(pDevice);
+    QIODevice *guardedSource = getDevice();
+    QIODevice *guardedOutput = pDevice;
     if (!guardedSource || !guardedOutput || !guardedOutput->isOpen() || !guardedOutput->isWritable() || guardedOutput->isSequential() ||
-        (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) || !XBinary::isResizeEnable(guardedOutput.data()) || !guardedThis || !guardedSource ||
-        !guardedOutput || XBinary::devicesAlias(guardedSource.data(), guardedOutput.data()) || !guardedThis || !guardedSource || !guardedOutput ||
+        (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) || !XBinary::isResizeEnable(guardedOutput) || !guardedSource ||
+        !guardedOutput || XBinary::devicesAlias(guardedSource, guardedOutput) || !guardedSource || !guardedOutput ||
         !isPdStructNotCanceled(pPdStruct))
         return false;
 
     const bool bOuterIsImage = isImage();
     const XADDR nOuterModuleAddress = getModuleAddress();
-    UpxPublisher publisher(guardedSource.data());
+    UpxPublisher publisher(guardedSource);
     UNPACK_STATE publicationState = {};
-    if (!publisher.bindUnpackSource(&publicationState, pPdStruct) || !guardedThis || !guardedSource || !guardedOutput || !pLifetime->bOwnerAlive) return false;
+    if (!publisher.bindUnpackSource(&publicationState, pPdStruct) || !guardedSource || !guardedOutput || !pLifetime->bOwnerAlive) return false;
 
     QTemporaryFile stage;
-    XUPX decoder(guardedSource.data(), bOuterIsImage, nOuterModuleAddress);
-    if (!stage.open() || !decoder._unpackToFile(&stage, pPdStruct) || !guardedThis || !guardedSource || !guardedOutput || !pLifetime->bOwnerAlive ||
-        !publisher.validateAndFinalizeUnpackSource(&publicationState, pPdStruct) || !guardedThis || !guardedSource || !guardedOutput || !pLifetime->bOwnerAlive ||
-        !publisher.publishUnpackOutput(&stage, guardedOutput.data(), &publicationState, pPdStruct) || !guardedThis || !guardedOutput || !pLifetime->bOwnerAlive)
+    XUPX decoder(guardedSource, bOuterIsImage, nOuterModuleAddress);
+    if (!stage.open() || !decoder._unpackToFile(&stage, pPdStruct) || !guardedSource || !guardedOutput || !pLifetime->bOwnerAlive ||
+        !publisher.validateAndFinalizeUnpackSource(&publicationState, pPdStruct) || !guardedSource || !guardedOutput || !pLifetime->bOwnerAlive ||
+        !publisher.publishUnpackOutput(&stage, guardedOutput, &publicationState, pPdStruct) || !guardedOutput || !pLifetime->bOwnerAlive)
         return false;
     return true;
 }
@@ -1270,9 +1261,8 @@ bool XUPX::_unpackToFile(QIODevice *pDevice, PDSTRUCT *pPdStruct)
 {
     bool bResult = false;
 
-    QPointer<XUPX> guardedThis(this);
-    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
-    if (!guardedThis || !pInfo) return false;
+    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(getInternalInfo(pPdStruct));
+    if (!pInfo) return false;
     const INTERNAL_INFO info = *pInfo;
 
     if (info.bIsValid) {
@@ -1333,19 +1323,18 @@ XBinary::ARCHIVERECORD XUPX::_createArchiveRecord(const INTERNAL_INFO &info)
 QString XUPX::_getUnpackedFileName()
 {
     QString sResult = "content";
-    QPointer<XUPX> guardedThis(this);
-    QPointer<QIODevice> guardedDevice(getDevice());
+    QIODevice *guardedDevice = getDevice();
     const quint64 nGeneration = getDeviceGeneration();
-    if (!guardedThis || !guardedDevice) return sResult;
+    if (!guardedDevice) return sResult;
 
     // Avoid qobject_cast on a caller-owned device: its virtual meta-object
     // hooks may re-enter and destroy either the device or this parser.
-    QFile *pFile = dynamic_cast<QFile *>(guardedDevice.data());
-    QPointer<QFile> guardedFile(pFile);
-    if (!guardedThis || !guardedDevice) return sResult;
+    QFile *pFile = dynamic_cast<QFile *>(guardedDevice);
+    QFile *guardedFile = pFile;
+    if (!guardedDevice) return sResult;
     if (guardedFile) {
         const QString sFileName = guardedFile->fileName();
-        if (!guardedThis || !guardedDevice || !guardedFile || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedDevice.data())) return sResult;
+        if (!guardedDevice || !guardedFile || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedDevice)) return sResult;
         QFileInfo fi(sFileName);
 
         if (!fi.fileName().isEmpty()) {
@@ -1353,7 +1342,7 @@ QString XUPX::_getUnpackedFileName()
         }
     } else {
         const QString sObjectName = guardedDevice->objectName();
-        if (!guardedThis || !guardedDevice || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedDevice.data())) return sResult;
+        if (!guardedDevice || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedDevice)) return sResult;
         QFileInfo fi(sObjectName);
 
         if (!fi.fileName().isEmpty()) {
@@ -1407,7 +1396,6 @@ bool XUPX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     QSharedPointer<UNPACK_LIFETIME_STATE> pLifetime = m_pUnpackLifetimeState;
     UpxOperationGuard operationGuard(pLifetime);
     if (!operationGuard.isAcquired()) return false;
-    QPointer<XUPX> guardedThis(this);
     if (pState->pContext) {
         UNPACK_CONTEXT *pOldContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
         if (!pLifetime->setContexts.contains(pOldContext) || (pOldContext->pOwnerState != pState)) return false;
@@ -1415,27 +1403,27 @@ bool XUPX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
         pState->pContext = nullptr;
         deleteUnpackContext(pOldContext);
         *pState = UNPACK_STATE();
-        if (!guardedThis || !pLifetime->bOwnerAlive) return false;
+        if (!pLifetime->bOwnerAlive) return false;
     }
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
 
     *pState = UNPACK_STATE();
     pState->mapUnpackProperties = mapProperties;
-    QPointer<QIODevice> guardedSource(getDevice());
+    QIODevice *guardedSource = getDevice();
     if (!guardedSource) return false;
-    XArchive *pSourceValidator = new XArchive(guardedSource.data());
+    XArchive *pSourceValidator = new XArchive(guardedSource);
     UNPACK_STATE sourceValidationState = {};
-    if (!pSourceValidator->bindUnpackSource(&sourceValidationState, pPdStruct) || !guardedThis || !guardedSource) {
+    if (!pSourceValidator->bindUnpackSource(&sourceValidationState, pPdStruct) || !guardedSource) {
         pSourceValidator->releaseUnpackSource(&sourceValidationState);
         delete pSourceValidator;
         return false;
     }
-    XUPX detector(guardedSource.data(), isImage(), getModuleAddress());
+    XUPX detector(guardedSource, isImage(), getModuleAddress());
     const qint64 nTotalSize = guardedSource->size();
     INTERNAL_INFO info = detector._getInternalInfo(pPdStruct);
-    if (!guardedThis || !guardedSource || (nTotalSize < 0) || !info.bIsValid || !upxIsDeclaredOriginalSizeSane(nTotalSize, info) ||
+    if (!guardedSource || (nTotalSize < 0) || !info.bIsValid || !upxIsDeclaredOriginalSizeSane(nTotalSize, info) ||
         !isUnpackOutputSizeAllowed(mapProperties, (qint64)(info.u_file_size ? info.u_file_size : info.u_len)) ||
-        !pSourceValidator->isUnpackSourceCurrent(&sourceValidationState, pPdStruct) || !guardedThis || !guardedSource) {
+        !pSourceValidator->isUnpackSourceCurrent(&sourceValidationState, pPdStruct) || !guardedSource) {
         pSourceValidator->releaseUnpackSource(&sourceValidationState);
         delete pSourceValidator;
         return false;
@@ -1453,7 +1441,7 @@ bool XUPX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     }
     pContext->listRecords.append(detector._createArchiveRecord(info));
 
-    if (pContext->listRecords.isEmpty() || !pContext->pSourceValidator->validateAndFinalizeUnpackSource(&pContext->sourceValidationState, pPdStruct) || !guardedThis ||
+    if (pContext->listRecords.isEmpty() || !pContext->pSourceValidator->validateAndFinalizeUnpackSource(&pContext->sourceValidationState, pPdStruct) ||
         !guardedSource) {
         deleteUnpackContext(pContext);
         return false;
@@ -1474,13 +1462,12 @@ XBinary::ARCHIVERECORD XUPX::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdStru
     QSharedPointer<UNPACK_LIFETIME_STATE> pLifetime = m_pUnpackLifetimeState;
     UpxOperationGuard operationGuard(pLifetime);
     if (!operationGuard.isAcquired()) return result;
-    QPointer<XUPX> guardedThis(this);
     if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !isPdStructNotCanceled(pPdStruct)) return result;
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     if (!pLifetime->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
         (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pSourceValidator ||
         (pState->nNumberOfRecords != pContext->listRecords.size()) || (pState->nCurrentIndex < 0) || (pState->nCurrentIndex >= pContext->listRecords.size()) ||
-        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !pLifetime->bOwnerAlive ||
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !pLifetime->bOwnerAlive ||
         !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
         return result;
     result = pContext->listRecords.at(pState->nCurrentIndex);
@@ -1492,19 +1479,18 @@ bool XUPX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
     QSharedPointer<UNPACK_LIFETIME_STATE> pLifetime = m_pUnpackLifetimeState;
     UpxOperationGuard operationGuard(pLifetime);
     if (!operationGuard.isAcquired()) return false;
-    QPointer<XUPX> guardedThis(this);
-    QPointer<QIODevice> guardedOutput(pDevice);
+    QIODevice *guardedOutput = pDevice;
     if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !guardedOutput || !guardedOutput->isOpen() || !guardedOutput->isWritable() ||
-        guardedOutput->isSequential() || !guardedThis || !guardedOutput || (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) ||
-        !XBinary::isResizeEnable(guardedOutput.data()) || !guardedThis || !guardedOutput || !isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
+        guardedOutput->isSequential() || !guardedOutput || (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) ||
+        !XBinary::isResizeEnable(guardedOutput) || !guardedOutput || !isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
         (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
         return false;
     }
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     if (!pLifetime->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
         (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pSourceValidator ||
-        (pState->nNumberOfRecords != pContext->listRecords.size()) || XBinary::devicesAlias(pContext->pOuterSourceDevice.data(), guardedOutput.data()) || !guardedThis ||
-        !guardedOutput || !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !guardedOutput ||
+        (pState->nNumberOfRecords != pContext->listRecords.size()) || XBinary::devicesAlias(pContext->pOuterSourceDevice, guardedOutput) ||
+        !guardedOutput || !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedOutput ||
         !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
         return false;
 
@@ -1513,11 +1499,11 @@ bool XUPX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
 
     const bool bOuterIsImage = isImage();
     const XADDR nOuterModuleAddress = getModuleAddress();
-    XUPX decoder(pContext->pOuterSourceDevice.data(), bOuterIsImage, nOuterModuleAddress);
+    XUPX decoder(pContext->pOuterSourceDevice, bOuterIsImage, nOuterModuleAddress);
     QTemporaryFile stage;
-    if (!stage.open() || !decoder._unpackToFile(&stage, pPdStruct) || !guardedThis || !guardedOutput || !pLifetime->bOwnerAlive ||
+    if (!stage.open() || !decoder._unpackToFile(&stage, pPdStruct) || !guardedOutput || !pLifetime->bOwnerAlive ||
         !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||
-        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedThis || !guardedOutput || !pLifetime->bOwnerAlive ||
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedOutput || !pLifetime->bOwnerAlive ||
         !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
         return false;
     // The advertised size was preflighted by initUnpack(), but a malformed
@@ -1543,11 +1529,11 @@ bool XUPX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
             XBinary::OUTPUT_BUDGET::noteShadowRefusal(pState->spOutputBudget.data());
         }
     }
-    UpxPublisher publisher(pContext->pOuterSourceDevice.data());
+    UpxPublisher publisher(pContext->pOuterSourceDevice);
     UNPACK_STATE publicationState = {};
-    if (!publisher.bindUnpackSource(&publicationState, pPdStruct) || !publisher.validateAndFinalizeUnpackSource(&publicationState, pPdStruct) || !guardedThis ||
+    if (!publisher.bindUnpackSource(&publicationState, pPdStruct) || !publisher.validateAndFinalizeUnpackSource(&publicationState, pPdStruct) ||
         !guardedOutput || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||
-        !publisher.publishUnpackOutput(&stage, guardedOutput.data(), &publicationState, pPdStruct) || !guardedThis || !guardedOutput || !pLifetime->bOwnerAlive ||
+        !publisher.publishUnpackOutput(&stage, guardedOutput, &publicationState, pPdStruct) || !guardedOutput || !pLifetime->bOwnerAlive ||
         !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
         return false;
     pState->nCurrentOffset = stage.size();
@@ -1559,7 +1545,6 @@ bool XUPX::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     QSharedPointer<UNPACK_LIFETIME_STATE> pLifetime = m_pUnpackLifetimeState;
     UpxOperationGuard operationGuard(pLifetime);
     if (!operationGuard.isAcquired()) return false;
-    QPointer<XUPX> guardedThis(this);
     if (!pState || !pState->baUnpackSourceToken.isEmpty() || !pState->pContext || !isPdStructNotCanceled(pPdStruct) || (pState->nCurrentIndex < 0) ||
         (pState->nCurrentIndex >= pState->nNumberOfRecords)) {
         return false;
@@ -1568,12 +1553,12 @@ bool XUPX::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
     if (!pLifetime->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
         (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pSourceValidator ||
         (pState->nNumberOfRecords != pContext->listRecords.size()) || !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) ||
-        !guardedThis || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
+        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
         return false;
     pState->nCurrentIndex++;
     pState->nCurrentOffset = 0;
     const bool bCurrent = pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct);
-    return bCurrent && guardedThis && pLifetime->bOwnerAlive && pLifetime->setContexts.contains(pContext) && (pState->pContext == pContext) &&
+    return bCurrent && pLifetime->bOwnerAlive && pLifetime->setContexts.contains(pContext) && (pState->pContext == pContext) &&
            (pState->nCurrentIndex < pState->nNumberOfRecords);
 }
 
@@ -1598,16 +1583,14 @@ bool XUPX::finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
 
 bool XUPX::isPackedFile(PDSTRUCT *pPdStruct)
 {
-    QPointer<XUPX> guardedThis(this);
-    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
-    return guardedThis && pInfo && pInfo->bIsValid;
+    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(getInternalInfo(pPdStruct));
+    return pInfo && pInfo->bIsValid;
 }
 
 QString XUPX::packerVersion(PDSTRUCT *pPdStruct)
 {
-    QPointer<XUPX> guardedThis(this);
-    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
-    if (!guardedThis || !pInfo) return QString();
+    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(getInternalInfo(pPdStruct));
+    if (!pInfo) return QString();
     const INTERNAL_INFO info = *pInfo;
     if (info.bIsValid) {
         return QString::number(info.version);
@@ -1617,9 +1600,8 @@ QString XUPX::packerVersion(PDSTRUCT *pPdStruct)
 
 QString XUPX::compressionMethod(PDSTRUCT *pPdStruct)
 {
-    QPointer<XUPX> guardedThis(this);
-    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(guardedThis->getInternalInfo(pPdStruct));
-    if (!guardedThis || !pInfo) return QString();
+    const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(getInternalInfo(pPdStruct));
+    if (!pInfo) return QString();
     const INTERNAL_INFO info = *pInfo;
     if (info.bIsValid) {
         return upxMethodToString(info.method);

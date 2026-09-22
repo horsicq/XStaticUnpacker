@@ -43,7 +43,7 @@ public:
     };
 
     struct UNPACK_CONTEXT {
-        QPointer<QIODevice> pOuterSourceDevice;
+        QIODevice *pOuterSourceDevice = nullptr;
         quint64 nOwnerDeviceGeneration;
         UNPACK_STATE *pOwnerState = nullptr;
         XArchive *pSourceValidator;
@@ -200,13 +200,6 @@ public:
     bool isPackedFile(PDSTRUCT *pPdStruct = nullptr);
     QString packerVersion(PDSTRUCT *pPdStruct = nullptr);
     QString compressionMethod(PDSTRUCT *pPdStruct = nullptr);
-
-protected:
-    bool isDeviceReplacementAllowed() const override
-    {
-        return m_pUnpackLifetimeState && m_pUnpackLifetimeState->bOwnerAlive && !m_pUnpackLifetimeState->bOperationInProgress &&
-               m_pUnpackLifetimeState->setContexts.isEmpty();
-    }
 
 private:
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);

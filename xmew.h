@@ -50,9 +50,6 @@ public:
     virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
 
-protected:
-    bool isDeviceReplacementAllowed() const override;
-
 private:
     INTERNAL_INFO _getInternalInfo(PDSTRUCT *pPdStruct);
     INTERNAL_INFO m_internalInfo;
@@ -61,7 +58,7 @@ private:
         QByteArray baData;
         QString sFileName;
         QString sInfo;
-        QPointer<QIODevice> pSourceDevice;
+        QIODevice *pSourceDevice = nullptr;
         UNPACK_STATE *pOwnerState;
         QByteArray baToken;
         quint64 nDeviceGeneration;

@@ -52,7 +52,7 @@ public:
         qint64 nSourceSize = 0;
         XMaterializedUnpackGuard *pSourceGuard = nullptr;
         quint64 nDeviceGeneration = 0;
-        QPointer<QIODevice> pSourceDevice;
+        QIODevice *pSourceDevice = nullptr;
         UNPACK_STATE *pOwnerState = nullptr;
         QByteArray baToken;
     };
@@ -73,9 +73,6 @@ public:
     virtual bool unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
     virtual bool finishUnpack(UNPACK_STATE *pState, PDSTRUCT *pPdStruct = nullptr) override;
-
-protected:
-    bool isDeviceReplacementAllowed() const override;
 
 private:
     struct LIFETIME_STATE {
