@@ -184,7 +184,6 @@ XASPACK::LIFETIME_STATE::~LIFETIME_STATE()
     for (UNPACK_CONTEXT *pContext : setContextsCopy) delete pContext;
 }
 
-
 bool XASPACK::isValid(PDSTRUCT *pPdStruct)
 {
     const INTERNAL_INFO *pInfo = static_cast<const INTERNAL_INFO *>(getInternalInfo(pPdStruct));
@@ -704,7 +703,10 @@ bool XASPACK::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant>
     struct PROGRESS_ALIVE_PROBE {
         PDSTRUCT *pPdStruct;
         const PDSTRUCTLIFETIME *pProgressLifetime;
-        bool operator()() const { return !pPdStruct || XBinary::isPdStructLifetimeAlive(*pProgressLifetime); }
+        bool operator()() const
+        {
+            return !pPdStruct || XBinary::isPdStructLifetimeAlive(*pProgressLifetime);
+        }
     };
     const PROGRESS_ALIVE_PROBE isProgressAlive = {pPdStruct, &progressLifetime};
     if (!isProgressAlive()) return false;
@@ -734,26 +736,22 @@ bool XASPACK::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant>
     const QString sFileName = getUnpackedFileName(guardedSource);
     if (!isProgressAlive() || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource)) return false;
     const qint64 nSourceSize = guardedSource->size();
-    if (!isProgressAlive() || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource) || (nSourceSize < 0))
-        return false;
+    if (!isProgressAlive() || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource) || (nSourceSize < 0)) return false;
     std::unique_ptr<XMaterializedUnpackGuard> pSourceGuard(XMaterializedUnpackGuard::bind(guardedSource, pPdStruct));
-    if (!isProgressAlive() || !pSourceGuard || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource))
-        return false;
+    if (!isProgressAlive() || !pSourceGuard || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource)) return false;
 
     QScopedPointer<QIODevice> pSnapshot(createFileBuffer(nSourceSize, pPdStruct));
-    if (!isProgressAlive() || !guardedSource || !pSnapshot || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource))
-        return false;
+    if (!isProgressAlive() || !guardedSource || !pSnapshot || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource)) return false;
     const bool bCopied = copyDeviceMemory(guardedSource, 0, pSnapshot.data(), 0, nSourceSize, pPdStruct);
     if (!isProgressAlive() || !bCopied || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource)) return false;
 
     XASPACK worker(pSnapshot.data(), bIsImage, nModuleAddress);
     const INTERNAL_INFO info = worker._detect(pPdStruct);
-    if (!isProgressAlive() || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource) || !info.bIsValid)
-        return false;
+    if (!isProgressAlive() || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource) || !info.bIsValid) return false;
     QByteArray baData;
     const bool bUnpacked = worker._unpackToBuffer(baData, nOutputLimit, pPdStruct);
-    if (!isProgressAlive() || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource) || !bUnpacked ||
-        baData.isEmpty() || !isPdStructNotCanceled(pPdStruct))
+    if (!isProgressAlive() || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource) || !bUnpacked || baData.isEmpty() ||
+        !isPdStructNotCanceled(pPdStruct))
         return false;
 
     std::unique_ptr<UNPACK_CONTEXT> pContext(new UNPACK_CONTEXT);
@@ -799,9 +797,8 @@ XBinary::ARCHIVERECORD XASPACK::infoCurrent(UNPACK_STATE *pState, PDSTRUCT *pPdS
         (pState->nCurrentOffset != pContext->nCurrentOffset) || (pState->nCurrentIndex != 0) || (pState->nNumberOfRecords != 1) ||
         (pState->nTotalSize != pContext->nSourceSize))
         return result;
-    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !pLifetimeState->bOwnerAlive ||
-        !pLifetimeState->setContexts.contains(pContext) || (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken))
+    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !pLifetimeState->bOwnerAlive || !pLifetimeState->setContexts.contains(pContext) ||
+        (pState->pContext != pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken))
         return result;
 
     result.nStreamOffset = 0;

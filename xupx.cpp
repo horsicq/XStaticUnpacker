@@ -1237,9 +1237,8 @@ bool XUPX::unpack(QIODevice *pDevice, PDSTRUCT *pPdStruct)
     QIODevice *guardedSource = getDevice();
     QIODevice *guardedOutput = pDevice;
     if (!guardedSource || !guardedOutput || !guardedOutput->isOpen() || !guardedOutput->isWritable() || guardedOutput->isSequential() ||
-        (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) || !XBinary::isResizeEnable(guardedOutput) || !guardedSource ||
-        !guardedOutput || XBinary::devicesAlias(guardedSource, guardedOutput) || !guardedSource || !guardedOutput ||
-        !isPdStructNotCanceled(pPdStruct))
+        (guardedOutput->openMode() & (QIODevice::Append | QIODevice::Text)) || !XBinary::isResizeEnable(guardedOutput) || !guardedSource || !guardedOutput ||
+        XBinary::devicesAlias(guardedSource, guardedOutput) || !guardedSource || !guardedOutput || !isPdStructNotCanceled(pPdStruct))
         return false;
 
     const bool bOuterIsImage = isImage();
@@ -1441,8 +1440,7 @@ bool XUPX::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QVariant> &m
     }
     pContext->listRecords.append(detector._createArchiveRecord(info));
 
-    if (pContext->listRecords.isEmpty() || !pContext->pSourceValidator->validateAndFinalizeUnpackSource(&pContext->sourceValidationState, pPdStruct) ||
-        !guardedSource) {
+    if (pContext->listRecords.isEmpty() || !pContext->pSourceValidator->validateAndFinalizeUnpackSource(&pContext->sourceValidationState, pPdStruct) || !guardedSource) {
         deleteUnpackContext(pContext);
         return false;
     }
@@ -1489,9 +1487,9 @@ bool XUPX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     if (!pLifetime->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || !pContext->pOuterSourceDevice ||
         (pContext->pOuterSourceDevice != getDevice()) || (pContext->nOwnerDeviceGeneration != getDeviceGeneration()) || !pContext->pSourceValidator ||
-        (pState->nNumberOfRecords != pContext->listRecords.size()) || XBinary::devicesAlias(pContext->pOuterSourceDevice, guardedOutput) ||
-        !guardedOutput || !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedOutput ||
-        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
+        (pState->nNumberOfRecords != pContext->listRecords.size()) || XBinary::devicesAlias(pContext->pOuterSourceDevice, guardedOutput) || !guardedOutput ||
+        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedOutput || !pLifetime->bOwnerAlive ||
+        !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
         return false;
 
     const ARCHIVERECORD &record = pContext->listRecords.at(pState->nCurrentIndex);
@@ -1501,10 +1499,9 @@ bool XUPX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
     const XADDR nOuterModuleAddress = getModuleAddress();
     XUPX decoder(pContext->pOuterSourceDevice, bOuterIsImage, nOuterModuleAddress);
     QTemporaryFile stage;
-    if (!stage.open() || !decoder._unpackToFile(&stage, pPdStruct) || !guardedOutput || !pLifetime->bOwnerAlive ||
-        !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||
-        !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedOutput || !pLifetime->bOwnerAlive ||
-        !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
+    if (!stage.open() || !decoder._unpackToFile(&stage, pPdStruct) || !guardedOutput || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) ||
+        (pState->pContext != pContext) || !pContext->pSourceValidator->isUnpackSourceCurrent(&pContext->sourceValidationState, pPdStruct) || !guardedOutput ||
+        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
         return false;
     // The advertised size was preflighted by initUnpack(), but a malformed
     // header or reconstruction bug must not publish a larger staged result.
@@ -1531,8 +1528,8 @@ bool XUPX::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDSTRUCT *pPd
     }
     UpxPublisher publisher(pContext->pOuterSourceDevice);
     UNPACK_STATE publicationState = {};
-    if (!publisher.bindUnpackSource(&publicationState, pPdStruct) || !publisher.validateAndFinalizeUnpackSource(&publicationState, pPdStruct) ||
-        !guardedOutput || !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||
+    if (!publisher.bindUnpackSource(&publicationState, pPdStruct) || !publisher.validateAndFinalizeUnpackSource(&publicationState, pPdStruct) || !guardedOutput ||
+        !pLifetime->bOwnerAlive || !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext) ||
         !publisher.publishUnpackOutput(&stage, guardedOutput, &publicationState, pPdStruct) || !guardedOutput || !pLifetime->bOwnerAlive ||
         !pLifetime->setContexts.contains(pContext) || (pState->pContext != pContext))
         return false;

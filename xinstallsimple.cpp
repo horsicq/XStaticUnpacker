@@ -357,7 +357,6 @@ XInstallSimple::LIFETIME_STATE::~LIFETIME_STATE()
     for (UNPACK_CONTEXT *pContext : setContextsCopy) delete pContext;
 }
 
-
 bool XInstallSimple::isValid(PDSTRUCT *pPdStruct)
 {
     if (!XBinary::isPdStructNotCanceled(pPdStruct)) return false;
@@ -510,7 +509,10 @@ bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
     struct PROGRESS_ALIVE_PROBE {
         PDSTRUCT *pPdStruct;
         const PDSTRUCTLIFETIME *pProgressLifetime;
-        bool operator()() const { return !pPdStruct || XBinary::isPdStructLifetimeAlive(*pProgressLifetime); }
+        bool operator()() const
+        {
+            return !pPdStruct || XBinary::isPdStructLifetimeAlive(*pProgressLifetime);
+        }
     };
     const PROGRESS_ALIVE_PROBE isProgressAlive = {pPdStruct, &progressLifetime};
     if (!isProgressAlive()) return false;
@@ -535,24 +537,19 @@ bool XInstallSimple::initUnpack(UNPACK_STATE *pState, const QMap<UNPACK_PROP, QV
     const XADDR nModuleAddress = getModuleAddress();
     if (!guardedSource) return false;
     const qint64 nSourceSize = guardedSource->size();
-    if (!isProgressAlive() || !guardedSource || (nSourceSize < 0) || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource))
-        return false;
+    if (!isProgressAlive() || !guardedSource || (nSourceSize < 0) || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource)) return false;
     std::unique_ptr<XMaterializedUnpackGuard> pSourceGuard(XMaterializedUnpackGuard::bind(guardedSource, pPdStruct));
-    if (!isProgressAlive() || !pSourceGuard || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource))
-        return false;
+    if (!isProgressAlive() || !pSourceGuard || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource)) return false;
     if (!m_bTrustedSnapshot) {
         QScopedPointer<QIODevice> pSnapshot(createFileBuffer(nSourceSize, pPdStruct));
-        if (!isProgressAlive() || !guardedSource || !pSnapshot || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource))
-            return false;
+        if (!isProgressAlive() || !guardedSource || !pSnapshot || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource)) return false;
         const bool bCopied = copyDeviceMemory(guardedSource, 0, pSnapshot.data(), 0, nSourceSize, pPdStruct);
-        if (!isProgressAlive() || !bCopied || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource))
-            return false;
+        if (!isProgressAlive() || !bCopied || !guardedSource || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource)) return false;
         XInstallSimple worker(pSnapshot.data(), bIsImage, nModuleAddress);
         worker.m_bTrustedSnapshot = true;
         UNPACK_STATE materializedState = {};
         const bool bMaterialized = worker.initUnpack(&materializedState, mapProperties, pPdStruct);
-        if (!isProgressAlive() || !guardedSource || !bMaterialized || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource))
-            return false;
+        if (!isProgressAlive() || !guardedSource || !bMaterialized || (getDeviceGeneration() != nGeneration) || (getDevice() != guardedSource)) return false;
         UNPACK_CONTEXT *pMaterializedContext = static_cast<UNPACK_CONTEXT *>(materializedState.pContext);
         if (!pMaterializedContext) return false;
         std::unique_ptr<UNPACK_CONTEXT> pContext(new (std::nothrow) UNPACK_CONTEXT);
@@ -716,13 +713,13 @@ XBinary::ARCHIVERECORD XInstallSimple::infoCurrent(UNPACK_STATE *pState, PDSTRUC
     UNPACK_CONTEXT *pContext = static_cast<UNPACK_CONTEXT *>(pState->pContext);
     qint32 nIndex = pState->nCurrentIndex;
     if (!pLifetimeState->setContexts.contains(pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
-        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice != getDevice()) ||
-        (pState->nCurrentOffset != pContext->nCurrentOffset) || (nIndex != pContext->nCurrentIndex) || (pState->nNumberOfRecords != pContext->listEntries.size()) ||
-        (pState->nTotalSize != pContext->nSourceSize) || (nIndex < 0) || (nIndex >= pContext->listEntries.size()))
+        (pContext->nDeviceGeneration != getDeviceGeneration()) || (pContext->pSourceDevice != getDevice()) || (pState->nCurrentOffset != pContext->nCurrentOffset) ||
+        (nIndex != pContext->nCurrentIndex) || (pState->nNumberOfRecords != pContext->listEntries.size()) || (pState->nTotalSize != pContext->nSourceSize) ||
+        (nIndex < 0) || (nIndex >= pContext->listEntries.size()))
         return result;
-    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !pLifetimeState->bOwnerAlive ||
-        !pLifetimeState->setContexts.contains(pContext) || (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) || (pState->nCurrentIndex != pContext->nCurrentIndex))
+    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !pLifetimeState->bOwnerAlive || !pLifetimeState->setContexts.contains(pContext) ||
+        (pState->pContext != pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
+        (pState->nCurrentIndex != pContext->nCurrentIndex))
         return result;
 
     const FILE_ENTRY &entry = pContext->listEntries.at(nIndex);
@@ -751,12 +748,11 @@ bool XInstallSimple::unpackCurrent(UNPACK_STATE *pState, QIODevice *pDevice, PDS
 
         bool operator()() const
         {
-            return pLifetimeState->bOwnerAlive && pLifetimeState->setContexts.contains(pContext) && (pState->pContext == pContext) &&
-                   (pContext->pOwnerState == pState) && (pState->baUnpackSourceToken == pContext->baToken) &&
-                   (pContext->nDeviceGeneration == pThis->getDeviceGeneration()) && (pContext->pSourceDevice == pThis->getDevice()) &&
-                   (pState->nCurrentIndex == pContext->nCurrentIndex) && (pState->nCurrentOffset == pContext->nCurrentOffset) &&
-                   (pState->nNumberOfRecords == pContext->listEntries.size()) && (pState->nTotalSize == pContext->nSourceSize) && (nIndex >= 0) &&
-                   (nIndex < pContext->listEntries.size());
+            return pLifetimeState->bOwnerAlive && pLifetimeState->setContexts.contains(pContext) && (pState->pContext == pContext) && (pContext->pOwnerState == pState) &&
+                   (pState->baUnpackSourceToken == pContext->baToken) && (pContext->nDeviceGeneration == pThis->getDeviceGeneration()) &&
+                   (pContext->pSourceDevice == pThis->getDevice()) && (pState->nCurrentIndex == pContext->nCurrentIndex) &&
+                   (pState->nCurrentOffset == pContext->nCurrentOffset) && (pState->nNumberOfRecords == pContext->listEntries.size()) &&
+                   (pState->nTotalSize == pContext->nSourceSize) && (nIndex >= 0) && (nIndex < pContext->listEntries.size());
         }
     };
     const AUTHENTICATION_PROBE isAuthenticated = {this, pLifetimeState, pContext, pState, nIndex};
@@ -823,9 +819,9 @@ bool XInstallSimple::moveToNext(UNPACK_STATE *pState, PDSTRUCT *pPdStruct)
         (pState->nCurrentOffset != pContext->nCurrentOffset) || (pState->nNumberOfRecords != pContext->listEntries.size()) ||
         (pState->nTotalSize != pContext->nSourceSize) || (pContext->nCurrentIndex < 0) || (pContext->nCurrentIndex >= pContext->listEntries.size()))
         return false;
-    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !pLifetimeState->bOwnerAlive ||
-        !pLifetimeState->setContexts.contains(pContext) || (pState->pContext != pContext) || (pContext->pOwnerState != pState) ||
-        (pContext->baToken != pState->baUnpackSourceToken) || (pContext->nCurrentIndex >= pContext->listEntries.size()))
+    if (!pContext->pSourceGuard || !pContext->pSourceGuard->isCurrent(pPdStruct) || !pLifetimeState->bOwnerAlive || !pLifetimeState->setContexts.contains(pContext) ||
+        (pState->pContext != pContext) || (pContext->pOwnerState != pState) || (pContext->baToken != pState->baUnpackSourceToken) ||
+        (pContext->nCurrentIndex >= pContext->listEntries.size()))
         return false;
     ++pContext->nCurrentIndex;
     pContext->nCurrentOffset = 0;
